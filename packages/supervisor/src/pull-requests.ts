@@ -79,7 +79,7 @@ function gh(binary: string, args: string[], cwd: string, input?: string): Promis
         if (error)
           reject(
             new Error(
-              `gh ${args.slice(0, 2).join(" ")} failed: ${String(stderr || stdout || error).trim()}`,
+              `gh ${args.slice(0, 2).join(" ")} failed: ${(String(stderr) || String(stdout) || error.message).trim()}`,
             ),
           );
         else resolve(String(stdout));
