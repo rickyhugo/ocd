@@ -22,7 +22,7 @@ OCD=(node "$ROOT/packages/cli/dist/ocd.mjs")
 git init -q -b main "$WORK/repo"
 git -C "$WORK/repo" -c user.email=smoke@example.com -c user.name=smoke commit -q --allow-empty -m init
 mkdir -p "$OCD_HOME"
-cat > "$OCD_HOME/ocd.jsonc" <<JSON
+cat >"$OCD_HOME/ocd.jsonc" <<JSON
 {
   "notifications": { "enabled": false },
   "backups": { "intervalHours": 0 },
@@ -31,7 +31,7 @@ cat > "$OCD_HOME/ocd.jsonc" <<JSON
 }
 JSON
 
-"${OCD[@]}" daemon > "$WORK/daemon.log" 2>&1 &
+"${OCD[@]}" daemon >"$WORK/daemon.log" 2>&1 &
 DAEMON=$!
 trap '"${OCD[@]}" stop >/dev/null 2>&1 || kill $DAEMON 2>/dev/null; echo "artifacts: $WORK"' EXIT
 sleep 2
@@ -43,7 +43,7 @@ sleep 2
 for _ in $(seq 1 120); do
   STATE="$("${OCD[@]}" task list --all --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0]?.state??""))')"
   echo "state: $STATE"
-  case "$STATE" in ready_for_review|needs_attention|failed|blocked|interrupted) break ;; esac
+  case "$STATE" in ready_for_review | needs_attention | failed | blocked | interrupted) break ;; esac
   sleep 5
 done
 

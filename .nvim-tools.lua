@@ -11,6 +11,7 @@ return {
 		jsonc = { "oxfmt" },
 		yaml = { "oxfmt" },
 		markdown = { "oxfmt" },
+		pkl = { "pkl" },
 	},
 	-- Oxlint runs as an LSP; don't also run it through nvim-lint.
 	format_on_save = true,

@@ -1,0 +1,6 @@
+root = true
+
+# shfmt reads this; everything else is formatted by vp (oxfmt).
+[*.{sh,bash}]
+indent_style = space
+indent_size = 2
