@@ -10,6 +10,8 @@ export const TASK_STATES = [
   "interrupted",
   "cancelled",
   "needs_attention",
+  // The human took over the worker's session and drives it directly.
+  "manual",
 ] as const;
 
 export type TaskState = (typeof TASK_STATES)[number];
@@ -18,16 +20,42 @@ const TRANSITIONS: Record<TaskState, readonly TaskState[]> = {
   queued: ["starting", "cancelled", "needs_attention"],
   // "queued" again only when reconciliation proves the launch was not admitted.
   starting: ["running", "queued", "failed", "interrupted", "cancelled", "needs_attention"],
-  running: ["blocked", "ready_for_review", "failed", "interrupted", "cancelled", "needs_attention"],
+  running: [
+    "blocked",
+    "ready_for_review",
+    "failed",
+    "interrupted",
+    "cancelled",
+    "needs_attention",
+    "manual",
+  ],
   // A blocked worker can still finish (e.g. a request was answered in the harness UI).
-  blocked: ["running", "ready_for_review", "failed", "interrupted", "cancelled", "needs_attention"],
+  blocked: [
+    "running",
+    "ready_for_review",
+    "failed",
+    "interrupted",
+    "cancelled",
+    "needs_attention",
+    "manual",
+  ],
   // A follow-up instruction re-opens a reviewed task; acceptance is human-only.
-  ready_for_review: ["completed", "running", "cancelled"],
-  needs_attention: ["running", "queued", "ready_for_review", "failed", "cancelled", "interrupted"],
+  ready_for_review: ["completed", "running", "cancelled", "manual"],
+  needs_attention: [
+    "running",
+    "queued",
+    "ready_for_review",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "manual",
+  ],
   // Explicit resume either reattaches (running) or relaunches (queued).
-  interrupted: ["running", "queued", "cancelled"],
+  interrupted: ["running", "queued", "cancelled", "manual"],
   // Reattaching to a failed worker's session, or relaunching it.
-  failed: ["running", "queued", "cancelled"],
+  failed: ["running", "queued", "cancelled", "manual"],
+  // Handed back: the worker continues (running) or the human is done (ready_for_review).
+  manual: ["running", "ready_for_review", "cancelled"],
   completed: [],
   cancelled: [],
 };
@@ -39,6 +67,17 @@ export const LIVE_STATES: ReadonlySet<TaskState> = new Set(["starting", "running
 export const OPEN_STATES: ReadonlySet<TaskState> = new Set([
   "queued",
   "starting",
+  "running",
+  "blocked",
+  "ready_for_review",
+  "needs_attention",
+  "interrupted",
+  "failed",
+  "manual",
+]);
+
+/** States from which the human can take over a worker's session. */
+export const TAKEOVER_STATES: ReadonlySet<TaskState> = new Set([
   "running",
   "blocked",
   "ready_for_review",

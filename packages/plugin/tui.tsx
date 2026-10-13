@@ -7,8 +7,18 @@
 //   Anything waiting on you is always listed; expand for collapsible sections.
 //   When nothing is open: "OCD idle" and what finished today. Click a row for
 //   actions that fit its state, including accept and clean up.
+// - Manual mode: /takeover (or a row action) stops OCD driving a worker and
+//   opens its session in a tmux window; /giveback hands it back to the manager.
 // - /task: pick an OCD task and send the manager a message about it.
-import { OcdClient, resolveOcdPaths, type Attention, type OcdApiError, type Task } from "@ocd/core";
+import {
+  OcdClient,
+  TAKEOVER_STATES,
+  resolveOcdPaths,
+  type Attention,
+  type OcdApiError,
+  type TakeOverResult,
+  type Task,
+} from "@ocd/core";
 import { Plugin } from "@opencode/plugin/tui";
 import { For, Show, createMemo, createSignal } from "solid-js";
 
@@ -20,6 +30,7 @@ import {
   type SectionKey,
   type Tone,
 } from "./src/sidebar-model.ts";
+import { openSessionWindow, shellLine } from "./src/session-window.ts";
 import { matchTasks } from "./src/task-match.ts";
 
 const POLL_MS = 4000;
@@ -38,6 +49,7 @@ const GLYPH: Record<Task["state"], string> = {
   interrupted: "■",
   completed: "✓",
   cancelled: "–",
+  manual: "◆",
 };
 
 function clip(text: string, max: number): string {
@@ -58,6 +70,7 @@ export default Plugin.define({
       accent: "primary",
       error: "error",
       muted: "textMuted",
+      info: "info",
     };
     const tone = (t: Tone) => color(TONE[t]);
 
@@ -184,6 +197,52 @@ export default Plugin.define({
       await refresh();
     };
 
+    /** Opens a taken-over session: a tmux window when the TUI runs in tmux, else the command to run. */
+    const openSession = async (r: TakeOverResult) => {
+      const window = await openSessionWindow({ taskId: r.task.id, cwd: r.cwd, command: r.command });
+      if (window) {
+        toast(`Opened in tmux window ${window}; it keeps running if you close the terminal`);
+        return;
+      }
+      await ctx.ui.dialog.alert({
+        title: "Drive the session yourself",
+        message: `Run this in a terminal (inside tmux it keeps running after you close the terminal):\n\n${shellLine(r.cwd, r.command)}\n\nHand it back from the sidebar or with /giveback.`,
+      });
+    };
+
+    /** Manual mode: OCD stops driving the worker, the manager is told, and the session opens for you. */
+    const takeOver = async (task: Task) => {
+      if (task.state !== "manual") {
+        const live = task.state === "running" || task.state === "blocked";
+        const ok = await ctx.ui.dialog.confirm({
+          title: `Take over “${clip(task.title, 40)}”?`,
+          message: `${live ? "The worker's current turn is interrupted and OCD stops driving it. " : "OCD stops driving it. "}The manager is told to leave it alone until you give it back.`,
+          label: { confirm: "Take over" },
+        });
+        if (!ok) return;
+      }
+      const result = await client.takeOverTask(task.id);
+      await refresh();
+      await openSession(result);
+    };
+
+    const giveBack = async (task: Task, mode: "continue" | "review") => {
+      const note = await ctx.ui.dialog.prompt({
+        title:
+          mode === "continue" ? "Give back: the worker continues" : "Give back: ready for review",
+        description: "Optional note for the worker and the manager: what you did, what is left.",
+        placeholder: "Note (optional)",
+      });
+      if (note === undefined) return;
+      await client.giveBackTask(task.id, { mode, ...(note.trim() ? { note: note.trim() } : {}) });
+      toast(
+        mode === "continue"
+          ? `Handed back “${clip(task.title, 40)}”; the worker continues`
+          : `Handed back “${clip(task.title, 40)}” for review`,
+      );
+      await refresh();
+    };
+
     const rowActions = async (row: Row) => {
       try {
         const actions = actionsFor(row);
@@ -193,18 +252,63 @@ export default Plugin.define({
         });
         const action = picked === undefined || picked === null ? undefined : actions[picked];
         if (!action) return;
+        const task = row.task;
         if ("message" in action) {
-          if (row.task) await askAbout(row.task, action.message);
-        } else if (action.kind === "message") {
-          if (row.task) await askAbout(row.task);
-        } else if (action.kind === "details") {
-          await details(row);
-        } else if (row.task) {
-          await runDirect(row.task, action.kind);
+          if (task) await askAbout(task, action.message);
+          return;
+        }
+        switch (action.kind) {
+          case "message":
+            if (task) await askAbout(task);
+            return;
+          case "details":
+            await details(row);
+            return;
+          case "takeover":
+          case "open":
+            if (task) await takeOver(task);
+            return;
+          case "giveback_continue":
+            if (task) await giveBack(task, "continue");
+            return;
+          case "giveback_review":
+            if (task) await giveBack(task, "review");
+            return;
+          default:
+            if (task) await runDirect(task, action.kind);
         }
       } catch (error) {
         fail(error);
       }
+    };
+
+    /** Searchable task picker; null when cancelled or nothing qualifies. */
+    const pickTask = async (title: string, filter: (t: Task) => boolean = () => true) => {
+      const all = (await client.listTasks({ limit: 100 })).filter(filter);
+      if (!all.length) {
+        toast("No task qualifies", "warning");
+        return null;
+      }
+      return (
+        (await ctx.ui.dialog.select<Task>({
+          title,
+          placeholder: "Search by title, repo or id",
+          options: all.map((t) => ({
+            title: `${GLYPH[t.state]} ${t.title}`,
+            description: `${t.repo} · ${t.state}`,
+            value: t,
+          })),
+          search: (q, options) => {
+            const hits = new Set(
+              matchTasks(
+                options.map((o) => o.value),
+                q,
+              ).map((t) => t.id),
+            );
+            return options.filter((o) => hits.has(o.value.id));
+          },
+        })) ?? null
+      );
     };
 
     const muted = () => color("textMuted");
@@ -329,26 +433,49 @@ export default Plugin.define({
           slash: { name: "task" },
           run: async () => {
             try {
-              const all = await client.listTasks({ limit: 100 });
-              const task = await ctx.ui.dialog.select<Task>({
-                title: "OCD task",
-                placeholder: "Search by title, repo or id",
-                options: all.map((t) => ({
-                  title: `${GLYPH[t.state]} ${t.title}`,
-                  description: `${t.repo} · ${t.state}`,
-                  value: t,
-                })),
-                search: (q, options) => {
-                  const hits = new Set(
-                    matchTasks(
-                      options.map((o) => o.value),
-                      q,
-                    ).map((t) => t.id),
-                  );
-                  return options.filter((o) => hits.has(o.value.id));
-                },
-              });
+              const task = await pickTask("OCD task");
               if (task) await askAbout(task);
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.takeover",
+          title: "OCD: take over a worker's session (manual mode)",
+          group: "OCD",
+          palette: true,
+          slash: { name: "takeover" },
+          run: async () => {
+            try {
+              const task = await pickTask(
+                "Take over which task?",
+                (t) => !!t.sessionId && (t.state === "manual" || TAKEOVER_STATES.has(t.state)),
+              );
+              if (task) await takeOver(task);
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.giveback",
+          title: "OCD: give a manual task back to the manager",
+          group: "OCD",
+          palette: true,
+          slash: { name: "giveback" },
+          run: async () => {
+            try {
+              const task = await pickTask("Give back which task?", (t) => t.state === "manual");
+              if (!task) return;
+              const mode = await ctx.ui.dialog.select<"continue" | "review">({
+                title: clip(task.title, 60),
+                options: [
+                  { title: "Let the worker continue", value: "continue" },
+                  { title: "Ready for review", value: "review" },
+                ],
+              });
+              if (mode) await giveBack(task, mode);
             } catch (error) {
               fail(error);
             }

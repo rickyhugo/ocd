@@ -3,8 +3,8 @@ import type { Attention, Task } from "@ocd/core";
 // The sidebar's view model: what to show, in which order, with which emphasis.
 // Pure, so it is tested without a terminal.
 
-export type SectionKey = "needs" | "review" | "stuck" | "running" | "queued" | "recent";
-export type Tone = "warning" | "success" | "accent" | "error" | "muted";
+export type SectionKey = "needs" | "manual" | "review" | "stuck" | "running" | "queued" | "recent";
+export type Tone = "warning" | "success" | "accent" | "error" | "muted" | "info";
 
 export interface Row {
   key: string;
@@ -114,6 +114,10 @@ export function buildSidebar(
       .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((t) => ({ key: t.id, title: t.title, task: t, attention: null, ...row(t) }));
 
+  const manual = rows(
+    (t) => t.state === "manual",
+    (t) => ({ glyph: "◆", tone: "info", meta: `you · ${age(t.updatedAt, now)}` }),
+  );
   const review = rows(
     (t) => t.state === "ready_for_review",
     (t) => ({ glyph: "✓", tone: "success", meta: age(t.finishedAt ?? t.updatedAt, now) }),
@@ -167,6 +171,14 @@ export function buildSidebar(
       glyph: "!",
       tone: "warning",
       rows: needs,
+      openByDefault: true,
+    },
+    {
+      key: "manual",
+      label: "Manual",
+      glyph: "◆",
+      tone: "info",
+      rows: manual,
       openByDefault: true,
     },
     {
@@ -227,7 +239,16 @@ export function buildSidebar(
   };
 }
 
-export type ActionKind = "message" | "details" | "accept" | "accept_clean" | "clean";
+export type ActionKind =
+  | "message"
+  | "details"
+  | "accept"
+  | "accept_clean"
+  | "clean"
+  | "takeover"
+  | "open"
+  | "giveback_continue"
+  | "giveback_review";
 /** A message goes to the manager, which acts on it; a kind runs directly against OCD. */
 export type QuickAction = { label: string; message: string } | { label: string; kind: ActionKind };
 
@@ -245,11 +266,24 @@ export function actionsFor(row: Row): QuickAction[] {
       details,
     ];
   }
+  // Manual mode needs a worker session to open.
+  const takeover = row.task?.sessionId
+    ? [{ label: "Take over (manual mode)", kind: "takeover" as const }]
+    : [];
   switch (row.task?.state) {
+    case "manual":
+      return [
+        { label: "Open the session", kind: "open" },
+        { label: "Give back: let the worker continue", kind: "giveback_continue" },
+        { label: "Give back: ready for review", kind: "giveback_review" },
+        message,
+        details,
+      ];
     case "ready_for_review":
       return [
         { label: "Accept and clean up", kind: "accept_clean" },
         { label: "Accept (keep the worktree)", kind: "accept" },
+        ...takeover,
         {
           label: "Summarize the result",
           message: "Summarize the result and anything I should check before accepting.",
@@ -263,6 +297,7 @@ export function actionsFor(row: Row): QuickAction[] {
     case "blocked":
       return [
         { label: "Status update", message: "How is it going? Give me a short status update." },
+        ...takeover,
         message,
         { label: "Cancel it", message: "Cancel this task." },
         details,
@@ -273,6 +308,7 @@ export function actionsFor(row: Row): QuickAction[] {
       return [
         { label: "What happened?", message: "What happened, and what do you suggest?" },
         { label: "Retry it", message: "Look at what went wrong and retry it if that is safe." },
+        ...takeover,
         message,
         details,
       ];

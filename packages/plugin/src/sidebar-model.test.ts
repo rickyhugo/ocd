@@ -132,6 +132,32 @@ describe("sidebar model", () => {
     expect(actionsFor(gone!).map((a) => a.label)).not.toContain("Clean up the worktree");
   });
 
+  it("lists manual tasks right after Needs you, with take-over and give-back actions", () => {
+    const model = buildSidebar(
+      [
+        task("m", "manual", { sessionId: "s-m", updatedAt: minutesAgo(12) }),
+        task("r", "running", { sessionId: "s-r" }),
+        task("q", "queued", { sessionId: null }),
+      ],
+      [],
+      NOW,
+    );
+    expect(model.sections.map((s) => s.key)).toEqual(["manual", "running", "queued"]);
+    const [manual] = model.sections[0]!.rows;
+    expect(manual).toMatchObject({ glyph: "◆", meta: "you · 12m" });
+    expect(actionsFor(manual!).map((a) => a.label)).toEqual([
+      "Open the session",
+      "Give back: let the worker continue",
+      "Give back: ready for review",
+      "Message the manager about it…",
+      "Details",
+    ]);
+    const running = model.sections[1]!.rows[0]!;
+    expect(actionsFor(running).map((a) => a.label)).toContain("Take over (manual mode)");
+    const queued = model.sections[2]!.rows[0]!;
+    expect(actionsFor(queued).map((a) => a.label)).not.toContain("Take over (manual mode)");
+  });
+
   it("offers actions that fit the task's state", () => {
     const [review] = buildSidebar([task("c", "ready_for_review")], [], NOW).sections[0]!.rows;
     expect(actionsFor(review!).map((a) => a.label)).toContain("Accept and open a PR");

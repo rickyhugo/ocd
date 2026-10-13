@@ -466,6 +466,11 @@ export class OpenCodeAdapter implements HarnessAdapter {
     };
   }
 
+  /** Sessions live in the OpenCode service, so a TUI can join one at any time. */
+  interactiveCommand(ref: SessionRef): string[] {
+    return ["opencode", "--session", ref.sessionId];
+  }
+
   async interrupt(ref: SessionRef): Promise<void> {
     await (await this.api()).session.interrupt({ sessionID: ref.sessionId });
   }

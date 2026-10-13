@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 
 import type { AdapterStatus } from "@ocd/core";
 
+import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
 import {
   HarnessUnavailableError,
@@ -528,6 +529,15 @@ export class CodexAdapter implements HarnessAdapter {
     this.sessions.delete(ref.sessionId);
     this.byMarker.delete(session.spec.marker);
     await session.proc.stop(2000);
+  }
+
+  interactiveCommand(ref: SessionRef): string[] {
+    return [this.command[0], "resume", ref.sessionId];
+  }
+
+  async sessionInUse(ref: SessionRef): Promise<{ pid: number; command: string } | null> {
+    if (this.sessions.get(ref.sessionId)?.proc.running) return null;
+    return processMentioning(ref.sessionId);
   }
 
   /** Number of running worker processes (for status and tests). */

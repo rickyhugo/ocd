@@ -213,6 +213,30 @@ plugin directory) adds:
   task t_… (title, repo, state): your message". OpenCode has no plugin API for
   custom `@` mentions, so this is a slash command.
 
+### Manual mode: drive a worker yourself
+
+Take over a worker's session when you want to steer it directly, then give it
+back to the manager.
+
+- **Take over**: `/takeover` in the TUI, the row action _Take over (manual
+  mode)_, or `ocd task takeover <id>`. OCD interrupts a running turn, stops a
+  Claude Code / Codex worker process, expires its pending requests, moves the
+  task to `manual` and tells the manager to leave it alone. The session opens
+  in a tmux window named `ocd-<id>` in the task's worktree when the TUI runs in
+  tmux (it keeps running after you close the terminal; open it again from the
+  sidebar), otherwise you get the command: `claude --resume <id>`,
+  `codex resume <id>` or `opencode --session <id>`.
+- **While manual**: the sidebar lists it under Manual (`◆ you · 12m`); OCD does
+  not stall-check it, collect reports or recover it, and the manager cannot
+  cancel or resume it.
+- **Give back**: `/giveback`, the row actions, or `ocd task giveback <id>
+  --mode continue|review [--message NOTE]`. _Continue_ resumes the worker
+  headless on the same session with your note and it reports as usual;
+  _ready for review_ moves the task to review. The manager is told either way.
+  For Claude Code and Codex, give back refuses while the session is still open
+  in another process (quit the interactive harness first), so two processes
+  never drive one session.
+
 ## How work flows
 
 1. The manager calls `ocd_dispatch_task`. The supervisor persists the task and

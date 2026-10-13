@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import type { AdapterStatus } from "@ocd/core";
 
+import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
 import {
   HarnessUnavailableError,
@@ -374,6 +375,16 @@ export class ClaudeAdapter implements HarnessAdapter {
     this.sessions.delete(ref.sessionId);
     this.byMarker.delete(session.spec.marker);
     await session.proc.stop(2000);
+  }
+
+  interactiveCommand(ref: SessionRef): string[] {
+    return [this.command[0], "--resume", ref.sessionId];
+  }
+
+  async sessionInUse(ref: SessionRef): Promise<{ pid: number; command: string } | null> {
+    // Our own worker for this session counts only while OCD drives it.
+    if (this.sessions.get(ref.sessionId)?.proc.running) return null;
+    return processMentioning(ref.sessionId);
   }
 
   /** Number of running worker processes (for status and tests). */
