@@ -75,6 +75,8 @@ interface CodexSession {
   /** The process was stopped while idle; the thread resumes on the next prompt. */
   parked: boolean;
   idleTimer: NodeJS.Timeout | null;
+  /** Turns that already completed; their turn/start reply may arrive late. */
+  finishedTurns: Set<string>;
 }
 
 export interface CodexAdapterOptions {
@@ -384,12 +386,14 @@ export class CodexAdapter implements HarnessAdapter {
       }
       case "turn/completed": {
         const turn = params["turn"] as {
+          id: string;
           status: "completed" | "interrupted" | "failed";
           error: { message?: string; codexErrorInfo?: unknown } | null;
           items?: { type?: string; text?: string }[];
         };
         const final = turn.items?.find((i) => i.type === "agentMessage")?.text;
         if (final) session.lastAssistantText = final;
+        session.finishedTurns.add(turn.id);
         session.activeTurnId = null;
         session.pending.clear();
         if (turn.status === "failed") {
@@ -474,6 +478,7 @@ export class CodexAdapter implements HarnessAdapter {
       quotaLimited: false,
       parked: false,
       idleTimer: null,
+      finishedTurns: session.finishedTurns ?? new Set(),
     } satisfies Partial<CodexSession>);
     this.sessions.set(threadId, session);
     this.byMarker.set(spec.marker, threadId);
@@ -552,15 +557,17 @@ export class CodexAdapter implements HarnessAdapter {
       });
     } else {
       const { effort } = parseCodexModel(session.spec.model);
+      // Busy before the request: the turn's notifications can arrive before its
+      // reply, and a turn that already completed must not be marked busy again.
+      session.status = "busy";
+      session.error = null;
+      session.quotaLimited = false;
       const result = (await this.call(session, "turn/start", {
         threadId: session.threadId,
         input,
         ...(effort ? { effort } : {}),
       })) as { turn: { id: string } };
-      session.activeTurnId = result.turn.id;
-      session.status = "busy";
-      session.error = null;
-      session.quotaLimited = false;
+      if (!session.finishedTurns.has(result.turn.id)) session.activeTurnId = result.turn.id;
     }
     session.prompted = true;
   }

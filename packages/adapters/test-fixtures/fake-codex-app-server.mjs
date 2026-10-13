@@ -119,9 +119,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       threadId = m.params.threadId;
       threadParams = { resumed: true, ...m.params };
       return reply({ thread: { id: threadId, status: { type: "idle" }, cwd: m.params.cwd } });
-    case "turn/start":
-      reply({ turn: { id: `turn_${turnSeq + 1}`, status: "inProgress", items: [] } });
-      return startTurn(m.params.input.map((i) => i.text).join("\n"));
+    case "turn/start": {
+      const text = m.params.input.map((i) => i.text).join("\n");
+      const id = `turn_${turnSeq + 1}`;
+      // [early] finishes the turn before replying, as a fast real turn can.
+      if (text.includes("[early]")) {
+        startTurn(text);
+        return reply({ turn: { id, status: "completed", items: [] } });
+      }
+      reply({ turn: { id, status: "inProgress", items: [] } });
+      return startTurn(text);
+    }
     case "turn/steer":
       return reply({ turnId: active?.id });
     case "turn/interrupt": {

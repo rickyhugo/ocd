@@ -201,3 +201,16 @@ describe("Codex worker lifecycle", () => {
     expect((await adapter.inspect(ref)).status).toBe("missing");
   });
 });
+
+describe("Codex turn ordering", () => {
+  it("ends idle when a turn completes before its turn/start reply arrives", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "[early] quick");
+    const snap = await adapter.inspect(ref);
+    expect(snap.status).toBe("idle");
+    expect(snap.lastAssistantText).toContain("ocd-report");
+    await adapter.prompt(ref, "[early] again");
+    expect((await adapter.inspect(ref)).status).toBe("idle");
+  });
+});
