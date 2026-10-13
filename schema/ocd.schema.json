@@ -76,8 +76,12 @@
       "properties": {
         "enabled": {
           "default": true,
-          "description": "Send macOS desktop notifications.",
+          "description": "Send desktop notifications (macOS and Linux).",
           "type": "boolean"
+        },
+        "focusApp": {
+          "description": "Terminal app to bring forward when a notification is clicked: a macOS bundle id (com.mitchellh.ghostty) or a Linux window class (kitty). Detected from tmux by default.",
+          "type": "string"
         }
       },
       "additionalProperties": false

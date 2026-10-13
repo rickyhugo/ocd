@@ -5,14 +5,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import {
-  LAUNCH_AGENT_LABEL,
-  installLaunchAgent,
-  launchAgentStatus,
-  renderPlist,
-  uninstallLaunchAgent,
-  type Exec,
-} from "./launchagent.ts";
+import type { Exec } from "./exec.ts";
+import { LAUNCH_AGENT_LABEL, LaunchdService, renderPlist } from "./launchd.ts";
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -71,7 +65,7 @@ describe("LaunchAgent lifecycle", () => {
   it("installs by replacing any loaded definition, then bootstrapping", async () => {
     const plist = join(temp(), "LaunchAgents", `${LAUNCH_AGENT_LABEL}.plist`);
     const { exec, calls } = fakeExec({ bootout: { code: 3 } });
-    await installLaunchAgent({ ...spec, logsDir: temp() }, { exec, plist });
+    await new LaunchdService({ exec, plist }).install({ ...spec, logsDir: temp() });
     expect(calls.map((c) => c[1])).toEqual(["bootout", "bootstrap"]);
     expect(calls[1]).toEqual(["/bin/launchctl", "bootstrap", `gui/${process.getuid!()}`, plist]);
     expect(readFileSync(plist, "utf8")).toContain("--background");
@@ -80,9 +74,9 @@ describe("LaunchAgent lifecycle", () => {
   it("reports bootstrap failures", async () => {
     const plist = join(temp(), `${LAUNCH_AGENT_LABEL}.plist`);
     const { exec } = fakeExec({ bootstrap: { code: 5, stderr: "Input/output error" } });
-    await expect(installLaunchAgent({ ...spec, logsDir: temp() }, { exec, plist })).rejects.toThrow(
-      /Input\/output error/,
-    );
+    await expect(
+      new LaunchdService({ exec, plist }).install({ ...spec, logsDir: temp() }),
+    ).rejects.toThrow(/Input\/output error/);
   });
 
   it("uninstalls only its own plist", async () => {
@@ -90,11 +84,13 @@ describe("LaunchAgent lifecycle", () => {
     const plist = join(dir, `${LAUNCH_AGENT_LABEL}.plist`);
     const { exec } = fakeExec();
     writeFileSync(plist, renderPlist(spec));
-    expect(await uninstallLaunchAgent({ exec, plist })).toEqual({ removed: true });
+    expect(await new LaunchdService({ exec, plist }).uninstall()).toEqual({ removed: true });
     expect(existsSync(plist)).toBe(false);
-    expect(await uninstallLaunchAgent({ exec, plist })).toEqual({ removed: false });
+    expect(await new LaunchdService({ exec, plist }).uninstall()).toEqual({ removed: false });
     writeFileSync(plist, "<plist>someone else</plist>");
-    await expect(uninstallLaunchAgent({ exec, plist })).rejects.toThrow(/does not look like/);
+    await expect(new LaunchdService({ exec, plist }).uninstall()).rejects.toThrow(
+      /does not look like/,
+    );
   });
 
   it("parses launchctl state", async () => {
@@ -106,7 +102,7 @@ describe("LaunchAgent lifecycle", () => {
         stdout: "dev.ocd.supervisor = {\n\tstate = running\n\tpid = 4242\n\tlast exit code = 0\n}",
       },
     });
-    expect(await launchAgentStatus({ exec, plist })).toMatchObject({
+    expect(await new LaunchdService({ exec, plist }).status()).toMatchObject({
       installed: true,
       loaded: true,
       state: "running",
@@ -115,7 +111,7 @@ describe("LaunchAgent lifecycle", () => {
     });
     const missing = fakeExec({ print: { code: 113, stderr: "Could not find service" } });
     expect(
-      await launchAgentStatus({ exec: missing.exec, plist: join(temp(), "x.plist") }),
+      await new LaunchdService({ exec: missing.exec, plist: join(temp(), "x.plist") }).status(),
     ).toMatchObject({ installed: false, loaded: false, pid: null });
   });
 });
