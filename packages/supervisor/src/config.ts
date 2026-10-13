@@ -16,7 +16,6 @@ export const SupervisorConfig = z
       .number()
       .int()
       .min(1)
-      .max(8)
       .default(1)
       .describe("Maximum number of live workers. Serial by default."),
     schedulerIntervalMs: z

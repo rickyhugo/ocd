@@ -145,6 +145,19 @@ reattached and anything uncertain shows up in `ocd attention list`.
 The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
 `backups.intervalHours` (24) and keeps the newest `backups.keep` (7).
 
+### In the OpenCode TUI
+
+The plugin's TUI part (`packages/plugin/tui.tsx`, loaded by OpenCode from the
+plugin directory) adds:
+
+- **Sidebar:** a live overview of ongoing work (running/queued/review counts,
+  items waiting on you, open tasks with their state).
+- **`/task`:** reference a task when talking to the manager. `/task` opens a
+  searchable picker, then asks for your message; `/task <id or words> <message>`
+  skips the picker when it matches one task. The manager receives "Regarding OCD
+  task t_… (title, repo, state): your message". OpenCode has no plugin API for
+  custom `@` mentions, so this is a slash command.
+
 ## How work flows
 
 1. The manager calls `ocd_dispatch_task`. The supervisor persists the task and

@@ -3,6 +3,9 @@
     "target": "es2023",
     "module": "NodeNext",
     "lib": ["ES2023"],
+    /* OpenCode TUI plugin (packages/plugin/tui.tsx): Solid JSX on OpenTUI, compiled by the OpenCode host */
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
     "types": ["node"],
     "skipLibCheck": true,
 
@@ -25,6 +28,7 @@
   },
   "include": [
     "packages/*/src",
+    "packages/plugin/tui.tsx",
     "packages/*/scripts",
     "packages/*/vite.config.ts",
     "packages/*/drizzle.config.ts",
