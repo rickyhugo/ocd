@@ -102,6 +102,26 @@
       "description": "Allow profiles that use the fake harness (tests and dry runs).",
       "type": "boolean"
     },
+    "backups": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "intervalHours": {
+          "default": 24,
+          "description": "Hours between automatic database backups; 0 disables them.",
+          "type": "number",
+          "minimum": 0
+        },
+        "keep": {
+          "default": 7,
+          "description": "Number of automatic backups to keep in ~/.ocd/backups.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
     "log": {
       "default": {},
       "type": "object",

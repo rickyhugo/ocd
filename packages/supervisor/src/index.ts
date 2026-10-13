@@ -1,4 +1,5 @@
 export * from "./api.ts";
+export * from "./backups.ts";
 export * from "./config.ts";
 export * from "./daemon.ts";
 export * from "./db/index.ts";

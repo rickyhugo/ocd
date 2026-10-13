@@ -91,6 +91,7 @@ export const TEST_CONFIG: Partial<SupervisorConfigInput> = {
   allowFakeHarness: true,
   profiles: { fake: { harness: "fake", model: "fake/model", permissionPolicy: "ask" } },
   schedulerIntervalMs: 20,
+  backups: { intervalHours: 0 },
   reconcileIntervalMs: 60_000,
   outbox: { intervalMs: 20, maxAttempts: 3, baseDelayMs: 10 },
 };
