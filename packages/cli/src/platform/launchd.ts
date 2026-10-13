@@ -109,6 +109,19 @@ export class LaunchdService implements ServiceManager {
     return { removed: true };
   }
 
+  async restart(): Promise<void> {
+    // -k: kill the running instance first; launchd starts it again right away.
+    const result = await this.exec("/bin/launchctl", [
+      "kickstart",
+      "-k",
+      `${this.target()}/${LAUNCH_AGENT_LABEL}`,
+    ]);
+    if (result.code !== 0)
+      throw new Error(
+        `launchctl kickstart failed: ${result.stderr.trim() || result.stdout.trim()}`,
+      );
+  }
+
   async status(): Promise<ServiceStatus> {
     const result = await this.exec("/bin/launchctl", [
       "print",

@@ -42,6 +42,8 @@ Supervisor
                                     Run the supervisor in the background and at login
                                     (LaunchAgent on macOS, systemd user unit on Linux)
   ocd stop                          Stop the supervisor and report worker outcomes
+  ocd restart [--force]             Restart the background service (picks up a new build); refuses while
+                                    Claude Code / Codex workers are running unless --force
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
   ocd doctor                        Check harnesses, the OpenCode service, notifications and the service manager
@@ -287,6 +289,64 @@ async function main(argv: string[]): Promise<void> {
         activate: (app) => platform.activate(app),
       });
       print({ steps }, json, () => steps.join("\n"));
+      return;
+    }
+    case "restart": {
+      const service = platform.service;
+      const before = await client.status().catch(() => null);
+      const current = service ? await service.status() : null;
+      if (!service || !current?.loaded) {
+        fail(
+          before
+            ? `the supervisor (pid ${before.pid}) is not running as a background service; stop it with Ctrl-C or \`ocd stop\` and start \`ocd daemon\` again, or use \`ocd service install\``
+            : "no background service installed; run `ocd daemon` or `ocd service install`",
+        );
+      }
+      // Supervisor-owned processes (Claude Code, Codex) are interrupted by a
+      // restart; OpenCode workers live in the OpenCode service and are reattached.
+      const interrupted = before
+        ? (await client.listTasks({ open: true, limit: 200 })).filter(
+            (t) =>
+              t.harness !== "opencode" &&
+              (t.state === "starting" || t.state === "running" || t.state === "blocked"),
+          )
+        : [];
+      if (interrupted.length && !flags.force) {
+        fail(
+          [
+            "a restart would interrupt these workers (their sessions are kept for `ocd task resume`):",
+            ...interrupted.map((t) => `  ${t.id} ${t.harness} ${t.state} ${t.title}`),
+            "wait for them, or pass --force",
+          ].join("\n"),
+        );
+      }
+      await service.restart();
+      // Wait for the new instance to answer on the socket.
+      const deadline = Date.now() + 30_000;
+      let after: Awaited<ReturnType<typeof client.status>> | null = null;
+      while (Date.now() < deadline) {
+        after = await client.status().catch(() => null);
+        if (after && after.instanceId !== before?.instanceId) break;
+        after = null;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (!after)
+        fail(
+          `restarted via ${service.kind}, but the supervisor did not answer within 30s; see ${paths.logs}`,
+        );
+      print(
+        { before: before?.pid ?? null, after: after.pid, instanceId: after.instanceId },
+        json,
+        () =>
+          [
+            `restarted (${service.kind}): pid ${before?.pid ?? "-"} → ${after.pid}`,
+            ...(interrupted.length
+              ? [
+                  `interrupted: ${interrupted.map((t) => t.id).join(", ")} (resume with \`ocd task resume\`)`,
+                ]
+              : []),
+          ].join("\n"),
+      );
       return;
     }
     case "stop": {
