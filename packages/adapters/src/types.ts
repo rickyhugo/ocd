@@ -108,6 +108,11 @@ export interface HarnessAdapter {
    * harnesses implement this; service-owned ones never lose sessions.
    */
   revive?(ref: SessionRef, spec: SessionSpec): Promise<void>;
+  /**
+   * Frees a finished task's worker (e.g. stops its process). Process-owned
+   * harnesses implement this; the session may still be revived later.
+   */
+  release?(ref: SessionRef): Promise<void>;
   close(): Promise<void>;
 }
 

@@ -153,9 +153,12 @@ The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
    branch `ocd/<task>`. Workspaces are never deleted by OCD.
 3. Permission requests block the task and notify you; only a human can approve
    them, from an interactive terminal: `ocd attention resolve <id> --approve`.
-   Profiles with `"permissionPolicy": "deny"` reject them and record the block
-   instead; `"allow"` approves each request once, automatically, and records it
-   (`ocd attention list --all`). The default is `deny`.
+   Other `permissionPolicy` values: `deny` (the default) rejects requests and
+   records the block; `allow` approves each request once, automatically, and
+   records it; `yolo` tells the harness to skip permission checks and its
+   sandbox entirely (Claude Code `--dangerously-skip-permissions`, Codex
+   `approvalPolicy: never` + `danger-full-access`, an OpenCode allow-all rule),
+   so nothing is asked or recorded.
 4. When the worker goes idle, OCD collects its `ocd-report` and independently
    checks the worktree with git (changed files, commits, uncommitted changes).
    A valid report makes the task `ready_for_review`.
@@ -175,7 +178,7 @@ request header: the human-only checks stop the manager _model_ from approving
 permissions, accepting work, or reconfiguring OCD through its tools, but they
 are not authentication. A worker or any process running as you with shell
 access could call the socket (or run `ocd`) directly. Keep worker profiles on
-`ask` or `deny` unless you opted into `allow`, rely on the harness's own sandbox and permission
+`ask` or `deny` unless you opted into `allow` or `yolo`, rely on the harness's own sandbox and permission
 rules for shell access, and treat OCD as a coordination layer, not a security
 boundary. Approving a permission from the CLI additionally requires typing
 `approve` in an interactive terminal.

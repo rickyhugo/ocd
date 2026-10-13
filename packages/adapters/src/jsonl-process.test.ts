@@ -21,7 +21,8 @@ describe("JsonLineProcess", () => {
       onInvalidLine: (l) => invalid.push(l),
     });
     proc.send({ n: 1 });
-    await new Promise((r) => setTimeout(r, 300));
+    for (let i = 0; i < 200 && messages.length < 2; i += 1)
+      await new Promise((r) => setTimeout(r, 10));
     expect(messages).toEqual([{ hello: "yes", leaked: null }, { echo: { n: 1 } }]);
     expect(invalid).toEqual(["not json"]);
     await proc.stop();

@@ -80,6 +80,9 @@ interface ClaudeSession {
   error: string | null;
   quotaLimited: boolean;
   limitSeen: boolean;
+  /** The process was stopped while idle; the session resumes on the next prompt. */
+  parked: boolean;
+  idleTimer: NodeJS.Timeout | null;
 }
 
 function summarize(tool: string, input: Record<string, unknown>): string {
@@ -92,6 +95,8 @@ export interface ClaudeAdapterOptions {
   /** Executable; defaults to `claude`. Extra leading args are allowed (tests). */
   command?: [string, ...string[]];
   onError?: (error: unknown, context: string) => void;
+  /** Stop a worker process after this long idle; its session resumes on demand. */
+  idleStopMs?: number;
 }
 
 export class ClaudeAdapter implements HarnessAdapter {
@@ -151,26 +156,6 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   private spawn(spec: SessionSpec, session: { id: string; resume: boolean }): ClaudeSession {
-    const { model, effort } = parseClaudeModel(spec.model);
-    const [cmd, ...prefix] = this.command;
-    const args = [
-      ...prefix,
-      "-p",
-      "--input-format",
-      "stream-json",
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      ...(session.resume ? ["--resume", session.id] : ["--session-id", session.id]),
-      "--model",
-      model,
-      ...(effort ? ["--effort", effort] : []),
-      // Always explicit: settings files must not change how permissions are asked.
-      "--permission-mode",
-      "default",
-      "--permission-prompt-tool",
-      "stdio",
-    ];
     const state = {
       sessionId: session.id,
       spec,
@@ -181,18 +166,74 @@ export class ClaudeAdapter implements HarnessAdapter {
       error: null,
       quotaLimited: false,
       limitSeen: false,
+      parked: false,
+      idleTimer: null,
     } as unknown as ClaudeSession;
-    state.proc = new JsonLineProcess(cmd, args, {
+    this.startProcess(state, session.resume);
+    this.sessions.set(session.id, state);
+    this.byMarker.set(spec.marker, session.id);
+    return state;
+  }
+
+  /** Starts (or restarts, with --resume) the worker process for a session. */
+  private startProcess(state: ClaudeSession, resume: boolean): void {
+    const spec = state.spec;
+    const { model, effort } = parseClaudeModel(spec.model);
+    const [cmd, ...prefix] = this.command;
+    const args = [
+      ...prefix,
+      "-p",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      ...(resume ? ["--resume", state.sessionId] : ["--session-id", state.sessionId]),
+      "--model",
+      model,
+      ...(effort ? ["--effort", effort] : []),
+      // Always explicit, so settings files cannot change how permissions work.
+      // yolo skips checks entirely; the few prompts Claude Code still raises
+      // (protected config/git files) come over stdio and OCD approves them.
+      ...(spec.permissionPolicy === "yolo"
+        ? ["--dangerously-skip-permissions"]
+        : ["--permission-mode", "default"]),
+      "--permission-prompt-tool",
+      "stdio",
+    ];
+    const proc = new JsonLineProcess(cmd, args, {
       cwd: spec.directory,
       env: spec.env,
       onMessage: (m) => this.onMessage(state, m as ClaudeMessage),
       onInvalidLine: (line) =>
         this.options.onError?.(new Error(line.slice(0, 200)), "claude stdout"),
     });
-    void state.proc.exited.then((exit) => this.onExit(state, exit));
-    this.sessions.set(session.id, state);
-    this.byMarker.set(spec.marker, session.id);
-    return state;
+    state.proc = proc;
+    state.parked = false;
+    // Ignore exits of a process that has since been replaced.
+    void proc.exited.then((exit) => {
+      if (state.proc === proc) this.onExit(state, exit);
+    });
+  }
+
+  private scheduleIdleStop(session: ClaudeSession): void {
+    this.clearIdleStop(session);
+    const ms = this.options.idleStopMs ?? 10 * 60_000;
+    session.idleTimer = setTimeout(() => void this.park(session), ms);
+    session.idleTimer.unref();
+  }
+
+  private clearIdleStop(session: ClaudeSession): void {
+    if (session.idleTimer) clearTimeout(session.idleTimer);
+    session.idleTimer = null;
+  }
+
+  /** Stops an idle worker process; the session stays resumable from disk. */
+  private async park(session: ClaudeSession): Promise<void> {
+    this.clearIdleStop(session);
+    if (!session.proc.running || session.status === "busy" || session.status === "waiting") return;
+    session.parked = true;
+    await session.proc.stop(2000);
   }
 
   private onMessage(session: ClaudeSession, message: ClaudeMessage): void {
@@ -269,6 +310,7 @@ export class ClaudeAdapter implements HarnessAdapter {
           this.emit({ type: "status", sessionId, status: "idle" });
         }
         session.limitSeen = false;
+        this.scheduleIdleStop(session);
         return;
       }
       default:
@@ -281,7 +323,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     session: ClaudeSession,
     exit: { code: number | null; signal: NodeJS.Signals | null },
   ): void {
-    if (this.sessions.get(session.sessionId) !== session) return;
+    if (this.sessions.get(session.sessionId) !== session || session.parked) return;
     if (session.status === "busy" || session.status === "waiting") {
       session.error = `claude exited (${exit.signal ?? exit.code}): ${session.proc.stderr().slice(-500)}`;
       session.status = "error";
@@ -317,8 +359,26 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   async revive(ref: SessionRef, spec: SessionSpec): Promise<void> {
-    if (this.sessions.get(ref.sessionId)?.proc.running) return;
-    this.spawn(spec, { id: ref.sessionId, resume: true });
+    const existing = this.sessions.get(ref.sessionId);
+    if (existing?.proc.running) return;
+    if (existing) this.startProcess(existing, true);
+    else this.spawn(spec, { id: ref.sessionId, resume: true });
+  }
+
+  /** Ends a finished task's worker. A later reattach can still resume it from disk. */
+  async release(ref: SessionRef): Promise<void> {
+    const session = this.sessions.get(ref.sessionId);
+    if (!session) return;
+    this.clearIdleStop(session);
+    session.parked = true;
+    this.sessions.delete(ref.sessionId);
+    this.byMarker.delete(session.spec.marker);
+    await session.proc.stop(2000);
+  }
+
+  /** Number of running worker processes (for status and tests). */
+  activeWorkers(): number {
+    return [...this.sessions.values()].filter((s) => s.proc.running).length;
   }
 
   private live(ref: SessionRef): ClaudeSession {
@@ -329,7 +389,12 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   async prompt(ref: SessionRef, text: string): Promise<void> {
+    const parked = this.sessions.get(ref.sessionId);
+    if (parked && !parked.proc.running && (parked.parked || parked.status !== "busy")) {
+      this.startProcess(parked, true);
+    }
     const session = this.live(ref);
+    this.clearIdleStop(session);
     session.proc.send({
       type: "user",
       session_id: "",
@@ -344,7 +409,7 @@ export class ClaudeAdapter implements HarnessAdapter {
 
   async inspect(ref: SessionRef): Promise<SessionSnapshot> {
     const session = this.sessions.get(ref.sessionId);
-    if (!session || (!session.proc.running && session.status !== "error")) {
+    if (!session || (!session.proc.running && !session.parked && session.status !== "error")) {
       return {
         sessionId: ref.sessionId,
         status: "missing",
@@ -408,6 +473,10 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   async close(): Promise<void> {
+    for (const s of this.sessions.values()) {
+      this.clearIdleStop(s);
+      s.parked = true;
+    }
     await Promise.all([...this.sessions.values()].map((s) => s.proc.stop(2000)));
     this.sessions.clear();
     this.byMarker.clear();

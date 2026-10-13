@@ -97,6 +97,12 @@
       },
       "additionalProperties": false
     },
+    "workerIdleMinutes": {
+      "default": 10,
+      "description": "Claude Code and Codex worker processes stop after this long idle; their sessions resume on the next instruction.",
+      "type": "number",
+      "minimum": 1
+    },
     "claude": {
       "default": {},
       "type": "object",
@@ -258,9 +264,9 @@
           },
           "permissionPolicy": {
             "default": "deny",
-            "description": "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded.",
+            "description": "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded. yolo: the harness skips its permission checks and sandbox entirely (Claude Code --dangerously-skip-permissions, Codex approvalPolicy never + danger-full-access, OpenCode allow-all rule); nothing is asked or recorded.",
             "type": "string",
-            "enum": ["deny", "ask", "allow"]
+            "enum": ["deny", "ask", "allow", "yolo"]
           },
           "envAllowlist": {
             "default": [],

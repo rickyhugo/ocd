@@ -753,6 +753,20 @@ export class Supervisor {
       return;
     }
 
+    if (interaction.kind === "permission" && task.profile.permissionPolicy === "yolo") {
+      // The harness was told to skip permission checks; anything it still asks
+
+      // (e.g. protected config files) is approved without an inbox record.
+
+      await adapter.reply({ sessionId: task.sessionId! }, interaction.id, { type: "approve" });
+
+      this.store.appendEvent(taskId, "permission.yolo_approved", {
+        summary: truncate(redact(interaction.summary), 300),
+      });
+
+      return;
+    }
+
     if (interaction.kind === "permission" && task.profile.permissionPolicy === "allow") {
       // Explicit opt-in: approve this one request and keep an audit record. The
       // record is written first so a repeated event never approves twice.
@@ -1231,13 +1245,15 @@ export class Supervisor {
       for (const a of this.store.listAttention({ taskId, status: "open" }))
         this.store.settleAttention(a.id, { status: "expired" });
       // Cancelling never deletes the workspace.
-      return this.store.transition(taskId, "cancelled", {
+      const cancelled = this.store.transition(taskId, "cancelled", {
         patch: { finishedAt: this.store.now() },
         event: {
           type: "task.cancelled",
           data: { reason: reason ?? null, workspacePreserved: task.workspacePath },
         },
       });
+      this.releaseWorker(cancelled);
+      return cancelled;
     });
   }
 
@@ -1296,6 +1312,7 @@ export class Supervisor {
         });
       });
     });
+    this.releaseWorker(done);
     void this.tick();
     return done;
   }
@@ -1380,6 +1397,15 @@ export class Supervisor {
       });
       if (!needsPrompt) await this.applySnapshot(adapter, taskId, snap);
       return this.store.requireTask(taskId);
+    });
+  }
+
+  /** Finished tasks need no live worker; process-owned harnesses stop theirs. */
+  private releaseWorker(task: Task): void {
+    const adapter = this.adapters.get(task.harness);
+    if (!task.sessionId || !adapter?.release) return;
+    adapter.release({ sessionId: task.sessionId }).catch((error: unknown) => {
+      this.log.warn({ err: error, taskId: task.id }, "failed to release worker");
     });
   }
 

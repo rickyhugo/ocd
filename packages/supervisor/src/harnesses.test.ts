@@ -9,7 +9,11 @@ import { setupRepo, startHarness, waitFor, waitForState, type Harness } from "./
 // Claude Code / Codex binaries (test fixtures). No model is called.
 
 const fixtures = join(import.meta.dirname, "..", "..", "adapters", "test-fixtures");
-const harnesses: { name: "claude" | "codex"; adapter: () => HarnessAdapter; model: string }[] = [
+const harnesses: {
+  name: "claude" | "codex";
+  adapter: () => HarnessAdapter & { activeWorkers(): number };
+  model: string;
+}[] = [
   {
     name: "claude",
     adapter: () =>
@@ -83,6 +87,49 @@ for (const harness of harnesses) {
         (d) => d.task.state === "ready_for_review",
       );
       expect(done.task.sessionId).toBe(running.task.sessionId);
+    });
+  });
+}
+
+for (const harness of harnesses) {
+  describe(`${harness.name} worker processes`, () => {
+    it("stop when a task is accepted or cancelled", async () => {
+      let adapter!: HarnessAdapter & { activeWorkers(): number };
+      h = await startHarness({
+        adapters: () => [(adapter = harness.adapter())],
+        config: {
+          profiles: {
+            w: { harness: harness.name, model: harness.model, permissionPolicy: "allow" },
+          },
+        },
+      });
+      await setupRepo(h, "app", "w");
+      const done = await h.human.dispatch({
+        repo: "app",
+        title: "a",
+        instructions: "x",
+        idempotencyKey: `${harness.name}-release-a`,
+      });
+      await waitForState(h, done.task.id, "ready_for_review");
+      expect(adapter.activeWorkers()).toBe(1);
+      await h.human.acceptTask(done.task.id);
+      await waitFor(
+        () => adapter.activeWorkers(),
+        (n) => n === 0,
+      );
+
+      const hung = await h.human.dispatch({
+        repo: "app",
+        title: "b",
+        instructions: "x [hang]",
+        idempotencyKey: `${harness.name}-release-b`,
+      });
+      await waitForState(h, hung.task.id, "running");
+      await h.human.cancelTask(hung.task.id);
+      await waitFor(
+        () => adapter.activeWorkers(),
+        (n) => n === 0,
+      );
     });
   });
 }

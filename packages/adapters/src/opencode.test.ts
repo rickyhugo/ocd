@@ -183,3 +183,15 @@ describe("OpenCode prompt admission", () => {
     });
   });
 });
+
+describe("OpenCode yolo", () => {
+  it("creates sessions with an allow-all rule", async () => {
+    const { service, adapter } = setup();
+    await adapter.createSession({ ...spec, permissionPolicy: "yolo" });
+    const create = service.calls.find((c) => c.method === "session.create")!.input as Record<
+      string,
+      unknown
+    >;
+    expect(create["permissions"]).toEqual([{ action: "*", resource: "*", effect: "allow" }]);
+  });
+});

@@ -72,12 +72,17 @@ interface CodexSession {
   lastAssistantText: string | null;
   error: string | null;
   quotaLimited: boolean;
+  /** The process was stopped while idle; the thread resumes on the next prompt. */
+  parked: boolean;
+  idleTimer: NodeJS.Timeout | null;
 }
 
 export interface CodexAdapterOptions {
   /** Executable and leading args; defaults to `codex app-server`. */
   command?: [string, ...string[]];
   onError?: (error: unknown, context: string) => void;
+  /** Stop a worker process after this long idle; its thread resumes on demand. */
+  idleStopMs?: number;
 }
 
 export class CodexAdapter implements HarnessAdapter {
@@ -137,16 +142,29 @@ export class CodexAdapter implements HarnessAdapter {
 
   private async spawn(spec: SessionSpec): Promise<CodexSession> {
     // Partially initialised until thread/start or thread/resume returns an id.
-    const session = { calls: new Map(), nextId: 0 } as unknown as CodexSession;
+    const session = { parked: false, idleTimer: null } as unknown as CodexSession;
+    await this.startProcess(session, spec);
+    return session;
+  }
+
+  /** Starts an app-server for a session object and completes the handshake. */
+  private async startProcess(session: CodexSession, spec: SessionSpec): Promise<void> {
+    session.calls = new Map();
+    session.nextId = 0;
     const [cmd, ...args] = this.command;
-    session.proc = new JsonLineProcess(cmd, args, {
+    const proc = new JsonLineProcess(cmd, args, {
       cwd: spec.directory,
       env: spec.env,
       onMessage: (m) => this.onMessage(session, m as RpcMessage),
       onInvalidLine: (line) =>
         this.options.onError?.(new Error(line.slice(0, 200)), "codex stdout"),
     });
-    void session.proc.exited.then((exit) => this.onExit(session, exit));
+    session.proc = proc;
+    session.parked = false;
+    // Ignore exits of a process that has since been replaced.
+    void proc.exited.then((exit) => {
+      if (session.proc === proc) this.onExit(session, exit);
+    });
     try {
       await this.call(session, "initialize", {
         clientInfo: { name: "ocd", title: "OCD supervisor", version: "0.1.0" },
@@ -157,23 +175,59 @@ export class CodexAdapter implements HarnessAdapter {
         },
       });
     } catch (error) {
-      await session.proc.stop(500);
+      await proc.stop(500);
       throw new HarnessUnavailableError(
-        `Could not start codex app-server: ${(error as Error).message} ${session.proc.stderr()}`.trim(),
+        `Could not start codex app-server: ${(error as Error).message} ${proc.stderr()}`.trim(),
         {
           cause: error,
         },
       );
     }
-    session.proc.send({ method: "initialized" });
+    proc.send({ method: "initialized" });
     const account = (await this.call(session, "account/read", { refreshToken: false })) as {
       account: unknown;
     };
     if (!account.account) {
-      await session.proc.stop(500);
+      await proc.stop(500);
       throw new HarnessUnavailableError("Codex is not logged in. Run `codex login`.");
     }
-    return session;
+  }
+
+  private scheduleIdleStop(session: CodexSession): void {
+    this.clearIdleStop(session);
+    session.idleTimer = setTimeout(
+      () => void this.park(session),
+      this.options.idleStopMs ?? 10 * 60_000,
+    );
+    session.idleTimer.unref();
+  }
+
+  private clearIdleStop(session: CodexSession): void {
+    if (session.idleTimer) clearTimeout(session.idleTimer);
+    session.idleTimer = null;
+  }
+
+  /** Stops an idle app-server; the thread stays resumable. */
+  private async park(session: CodexSession): Promise<void> {
+    this.clearIdleStop(session);
+    if (
+      !session.proc.running ||
+      session.activeTurnId ||
+      session.status === "busy" ||
+      session.status === "waiting"
+    )
+      return;
+    session.parked = true;
+    await session.proc.stop(2000);
+  }
+
+  /** Restarts a parked session's app-server and resumes its thread. */
+  private async resumeThread(session: CodexSession): Promise<void> {
+    await this.startProcess(session, session.spec);
+    await this.call(session, "thread/resume", {
+      threadId: session.threadId,
+      ...this.threadParams(session.spec),
+    });
   }
 
   private call(
@@ -354,6 +408,7 @@ export class CodexAdapter implements HarnessAdapter {
           session.status = "idle";
           this.emit({ type: "status", sessionId, status: "idle" });
         }
+        this.scheduleIdleStop(session);
         return;
       }
       default:
@@ -371,7 +426,8 @@ export class CodexAdapter implements HarnessAdapter {
       call.reject(new Error("codex app-server exited"));
     }
     session.calls.clear();
-    if (!session.threadId || this.sessions.get(session.threadId) !== session) return;
+    if (!session.threadId || this.sessions.get(session.threadId) !== session || session.parked)
+      return;
     // An unexpected exit while working is an error; the session can be revived from disk.
     if (session.status === "busy" || session.status === "waiting") {
       session.error = `codex app-server exited (${exit.signal ?? exit.code}): ${session.proc.stderr().slice(-500)}`;
@@ -386,6 +442,14 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   private threadParams(spec: SessionSpec) {
+    if (spec.permissionPolicy === "yolo") {
+      return {
+        cwd: spec.directory,
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        sandbox: "danger-full-access",
+      };
+    }
     // Free inside the worktree; anything riskier becomes an approval request
     // that OCD answers according to the profile's permission policy.
     return {
@@ -408,6 +472,8 @@ export class CodexAdapter implements HarnessAdapter {
       lastAssistantText: session.lastAssistantText ?? null,
       error: null,
       quotaLimited: false,
+      parked: false,
+      idleTimer: null,
     } satisfies Partial<CodexSession>);
     this.sessions.set(threadId, session);
     this.byMarker.set(spec.marker, threadId);
@@ -433,7 +499,12 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   async revive(ref: SessionRef, spec: SessionSpec): Promise<void> {
-    if (this.sessions.get(ref.sessionId)?.proc.running) return;
+    const existing = this.sessions.get(ref.sessionId);
+    if (existing?.proc.running) return;
+    if (existing) {
+      await this.resumeThread(existing);
+      return;
+    }
     const session = await this.spawn(spec);
     await this.call(session, "thread/resume", {
       threadId: ref.sessionId,
@@ -441,6 +512,22 @@ export class CodexAdapter implements HarnessAdapter {
     });
     session.prompted = true;
     this.register(session, ref.sessionId, spec);
+  }
+
+  /** Ends a finished task's worker. A later reattach can still resume the thread. */
+  async release(ref: SessionRef): Promise<void> {
+    const session = this.sessions.get(ref.sessionId);
+    if (!session) return;
+    this.clearIdleStop(session);
+    session.parked = true;
+    this.sessions.delete(ref.sessionId);
+    this.byMarker.delete(session.spec.marker);
+    await session.proc.stop(2000);
+  }
+
+  /** Number of running worker processes (for status and tests). */
+  activeWorkers(): number {
+    return [...this.sessions.values()].filter((s) => s.proc.running).length;
   }
 
   private live(ref: SessionRef): CodexSession {
@@ -451,7 +538,11 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   async prompt(ref: SessionRef, text: string): Promise<void> {
+    const parked = this.sessions.get(ref.sessionId);
+    if (parked && !parked.proc.running && (parked.parked || parked.status !== "busy"))
+      await this.resumeThread(parked);
     const session = this.live(ref);
+    this.clearIdleStop(session);
     const input = [{ type: "text", text }];
     if (session.activeTurnId) {
       await this.call(session, "turn/steer", {
@@ -476,7 +567,7 @@ export class CodexAdapter implements HarnessAdapter {
 
   async inspect(ref: SessionRef): Promise<SessionSnapshot> {
     const session = this.sessions.get(ref.sessionId);
-    if (!session || (!session.proc.running && session.status !== "error")) {
+    if (!session || (!session.proc.running && !session.parked && session.status !== "error")) {
       return {
         sessionId: ref.sessionId,
         status: "missing",
@@ -522,6 +613,10 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   async close(): Promise<void> {
+    for (const s of this.sessions.values()) {
+      this.clearIdleStop(s);
+      s.parked = true;
+    }
     await Promise.all([...this.sessions.values()].map((s) => s.proc.stop(2000)));
     this.sessions.clear();
     this.byMarker.clear();
