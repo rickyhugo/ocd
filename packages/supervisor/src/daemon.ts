@@ -16,7 +16,14 @@ import {
   type SupervisorConfig,
   type SupervisorConfigInput,
 } from "./config.ts";
-import { applyMigrations, backupDb, migrationStatus, openDb, type Db } from "./db/index.ts";
+import {
+  applyMigrations,
+  backupDb,
+  defaultMigrationsFolder,
+  migrationStatus,
+  openDb,
+  type Db,
+} from "./db/index.ts";
 import type { SimulatedCrash } from "./errors.ts";
 import { ensurePrivateDir, removeStaleSocket } from "./fsutil.ts";
 import { newId, systemClock, type Clock } from "./ids.ts";
@@ -42,8 +49,6 @@ export interface DaemonOptions {
   notifier?: Notifier;
   logger?: Logger;
   foreground?: boolean;
-  /** Apply pending migrations to an existing database (after a backup). */
-  migrate?: boolean;
   clock?: Clock;
   hooks?: SupervisorHooks;
 }
@@ -74,12 +79,12 @@ export async function resolveRepos(
   return repos;
 }
 
-export class PendingMigrationsError extends Error {
-  constructor(pending: number) {
+export class DatabaseTooNewError extends Error {
+  constructor(ahead: number) {
     super(
-      `The OCD database has ${pending} pending migration(s). Run \`ocd db migrate\` (it backs up first).`,
+      `The OCD database has ${ahead} migration(s) from a newer OCD version. Update OCD, or restore an older backup from ~/.ocd/backups.`,
     );
-    this.name = "PendingMigrationsError";
+    this.name = "DatabaseTooNewError";
   }
 }
 
@@ -98,29 +103,40 @@ export interface Daemon {
 }
 
 /** Opens the database, creating it on first use and refusing silent upgrades. */
+/**
+ * Opens the database and applies pending reviewed migrations. An existing
+ * database is backed up first; all pending migrations run in one transaction,
+ * so a failure leaves it unchanged. A database newer than this code is refused.
+ */
 export async function prepareDatabase(
   paths: OcdPaths,
-  options: { migrate?: boolean; logger?: Logger } = {},
+  options: { logger?: Logger; migrationsFolder?: string } = {},
 ): Promise<Db> {
+  const folder = options.migrationsFolder ?? defaultMigrationsFolder();
   const db = openDb(paths.db);
-  const status = migrationStatus(db);
-  if (status.pending > 0) {
-    if (status.fresh) {
-      applyMigrations(db);
-    } else if (options.migrate) {
-      const backup = join(
-        paths.backups,
-        `pre-migrate-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.db`,
+  try {
+    const status = migrationStatus(db, folder);
+    if (status.ahead > 0) throw new DatabaseTooNewError(status.ahead);
+    if (status.pending > 0) {
+      if (!status.fresh) {
+        const backup = join(
+          paths.backups,
+          `pre-migrate-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.db`,
+        );
+        await backupDb(db, backup);
+        options.logger?.info({ backup }, "backed up database before migrating");
+      }
+      applyMigrations(db, folder);
+      options.logger?.info(
+        { applied: status.pending, total: status.available },
+        "applied database migrations",
       );
-      await backupDb(db, backup);
-      options.logger?.info({ backup }, "backed up database before migrating");
-      applyMigrations(db);
-    } else {
-      db.$client.close();
-      throw new PendingMigrationsError(status.pending);
     }
+    return db;
+  } catch (error) {
+    db.$client.close();
+    throw error;
   }
-  return db;
 }
 
 export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
@@ -149,7 +165,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   let db: Db | null = null;
   let app: FastifyInstance | null = null;
   try {
-    db = await prepareDatabase(paths, { migrate: options.migrate ?? false, logger });
+    db = await prepareDatabase(paths, { logger });
     const store = new Store(db, clock);
     const adapters = await options.adapters({ config, logger });
     const workspaces = new WorkspaceManager(paths.workspaces);

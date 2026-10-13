@@ -40,6 +40,8 @@ export interface MigrationStatus {
   applied: number;
   available: number;
   pending: number;
+  /** Migrations recorded in the database that this code does not know (it is newer). */
+  ahead: number;
   /** True for a database with no OCD tables at all. */
   fresh: boolean;
 }
@@ -63,6 +65,7 @@ export function migrationStatus(
       applied: 0,
       available: files.length,
       pending: files.length,
+      ahead: 0,
       fresh: userTables.n === 0,
     };
   }
@@ -70,7 +73,13 @@ export function migrationStatus(
     at: number | null;
   };
   const pending = files.filter((file) => last.at === null || file.folderMillis > last.at).length;
-  return { applied: files.length - pending, available: files.length, pending, fresh: false };
+  const newestKnown = Math.max(0, ...files.map((f) => f.folderMillis));
+  const ahead = (
+    client
+      .prepare("SELECT count(*) AS n FROM __drizzle_migrations WHERE created_at > ?")
+      .get(newestKnown) as { n: number }
+  ).n;
+  return { applied: files.length - pending, available: files.length, pending, ahead, fresh: false };
 }
 
 export function applyMigrations(db: Db, migrationsFolder = defaultMigrationsFolder()): void {
