@@ -13,6 +13,7 @@
   "dependencies": {
     "@ocd/adapters": "workspace:*",
     "@ocd/core": "workspace:*",
-    "@ocd/supervisor": "workspace:*"
+    "@ocd/supervisor": "workspace:*",
+    "jsonc-parser": "3.3.1"
   }
 }

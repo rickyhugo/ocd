@@ -10,6 +10,7 @@ import {
   DispatchTaskInput,
   HEADER_ACTOR,
   HEADER_API_VERSION,
+  HEADER_AUTHORIZATION,
   HEADER_DIRECTORY,
   HEADER_SESSION,
   RecallInput,
@@ -26,6 +27,8 @@ import {
   type ShutdownReport,
   type TaskDetail,
 } from "@ocd/core";
+import { timingSafeEqual } from "node:crypto";
+
 import Fastify, {
   LogController,
   type FastifyBaseLogger,
@@ -50,6 +53,8 @@ declare module "fastify" {
 }
 
 export interface ApiDeps {
+  /** Every request must present it; only OCD's own clients can read it. */
+  apiToken: string;
   store: Store;
   supervisor: Supervisor;
   memory: MemoryService;
@@ -77,7 +82,18 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   app.decorateRequest("sessionId", null);
   app.decorateRequest("directory", null);
 
+  const expected = Buffer.from(`Bearer ${deps.apiToken}`);
   app.addHook("onRequest", async (req) => {
+    // Authentication before anything else: the actor header below only
+    // chooses between trusted clients, it never grants authority by itself.
+    const presented = Buffer.from(String(req.headers[HEADER_AUTHORIZATION] ?? ""));
+    if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+      throw new ApiError(
+        401,
+        "unauthenticated",
+        "OCD's API only accepts its own clients (the ocd CLI, the TUI and the manager plugin). Workers report through their final message instead.",
+      );
+    }
     const version = req.headers[HEADER_API_VERSION];
     if (version === undefined)
       throw new ApiError(400, "api_version_required", `Missing ${HEADER_API_VERSION} header`);

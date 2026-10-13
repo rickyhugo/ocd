@@ -1,9 +1,12 @@
+import { join } from "node:path";
+
 import {
   API_VERSION,
   DispatchTaskInput,
   LIVE_STATES,
   REPORT_INSTRUCTIONS,
   TAKEOVER_STATES,
+  workerOcdEnv,
   parseWorkerReport,
   redact,
   truncate,
@@ -52,6 +55,8 @@ export interface SupervisorHooks {
 }
 
 export interface SupervisorOptions {
+  /** Per-task OCD homes for workers (see workerOcdEnv); never the live home. */
+  sandboxRoot: string;
   store: Store;
   config: SupervisorConfig;
   adapters: HarnessAdapter[];
@@ -405,6 +410,7 @@ export class Supervisor {
   }
 
   private specFor(task: Task, run: WorkerRun): SessionSpec {
+    const isolationEnv = workerOcdEnv(join(this.o.sandboxRoot, task.id));
     return {
       taskId: task.id,
       runId: run.id,
@@ -414,7 +420,9 @@ export class Supervisor {
       model: task.model,
       agent: task.profile.agent,
       permissionPolicy: task.profile.permissionPolicy,
-      env: filteredEnv(task.profile.envAllowlist),
+      // The sandbox wins over anything a profile allowlists.
+      env: { ...filteredEnv(task.profile.envAllowlist), ...isolationEnv },
+      isolationEnv,
     };
   }
 
@@ -1342,8 +1350,9 @@ export class Supervisor {
         throw conflict("not_supported", `${task.harness} sessions cannot be opened interactively`);
       const ref = { sessionId: task.sessionId };
       // Already manual: just say again how to open the session.
+      const env = workerOcdEnv(join(this.o.sandboxRoot, task.id));
       if (task.state === "manual")
-        return { task, command: adapter.interactiveCommand(ref), cwd: task.workspacePath };
+        return { task, command: adapter.interactiveCommand(ref), cwd: task.workspacePath, env };
       // Leave the live states first: an interrupted worker reports idle, which
       // must not be read as a finished turn.
       const manual = this.store.tx(() => {
@@ -1371,7 +1380,12 @@ export class Supervisor {
       }
       // A process-owned worker must be gone before the human resumes its session.
       await adapter.release?.(ref);
-      return { task: manual, command: adapter.interactiveCommand(ref), cwd: task.workspacePath };
+      return {
+        task: manual,
+        command: adapter.interactiveCommand(ref),
+        cwd: task.workspacePath,
+        env,
+      };
     });
   }
 

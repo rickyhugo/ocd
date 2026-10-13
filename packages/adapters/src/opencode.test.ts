@@ -16,6 +16,7 @@ const spec: SessionSpec = {
   agent: "build",
   permissionPolicy: "ask",
   env: {},
+  isolationEnv: { OCD_HOME: "/sandbox/t_1", OCD_SOCKET: "/sandbox/t_1/run/ocd.sock" },
 };
 
 let adapter: OpenCodeAdapter | null = null;
@@ -61,6 +62,23 @@ describe("OpenCode adapter", () => {
     const other = await setup(new FakeOpenCodeService("2.1.0")).adapter.probe();
     expect(other.available).toBe(true);
     expect(other.problems[0]).toMatch(/untested/);
+  });
+
+  it("isolates every worker session from the live OCD, also when adopting one after a crash", async () => {
+    const { service, adapter } = setup();
+    const ref = await adapter.createSession(spec);
+    const env = service.calls.filter((c) => c.method === "session.environment");
+    expect(env.map((c) => c.input)).toEqual([
+      { sessionID: ref.sessionId, variables: spec.isolationEnv },
+    ]);
+    const methods = service.calls.map((c) => c.method);
+    // Isolated before anything can prompt it.
+    expect(methods.indexOf("session.environment")).toBeGreaterThan(
+      methods.indexOf("session.create"),
+    );
+    expect(methods).not.toContain("session.prompt");
+    await adapter.findSession(spec);
+    expect(service.calls.filter((c) => c.method === "session.environment")).toHaveLength(2);
   });
 
   it("creates sessions in the workspace with a marker, model, and permission guard", async () => {

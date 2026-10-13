@@ -12,11 +12,22 @@ function recorder(windows = "") {
 }
 
 describe("session windows", () => {
-  const base = { taskId: "t_mv6abc123456", cwd: "/ws/t 1", command: ["claude", "--resume", "s-1"] };
+  const base = {
+    taskId: "t_mv6abc123456",
+    cwd: "/ws/t 1",
+    command: ["claude", "--resume", "s-1"],
+  };
 
-  it("opens a named tmux window in the worktree", async () => {
+  it("opens a named tmux window in the worktree, inside the worker sandbox", async () => {
     const { exec, calls } = recorder("@1\tzsh\n");
-    expect(await openSessionWindow({ ...base, env: { TMUX: "x" }, exec })).toBe("ocd-123456");
+    expect(
+      await openSessionWindow({
+        ...base,
+        sessionEnv: { OCD_HOME: "/sb/t" },
+        env: { TMUX: "x" },
+        exec,
+      }),
+    ).toBe("ocd-123456");
     expect(calls.at(-1)).toEqual([
       "tmux",
       "new-window",
@@ -24,6 +35,8 @@ describe("session windows", () => {
       "ocd-123456",
       "-c",
       "/ws/t 1",
+      "-e",
+      "OCD_HOME=/sb/t",
       "claude",
       "--resume",
       "s-1",
@@ -43,6 +56,8 @@ describe("session windows", () => {
     const { exec, calls } = recorder();
     expect(await openSessionWindow({ ...base, env: {}, exec })).toBeNull();
     expect(calls).toEqual([]);
-    expect(shellLine(base.cwd, base.command)).toBe("cd '/ws/t 1' && claude --resume s-1");
+    expect(shellLine(base.cwd, base.command, { OCD_HOME: "/sb/t" })).toBe(
+      "cd '/ws/t 1' && OCD_HOME=/sb/t claude --resume s-1",
+    );
   });
 });

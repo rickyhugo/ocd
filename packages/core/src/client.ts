@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { request } from "node:http";
 
 import type {
@@ -24,6 +25,7 @@ import type {
   TaskDetail,
   TaskFilter,
 } from "./schemas.ts";
+import { apiTokenPath } from "./paths.ts";
 import {
   API_VERSION,
   HEADER_ACTOR,
@@ -63,7 +65,15 @@ export interface ClientOptions {
   /** Working directory of that session; decides whether it is the manager. */
   directory?: string;
   timeoutMs?: number;
+  /**
+   * API token. Defaults to reading the token file next to the socket on each
+   * request, so a supervisor restart or token rotation needs no new client.
+   */
+  token?: string;
 }
+
+/** HTTP header carrying the API token. */
+export const HEADER_AUTHORIZATION = "authorization";
 
 type Query = Record<string, string | number | boolean | string[] | undefined>;
 
@@ -76,6 +86,15 @@ function toQuery(query: Query | undefined): string {
   }
   const text = params.toString();
   return text ? `?${text}` : "";
+}
+
+function readToken(socketPath: string): string | null {
+  try {
+    return readFileSync(apiTokenPath(socketPath), "utf8").trim() || null;
+  } catch {
+    // No token file: requests go out unauthenticated and are refused.
+    return null;
+  }
 }
 
 /** Typed client for the supervisor's HTTP API over its Unix socket. */
@@ -97,6 +116,8 @@ export class OcdClient {
       [HEADER_API_VERSION]: String(API_VERSION),
       [HEADER_ACTOR]: this.options.actor,
     };
+    const token = this.options.token ?? readToken(this.options.socketPath);
+    if (token) headers[HEADER_AUTHORIZATION] = `Bearer ${token}`;
     if (this.options.sessionId) headers[HEADER_SESSION] = this.options.sessionId;
     if (this.options.directory)
       headers[HEADER_DIRECTORY] = encodeURIComponent(this.options.directory);

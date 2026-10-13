@@ -199,14 +199,19 @@ export default Plugin.define({
 
     /** Opens a taken-over session: a tmux window when the TUI runs in tmux, else the command to run. */
     const openSession = async (r: TakeOverResult) => {
-      const window = await openSessionWindow({ taskId: r.task.id, cwd: r.cwd, command: r.command });
+      const window = await openSessionWindow({
+        taskId: r.task.id,
+        cwd: r.cwd,
+        command: r.command,
+        sessionEnv: r.env,
+      });
       if (window) {
         toast(`Opened in tmux window ${window}; it keeps running if you close the terminal`);
         return;
       }
       await ctx.ui.dialog.alert({
         title: "Drive the session yourself",
-        message: `Run this in a terminal (inside tmux it keeps running after you close the terminal):\n\n${shellLine(r.cwd, r.command)}\n\nHand it back from the sidebar or with /giveback.`,
+        message: `Run this in a terminal (inside tmux it keeps running after you close the terminal):\n\n${shellLine(r.cwd, r.command, r.env)}\n\nHand it back from the sidebar or with /giveback.`,
       });
     };
 

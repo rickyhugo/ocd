@@ -250,9 +250,11 @@ export type GiveBackInput = z.input<typeof GiveBackInput>;
 /** What the human runs to drive a taken-over session. */
 export interface TakeOverResult {
   task: Task;
-  /** Run in `cwd`, the task's worktree. */
+  /** Run in `cwd`, the task's worktree, with `env` set. */
   command: string[];
   cwd: string;
+  /** The worker sandbox environment: the session stays isolated from the live OCD. */
+  env: Record<string, string>;
 }
 
 export const ResumeTaskInput = z.object({

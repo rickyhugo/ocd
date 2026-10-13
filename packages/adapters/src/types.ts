@@ -36,8 +36,15 @@ export interface SessionSpec {
   model: string;
   agent: string | null;
   permissionPolicy: PermissionPolicy;
-  /** Already filtered to the profile's allowlist. */
+  /** Already filtered to the profile's allowlist; includes `isolationEnv`. */
   env: Record<string, string>;
+  /**
+   * Variables every shell of the worker must see, overriding the harness's
+   * own environment: they point `ocd` at a per-task sandbox. Process-owned
+   * harnesses get them through `env`; service-owned ones must set them on
+   * the session, and must not start a worker without them.
+   */
+  isolationEnv: Record<string, string>;
 }
 
 export interface SessionRef {
