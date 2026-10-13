@@ -3,7 +3,7 @@ import type { Attention, Task } from "@ocd/core";
 // The sidebar's view model: what to show, in which order, with which emphasis.
 // Pure, so it is tested without a terminal.
 
-export type SectionKey = "needs" | "review" | "running" | "stuck" | "queued";
+export type SectionKey = "needs" | "review" | "stuck" | "running" | "queued" | "recent";
 export type Tone = "warning" | "success" | "accent" | "error" | "muted";
 
 export interface Row {
@@ -20,6 +20,7 @@ export interface Row {
 export interface Section {
   key: SectionKey;
   label: string;
+  glyph: string;
   tone: Tone;
   rows: Row[];
   /** Open unless the human toggled it: urgent sections open, background ones closed. */
@@ -27,15 +28,22 @@ export interface Section {
 }
 
 export interface SidebarModel {
+  /** Sections with open work, most urgent first, then recently finished work. */
   sections: Section[];
-  /** One line for the header, zero counts left out. */
-  summary: { text: string; tone: Tone }[];
+  /** Compact header counts ("! 1  ✓ 2  ● 3"), one per non-empty open-work section. */
+  counts: { glyph: string; count: number; tone: Tone; label: string }[];
   /** Human-resolvable attention items; shown even when the sidebar is collapsed. */
   urgent: Row[];
+  /** No open work: the sidebar shows "idle" and recent work instead of sections. */
+  idle: boolean;
+  recent: Row[];
 }
 
 /** No activity for this long marks a running task as quiet. */
 export const QUIET_MS = 10 * 60_000;
+/** Finished tasks stay under "Done" this long. */
+export const RECENT_MS = 24 * 3_600_000;
+const RECENT_MAX = 5;
 
 /** "now", "4m", "2h", "3d". */
 export function age(iso: string | null, now: number): string {
@@ -65,7 +73,16 @@ const BLOCKING = new Set<Attention["kind"]>([
   "ambiguous_launch",
 ]);
 
-export function buildSidebar(tasks: Task[], attention: Attention[], now: number): SidebarModel {
+/**
+ * @param tasks open tasks (anything not completed or cancelled)
+ * @param finished recently completed or cancelled tasks, newest first
+ */
+export function buildSidebar(
+  tasks: Task[],
+  attention: Attention[],
+  now: number,
+  finished: Task[] = [],
+): SidebarModel {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const human = attention.filter((a) => a.status === "open" && a.resolvableBy === "human");
   // Blocking items go to "Needs you". Review, failure and stall items belong to
@@ -106,16 +123,20 @@ export function buildSidebar(tasks: Task[], attention: Attention[], now: number)
     (t) => {
       const quiet = t.lastActivityAt !== null && now - Date.parse(t.lastActivityAt) > QUIET_MS;
       return {
-        glyph: t.state === "blocked" ? "‖" : "▸",
+        glyph: t.state === "blocked" ? "‖" : quiet ? "○" : "●",
         tone: quiet || t.state === "blocked" ? "muted" : "accent",
-        meta: quiet ? `quiet ${age(t.lastActivityAt, now)}` : age(t.startedAt ?? t.createdAt, now),
+        meta: quiet
+          ? `quiet ${age(t.lastActivityAt, now)}`
+          : t.state === "starting"
+            ? "starting"
+            : age(t.startedAt ?? t.createdAt, now),
       };
     },
   );
   const stuck = rows(
     (t) => t.state === "failed" || t.state === "interrupted" || t.state === "needs_attention",
     (t) => ({
-      glyph: t.state === "failed" ? "✗" : t.state === "interrupted" ? "■" : "!",
+      glyph: "✗",
       tone: "error",
       meta: t.state === "needs_attention" ? "attention" : t.state,
     }),
@@ -124,61 +145,93 @@ export function buildSidebar(tasks: Task[], attention: Attention[], now: number)
     (t) => t.state === "queued",
     (t) => ({ glyph: "·", tone: "muted", meta: age(t.createdAt, now) }),
   );
+  const recent: Row[] = finished
+    .filter((t) => t.finishedAt && now - Date.parse(t.finishedAt) < RECENT_MS)
+    .toSorted((a, b) => (b.finishedAt ?? "").localeCompare(a.finishedAt ?? ""))
+    .slice(0, RECENT_MAX)
+    .map((t) => ({
+      key: t.id,
+      glyph: t.state === "cancelled" ? "–" : "✓",
+      tone: "muted",
+      title: t.title,
+      // A kept worktree is worth knowing about: it can be cleaned up from here.
+      meta: `${t.workspacePath ? "kept · " : ""}${age(t.finishedAt, now)}`,
+      task: t,
+      attention: null,
+    }));
 
-  const sections: Section[] = [
+  const open: Section[] = [
     {
-      key: "needs" as const,
+      key: "needs",
       label: "Needs you",
-      tone: "warning" as const,
+      glyph: "!",
+      tone: "warning",
       rows: needs,
       openByDefault: true,
     },
     {
-      key: "review" as const,
+      key: "review",
       label: "Review",
-      tone: "success" as const,
+      glyph: "✓",
+      tone: "success",
       rows: review,
       openByDefault: true,
     },
+    { key: "stuck", label: "Stuck", glyph: "✗", tone: "error", rows: stuck, openByDefault: true },
     {
-      key: "stuck" as const,
-      label: "Stuck",
-      tone: "error" as const,
-      rows: stuck,
-      openByDefault: true,
-    },
-    {
-      key: "running" as const,
+      key: "running",
       label: "Running",
-      tone: "accent" as const,
+      glyph: "●",
+      tone: "accent",
       rows: running,
       openByDefault: running.length <= 5,
     },
     {
-      key: "queued" as const,
+      key: "queued",
       label: "Queued",
-      tone: "muted" as const,
+      glyph: "·",
+      tone: "muted",
       rows: queued,
       openByDefault: false,
     },
-  ].filter((s) => s.rows.length > 0);
+  ];
+  const nonEmpty = open.filter((s) => s.rows.length > 0);
+  const idle = nonEmpty.length === 0;
+  const sections: Section[] = [
+    ...nonEmpty,
+    ...(recent.length && !idle
+      ? [
+          {
+            key: "recent" as const,
+            label: "Done today",
+            glyph: "✓",
+            tone: "muted" as const,
+            rows: recent,
+            openByDefault: false,
+          },
+        ]
+      : []),
+  ];
 
-  const summary: { text: string; tone: Tone }[] = [];
-  if (needs.length) summary.push({ text: `${needs.length} need you`, tone: "warning" });
-  if (stuck.length) summary.push({ text: `${stuck.length} stuck`, tone: "error" });
-  if (review.length) summary.push({ text: `${review.length} to review`, tone: "success" });
-  if (running.length) summary.push({ text: `${running.length} running`, tone: "accent" });
-  if (queued.length) summary.push({ text: `${queued.length} queued`, tone: "muted" });
-  if (!summary.length) summary.push({ text: "idle", tone: "muted" });
-
-  return { sections, summary, urgent: needs };
+  return {
+    sections,
+    counts: nonEmpty.map((s) => ({
+      glyph: s.glyph,
+      count: s.rows.length,
+      tone: s.tone,
+      label: s.label,
+    })),
+    urgent: needs,
+    idle,
+    recent,
+  };
 }
 
-export type QuickAction =
-  | { label: string; message: string }
-  | { label: string; kind: "message" | "details" };
+export type ActionKind = "message" | "details" | "accept" | "accept_clean" | "clean";
+/** A message goes to the manager, which acts on it; a kind runs directly against OCD. */
+export type QuickAction = { label: string; message: string } | { label: string; kind: ActionKind };
 
-/** What clicking a row offers. Quick actions are messages to the manager, which acts on them. */
+/** What clicking a row offers, for the row's current state. */
 export function actionsFor(row: Row): QuickAction[] {
   const message = { label: "Message the manager about it…", kind: "message" as const };
   const details = { label: "Details", kind: "details" as const };
@@ -195,11 +248,12 @@ export function actionsFor(row: Row): QuickAction[] {
   switch (row.task?.state) {
     case "ready_for_review":
       return [
+        { label: "Accept and clean up", kind: "accept_clean" },
+        { label: "Accept (keep the worktree)", kind: "accept" },
         {
           label: "Summarize the result",
           message: "Summarize the result and anything I should check before accepting.",
         },
-        { label: "Accept it", message: "I've reviewed it: accept it." },
         { label: "Accept and open a PR", message: "Accept it and open a pull request." },
         message,
         details,
@@ -219,6 +273,15 @@ export function actionsFor(row: Row): QuickAction[] {
       return [
         { label: "What happened?", message: "What happened, and what do you suggest?" },
         { label: "Retry it", message: "Look at what went wrong and retry it if that is safe." },
+        message,
+        details,
+      ];
+    case "completed":
+    case "cancelled":
+      return [
+        ...(row.task.workspacePath
+          ? [{ label: "Clean up the worktree", kind: "clean" as const }]
+          : []),
         message,
         details,
       ];

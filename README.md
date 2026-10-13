@@ -160,6 +160,11 @@ which backend is in use.
 | macOS    | `osascript` fallback                                   | no (macOS opens Script Editor)                      |
 | Linux    | `notify-send` (libnotify 0.7.9+)                       | yes; the window is raised on Hyprland, sway and X11 |
 
+terminal-notifier needs macOS notification permission (System Settings →
+Notifications). Until it has it, OCD falls back to osascript so nothing is
+lost, and it tries terminal-notifier again each time. `ocd doctor --notify`
+sends a test notification and says which path delivered it.
+
 The terminal is detected from the tmux client (Ghostty, kitty, WezTerm,
 Alacritty, iTerm2, Terminal, …); set `notifications.focusApp` to a macOS bundle
 id or Linux window class to override it. GNOME and KDE on Wayland do not let
@@ -180,16 +185,28 @@ The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
 The plugin's TUI part (`packages/plugin/tui.tsx`, loaded by OpenCode from the
 plugin directory) adds:
 
-- **Sidebar:** `OCD` with a coloured one-line summary (`1 need you · 2 to
-  review · 3 running`). Anything blocked on you (permissions, questions,
-  decisions) is always listed. Click the header to expand the Needs you /
-  Review / Stuck / Running / Queued sections; each can be opened or closed and
-  the choice is remembered. Rows show how long ago a task finished or started,
-  and running tasks with no activity for 10 minutes show as `quiet`. Click a
-  row for actions that fit its state: _Summarize the result_, _Accept it_,
-  _Accept and open a PR_, _Status update_, _Cancel it_, _What happened?_,
-  _Retry it_, a free-form message, or details. Each action is a message to the
-  manager, which acts on it as your explicit instruction.
+- **Sidebar:** one line, `▸ OCD  ! 1  ✓ 2  ✗ 1  ● 3`: what needs you, what
+  is ready for review, what is stuck, and what is running. Items blocked on you
+  (permissions, questions, decisions) are always listed below it. Click the
+  line to expand Needs you / Review / Stuck / Running / Queued / Done today;
+  each section opens and closes on its own and the choice is remembered. With
+  nothing open it reads `OCD  idle · 2 done today` and lists what finished, and
+  `kept` marks a finished task whose worktree is still on disk. When the
+  supervisor is down it says `offline`. Rows show ages, and running tasks with no
+  activity for 10 minutes show as quiet (`○`).
+- **Row actions** (click a row) fit the task's state:
+  - Ready for review: **Accept and clean up**, **Accept (keep the worktree)**,
+    Summarize the result, Accept and open a PR.
+  - Finished with a kept worktree: **Clean up the worktree**.
+  - Running: Status update, Cancel it. Failed: What happened?, Retry it.
+  - Always: a free-form message to the manager, and Details.
+
+  Bold actions call OCD directly as you. Cleanup never forces: a worktree with
+  uncommitted changes, or commits that exist on no other branch, is kept and
+  the toast says how to proceed (open a PR, or `ocd task cleanup <id>
+  --force`). The other actions are messages to the manager, which acts on them
+  as your explicit instruction.
+
 - **`/task`:** reference a task when talking to the manager. `/task` opens a
   searchable picker, then asks for your message; `/task <id or words> <message>`
   skips the picker when it matches one task. The manager receives "Regarding OCD

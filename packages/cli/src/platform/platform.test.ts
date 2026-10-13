@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { shellQuote, type Exec } from "./exec.ts";
 import { focusManager, managerPane } from "./focus.ts";
 import { LinuxPlatform, MacPlatform } from "./index.ts";
-import { NotifySendNotifier, OsascriptNotifier, TerminalNotifier } from "./notify.ts";
+import {
+  FallbackNotifier,
+  NotifySendNotifier,
+  OsascriptNotifier,
+  TerminalNotifier,
+} from "./notify.ts";
 import { identifyTerminal } from "./terminal.ts";
 
 const dirs: string[] = [];
@@ -65,6 +70,33 @@ describe("notifiers", () => {
     expect(calls[0]?.join(" ")).not.toContain("sk-abcdefghijklmnopqrstuvwxyz0123");
     await new OsascriptNotifier({ exec }).notify({ title: 'a" & b', body: "c" });
     expect(calls[1]?.slice(-2)).toEqual(['a" & b', "c"]);
+  });
+
+  it("falls back when terminal-notifier lacks permission, and recovers once allowed", async () => {
+    let allowed = false;
+    const calls: string[] = [];
+    const exec: Exec = async (cmd) => {
+      calls.push(cmd);
+      if (cmd === "/bin/tn" && !allowed)
+        return {
+          code: 3,
+          stdout: "",
+          stderr:
+            "Could not request notification permission: Notifications are not allowed for this application",
+        };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const notifier = new FallbackNotifier(
+      new TerminalNotifier({ binary: "/bin/tn", onClick: ["focus"], exec }),
+      new OsascriptNotifier({ exec }),
+    );
+    await notifier.notify({ title: "t", body: "b" });
+    expect(calls).toEqual(["/bin/tn", "/usr/bin/osascript"]);
+    expect(notifier.lastError?.message).toMatch(/not allowed/);
+    allowed = true;
+    await notifier.notify({ title: "t", body: "b" });
+    expect(calls.slice(2)).toEqual(["/bin/tn"]);
+    expect(notifier.lastError).toBeNull();
   });
 
   it("surfaces a failing backend so the outbox retries", async () => {

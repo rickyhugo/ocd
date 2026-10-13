@@ -26,6 +26,7 @@ import {
 
 import { buildAdapters, buildManagerChannel, probeHarnesses } from "./harnesses.ts";
 import {
+  FallbackNotifier,
   currentPlatform,
   execCommand,
   findBinary,
@@ -46,7 +47,8 @@ Supervisor
                                     Claude Code / Codex workers are running unless --force
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
-  ocd doctor                        Check harnesses, the OpenCode service, notifications and the service manager
+  ocd doctor [--notify]             Check harnesses, the OpenCode service, notifications and the service manager;
+                                    --notify sends a test notification (click it to try \`ocd focus\`)
   ocd focus                         Switch to the manager session (tmux pane + terminal window); what a notification click runs
 
 Configuration (human only)
@@ -158,6 +160,7 @@ async function main(argv: string[]): Promise<void> {
       mode: { type: "string" },
       approve: { type: "boolean" },
       force: { type: "boolean" },
+      notify: { type: "boolean" },
       method: { type: "string" },
       draft: { type: "boolean" },
       commit: { type: "boolean" },
@@ -390,11 +393,26 @@ async function main(argv: string[]): Promise<void> {
       const harnesses = await probeHarnesses();
       const notifier = await platform.notifier({ onClick: focusCommand() });
       const tmux = locateBinary("tmux");
+      let delivery: string | null = null;
+      if (flags.notify) {
+        try {
+          await notifier.notify({
+            title: "OCD test notification",
+            body: notifier.clickable ? "Click to jump to the manager session" : "Delivered",
+          });
+          const fellBack = notifier instanceof FallbackNotifier ? notifier.lastError : null;
+          delivery = fellBack
+            ? `sent with the fallback (not clickable): ${fellBack.message}`
+            : "sent";
+        } catch (error) {
+          delivery = `failed: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
       const report = {
         harnesses,
         platform: {
           name: platform.name,
-          notifications: { backend: notifier.backend, clickable: notifier.clickable },
+          notifications: { backend: notifier.backend, clickable: notifier.clickable, delivery },
           tmux,
           service: platform.service?.kind ?? null,
         },
@@ -415,6 +433,7 @@ async function main(argv: string[]): Promise<void> {
               `${r.harness.padEnd(9)} ${r.available ? "ok" : "--"} ${r.version ?? ""} ${r.problems.join("; ")}`,
           ),
           `${"notify".padEnd(9)} ${notifier.backend}${notifier.clickable ? ", click opens the manager" : ", not clickable"}`,
+          ...(delivery ? [`${"".padEnd(9)} test notification ${delivery}`] : []),
           `${"tmux".padEnd(9)} ${tmux ?? "not found (ocd focus can only raise the terminal)"}`,
           `${"service".padEnd(9)} ${platform.service?.kind ?? "none"} (${platform.name})`,
           ...hints,
