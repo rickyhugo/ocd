@@ -8,6 +8,9 @@ import {
   OcdApiError,
   OcdClient,
   SupervisorUnavailableError,
+  buildSpill,
+  collectSpill,
+  formatSpill,
   resolveOcdPaths,
   type Attention,
   type AttentionResponse,
@@ -67,6 +70,8 @@ Configuration (human only)
   ocd manager                       Configured manager directory and active session
 
 Tasks
+  ocd spill                         Read-only summary of all open work: running, blocked, manual, stuck,
+                                    queued and ready for review (/spill in the manager's TUI)
   ocd dispatch <repo> <title> --instructions TEXT [--profile P] [--criteria TEXT]... [--key KEY]
   ocd task list [--all] [--repo R]
   ocd task show <id>
@@ -428,6 +433,11 @@ async function main(argv: string[]): Promise<void> {
           ...(s.github ? [`github (gh): ${describeGh(s.github)}`] : []),
         ].join("\n"),
       );
+      return;
+    }
+    case "spill": {
+      const snapshot = buildSpill(await collectSpill(client));
+      print(snapshot, json, () => formatSpill(snapshot));
       return;
     }
     case "pause":
