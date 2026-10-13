@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { OpenCodeAdapter, parseModel } from "./opencode.ts";
 import { FakeOpenCodeService } from "./testing.ts";
-import type { AdapterEvent, SessionSpec } from "./types.ts";
+import type { AdapterEvent, SessionSpec, TranscriptPage } from "./types.ts";
 
 const spec: SessionSpec = {
   taskId: "t_1",
@@ -211,5 +211,119 @@ describe("OpenCode yolo", () => {
       unknown
     >;
     expect(create["permissions"]).toEqual([{ action: "*", resource: "*", effect: "allow" }]);
+  });
+});
+
+describe("OpenCode transcript", () => {
+  function assistant(service: FakeOpenCodeService, sessionID: string, n: number) {
+    return service.addMessage(sessionID, {
+      type: "assistant",
+      time: { created: 1_000 * n },
+      content: [{ type: "text", text: `step ${n}` }],
+    });
+  }
+
+  it("reads visible history read-only: text and tools, no prompts or reasoning", async () => {
+    const { service, adapter } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "secret instructions");
+    service.addMessage(ref.sessionId, { type: "synthetic", text: "OCD internal note" });
+    service.addMessage(ref.sessionId, {
+      type: "assistant",
+      time: { created: 5_000 },
+      content: [
+        { type: "reasoning", text: "RAW-REASONING" },
+        { type: "text", text: "Running tests" },
+        {
+          type: "tool",
+          id: "call_1",
+          name: "bash",
+          time: { created: 6_000 },
+          state: {
+            status: "completed",
+            input: { command: "npm test", password: "hunter22" },
+            content: [{ type: "text", text: "1 passed" }],
+          },
+        },
+        {
+          type: "tool",
+          id: "call_2",
+          name: "read",
+          time: { created: 7_000 },
+          state: { status: "error", input: {}, error: { type: "x", message: "ENOENT" } },
+        },
+      ],
+      error: { type: "provider", message: "overloaded" },
+    });
+    service.addMessage(ref.sessionId, {
+      type: "shell",
+      shellID: "sh_1",
+      command: "ls",
+      status: "exited",
+      exit: 0,
+      output: { output: "a.ts", cursor: 0, size: 4, truncated: false },
+    });
+    const before = service.calls.length;
+    const page = (await adapter.transcript(ref, {
+      limit: 30,
+      before: null,
+      reasoningSummaries: true,
+    }))!;
+    // Only message.list was called: nothing created, prompted, resumed or interrupted.
+    expect(service.calls.slice(before).map((c) => c.method)).toEqual(["message.list"]);
+    expect(page.source).toBe("native_history");
+    expect(page.reasoningSummaries).toBe("unsupported");
+    expect(page.entries.map((e) => [e.kind, e.text ?? e.tool!.name])).toEqual([
+      ["message", "Running tests"],
+      ["tool", "bash"],
+      ["tool", "read"],
+      ["message", "Error: overloaded"],
+      ["tool", "shell"],
+    ]);
+    expect(page.entries[1]).toMatchObject({
+      id: "tool:call_1",
+      at: new Date(6_000).toISOString(),
+      tool: { status: "completed", output: "1 passed" },
+    });
+    expect(page.entries[1]!.tool!.input).toContain('"password":"[REDACTED]"');
+    expect(page.entries[2]!.tool).toMatchObject({ status: "error", output: "ENOENT" });
+    expect(page.entries[4]!.tool).toMatchObject({ input: "ls", output: "a.ts\n[exit 0]" });
+    const all = JSON.stringify(page);
+    for (const hidden of ["RAW-REASONING", "secret instructions", "OCD internal note", "hunter22"])
+      expect(all).not.toContain(hidden);
+  });
+
+  it("pages back through the whole history with stable, non-overlapping pages", async () => {
+    const { service, adapter } = setup();
+    const ref = await adapter.createSession(spec);
+    for (let n = 1; n <= 120; n++) assistant(service, ref.sessionId, n);
+    const seen: string[] = [];
+    let before: string | null = null;
+    for (let i = 0; i < 20; i++) {
+      const page: TranscriptPage = (await adapter.transcript(ref, {
+        limit: 40,
+        before,
+        reasoningSummaries: false,
+      }))!;
+      seen.unshift(...page.entries.map((e) => e.text!));
+      before = page.before;
+      if (!before) break;
+      // New activity between pages does not shift or repeat what is returned.
+      if (i === 0) assistant(service, ref.sessionId, 999);
+    }
+    expect(seen).toEqual(Array.from({ length: 120 }, (_, i) => `step ${i + 1}`));
+    await expect(
+      adapter.transcript(ref, { limit: 5, before: "garbage", reasoningSummaries: false }),
+    ).rejects.toMatchObject({ name: "InvalidCursorError" });
+  });
+
+  it("returns null for a session the service no longer has", async () => {
+    const { adapter } = setup();
+    expect(
+      await adapter.transcript(
+        { sessionId: "ses_gone" },
+        { limit: 5, before: null, reasoningSummaries: false },
+      ),
+    ).toBeNull();
   });
 });

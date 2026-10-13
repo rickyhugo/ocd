@@ -90,6 +90,13 @@ export class FakeOpenCodeService {
     this.emit("session.idle", { sessionID });
   }
 
+  /** Appends a raw history message (e.g. an assistant message with tool parts). */
+  addMessage(sessionID: string, message: Record<string, unknown>): string {
+    const id = (message["id"] as string | undefined) ?? this.nextId("msg");
+    this.sessions.get(sessionID)!.messages.push({ time: { created: Date.now() }, ...message, id });
+    return id;
+  }
+
   fail(sessionID: string, error: { type: string; message: string; status?: number }): void {
     const session = this.sessions.get(sessionID)!;
     session.messages.push({
@@ -235,16 +242,22 @@ export class FakeOpenCodeService {
     message: {
       list: async (input) => {
         this.record("message.list", input);
-        const { sessionID, type, limit } = input as {
+        const { sessionID, type, limit, cursor } = input as {
           sessionID: string;
           type?: string;
           limit?: number;
+          cursor?: string;
         };
-        const messages = [...(this.sessions.get(sessionID)?.messages ?? [])]
-          .reverse()
-          .filter((m) => !type || m["type"] === type)
-          .slice(0, limit ?? 50);
-        return { data: messages, cursor: {} } as never;
+        const session = this.sessions.get(sessionID);
+        if (!session) throw Object.assign(new Error("Session not found"), { status: 404 });
+        // Newest first; the cursor is an offset that continues towards older messages.
+        const all = [...session.messages].reverse().filter((m) => !type || m["type"] === type);
+        const offset = cursor ? Number(cursor) : 0;
+        const end = offset + (limit ?? 50);
+        return {
+          data: all.slice(offset, end),
+          cursor: { next: end < all.length ? String(end) : null },
+        } as never;
       },
     },
     permission: {

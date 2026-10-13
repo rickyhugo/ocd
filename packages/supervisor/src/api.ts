@@ -6,6 +6,7 @@ import {
   CleanupTaskInput,
   MergePullRequestInput,
   OpenPullRequestInput,
+  PeekTaskInput,
   DecisionInput,
   DispatchTaskInput,
   HEADER_ACTOR,
@@ -248,6 +249,19 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   app.get("/v1/tasks/:id/progress", async (req): Promise<TaskProgress> => {
     requireCaller(req);
     return supervisor.taskProgress(IdParams.parse(req.params).id);
+  });
+  // Read-only: any authenticated caller that may inspect tasks may peek, in
+  // every task state (manual mode included); it never changes the worker.
+  app.get("/v1/tasks/:id/transcript", async (req) => {
+    requireCaller(req);
+    const { id } = IdParams.parse(req.params);
+    const q = req.query as Record<string, unknown>;
+    const input = PeekTaskInput.parse({
+      limit: int(q["limit"]),
+      before: typeof q["before"] === "string" && q["before"] ? q["before"] : undefined,
+      reasoningSummaries: bool(q["reasoningSummaries"]),
+    });
+    return supervisor.peek(id, input);
   });
   app.post("/v1/tasks/:id/send", async (req) => {
     requireCaller(req);

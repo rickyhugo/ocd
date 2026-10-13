@@ -81,6 +81,21 @@ describe("Claude checklist tracking", () => {
     ).toBeNull();
   });
 
+  it("skips malformed content blocks instead of throwing", () => {
+    const tracker = new ClaudeTodoTracker();
+    const malformed = (type: string, content: unknown) =>
+      ({ type, parent_tool_use_id: null, message: { content } }) satisfies ClaudeStreamMessage;
+    expect(
+      run(tracker, [
+        malformed("assistant", [null, 5, "text", { type: 5 }]),
+        malformed("assistant", "not-an-array"),
+        malformed("user", [null, { type: "tool_result" }]),
+        use("a", "TaskCreate", { subject: "Read" }),
+        result("a", { task: { id: "1" } }),
+      ]),
+    ).toEqual([{ text: "Read", status: "pending" }]);
+  });
+
   it("bounds and redacts what it reports", () => {
     const tracker = new ClaudeTodoTracker();
     const todos = Array.from({ length: 80 }, (_, i) => ({

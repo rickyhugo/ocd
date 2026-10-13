@@ -11,6 +11,7 @@ import {
   buildSpill,
   collectSpill,
   formatSpill,
+  renderTranscript,
   resolveOcdPaths,
   type Attention,
   type AttentionResponse,
@@ -42,6 +43,7 @@ import {
   locateBinary,
   type Platform,
 } from "./platform/index.ts";
+import { followInterval, followTranscript } from "./peek.ts";
 import { addRepo, removeRepo } from "./repo-config.ts";
 
 const HELP = `ocd — local agent control plane
@@ -75,6 +77,12 @@ Tasks
   ocd dispatch <repo> <title> --instructions TEXT [--profile P] [--criteria TEXT]... [--key KEY]
   ocd task list [--all] [--repo R]
   ocd task show <id>
+  ocd task peek <id> [--limit N] [--before CURSOR] [--reasoning-summaries] [--follow [--interval SECONDS]]
+                                    Read-only: the worker's recent assistant messages and tool calls/results
+                                    (never prompts, resumes or changes it; untrusted output, secrets redacted).
+                                    OpenCode: session history. Claude Code / Codex: what this supervisor saw,
+                                    in memory only. --follow polls until the task leaves the running states
+                                    (at most 30 min); --reasoning-summaries adds Codex reasoning summaries
   ocd task send <id> <instructions>
   ocd task cancel <id> [--reason TEXT]
   ocd task accept <id>
@@ -200,6 +208,11 @@ async function main(argv: string[]): Promise<void> {
       supersedes: { type: "string" },
       status: { type: "string" },
       rationale: { type: "string" },
+      limit: { type: "string" },
+      before: { type: "string" },
+      "reasoning-summaries": { type: "boolean" },
+      follow: { type: "boolean" },
+      interval: { type: "string" },
     },
   });
   const json = flags.json ?? false;
@@ -634,6 +647,35 @@ async function main(argv: string[]): Promise<void> {
             .filter((l) => l !== "")
             .join("\n"),
         );
+      } else if (sub === "peek") {
+        const limit = flags.limit === undefined ? undefined : Number(flags.limit);
+        if (limit !== undefined && !Number.isInteger(limit)) fail("--limit takes a whole number");
+        const reasoningSummaries = flags["reasoning-summaries"] ?? false;
+        if (flags.follow) {
+          if (flags.before)
+            fail("--follow reads the latest entries; it cannot start --before a cursor");
+          let interval: number;
+          try {
+            interval = followInterval(flags.interval);
+          } catch (error) {
+            fail((error as Error).message);
+          }
+          const stop = new AbortController();
+          process.once("SIGINT", () => stop.abort());
+          const r = await followTranscript(
+            () => client.peekTask(id, { limit: 50, reasoningSummaries }),
+            { intervalMs: interval, signal: stop.signal, json, write: (line) => console.log(line) },
+          );
+          if (r.end === "errors" || r.end === "unavailable") fail(`stopped following: ${r.detail}`);
+          if (!json) console.log(`(stopped following: ${r.detail})`);
+          return;
+        }
+        const t = await client.peekTask(id, {
+          ...(limit !== undefined ? { limit } : {}),
+          ...(flags.before ? { before: flags.before } : {}),
+          reasoningSummaries,
+        });
+        print(t, json, () => `${t.notice}\n${renderTranscript(t)}`);
       } else if (sub === "send") {
         const text = rest.slice(1).join(" ");
         if (!text) fail("usage: ocd task send <id> <instructions>");
@@ -698,7 +740,7 @@ async function main(argv: string[]): Promise<void> {
             ? `handed ${id} back; the worker continues`
             : `handed ${id} back; it is ready for review`,
         );
-      } else fail("usage: ocd task list|show|send|cancel|accept|resume|takeover|giveback");
+      } else fail("usage: ocd task list|show|peek|send|cancel|accept|resume|takeover|giveback");
       return;
     }
     case "attention": {

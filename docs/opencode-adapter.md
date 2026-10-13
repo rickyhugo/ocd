@@ -14,6 +14,7 @@ untested, but are not refused.
 | Event stream mapping and reconnect + reconciliation         | `FakeOpenCodeService` tests         | Fakes only  |
 | One real worker task end to end                             | Real manager dispatch on 2.0.28     | Done        |
 | Plugin loading in a real OpenCode host                      | Package directory with `server.js`  | Done        |
+| Transcript history mapping and paging                       | `FakeOpenCodeService` tests         | Fakes only  |
 
 ## Mapping
 
@@ -38,6 +39,16 @@ untested, but are not refused.
   Only sessions the adapter created, found, or inspected are forwarded.
 - **Manager wake-ups** use `session.synthetic(..., delivery: "queue", resume:
   true)` so updates do not impersonate the human.
+
+- **Transcripts** (`ocd task peek`) read the session's own history with
+  `message.list` (`order: "desc"` for the newest page, then `cursor.next` for
+  older ones, as the 2.0.27 client's store does). Only assistant text, tool
+  parts (input, status, text output or error), assistant errors and `shell`
+  messages are returned; user, synthetic and system messages and `reasoning`
+  parts (raw text, no documented summary field) are not. OCD's paging cursor
+  wraps OpenCode's cursor plus the oldest entry already shown, so pages stay
+  exact while the session grows. Reading does not create, prompt, resume or
+  track a session.
 
 ## Known gaps
 

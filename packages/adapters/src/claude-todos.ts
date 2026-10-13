@@ -33,7 +33,10 @@ const record = (value: unknown): Record<string, unknown> =>
 
 const blocks = (message: ClaudeStreamMessage): Block[] => {
   const content = message.message?.content;
-  return Array.isArray(content) ? (content as Block[]) : [];
+  // Untrusted stream data: skip null and non-object blocks rather than throw.
+  return Array.isArray(content)
+    ? content.filter((b): b is Block => !!b && typeof b === "object")
+    : [];
 };
 
 export class ClaudeTodoTracker {

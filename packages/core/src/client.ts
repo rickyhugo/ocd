@@ -27,6 +27,7 @@ import type {
   TaskProgress,
 } from "./schemas.ts";
 import { apiTokenPath } from "./paths.ts";
+import type { PeekTaskInput, TaskTranscript } from "./transcript.ts";
 import {
   API_VERSION,
   HEADER_ACTOR,
@@ -235,6 +236,13 @@ export class OcdClient {
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/giveback`, input);
   resumeTask = (id: string, mode: "reattach" | "relaunch") =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/resume`, { mode });
+  /** Read-only view of a worker's recent messages and tool activity. Never touches the worker. */
+  peekTask = (id: string, options: PeekTaskInput = {}) =>
+    this.call<TaskTranscript>("GET", `/v1/tasks/${encodeURIComponent(id)}/transcript`, undefined, {
+      limit: options.limit,
+      before: options.before,
+      reasoningSummaries: options.reasoningSummaries,
+    });
 
   listAttention = (query: { status?: string; taskId?: string; limit?: number } = {}) =>
     this.call<Attention[]>("GET", "/v1/attention", undefined, query);

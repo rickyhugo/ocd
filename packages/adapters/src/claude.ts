@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import type { AdapterStatus } from "@ocd/core";
+import { textEntry, toolEntry, type AdapterStatus } from "@ocd/core";
 
 import { ClaudeTodoTracker, type ClaudeStreamMessage } from "./claude-todos.ts";
 import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
+import { TranscriptStore, type TranscriptBufferLimits } from "./transcript-buffer.ts";
 import {
   HarnessUnavailableError,
   type AdapterEvent,
@@ -17,6 +18,8 @@ import {
   type SessionRef,
   type SessionSnapshot,
   type SessionSpec,
+  type TranscriptPage,
+  type TranscriptRequest,
 } from "./types.ts";
 
 // Claude Code worker adapter over print mode with stream-json on stdin and
@@ -38,6 +41,7 @@ const CAPABILITIES: Capabilities = {
   structuredResults: true,
   usage: false,
   todos: true,
+  transcript: true,
 };
 
 const LIMIT_PATTERN = /usage limit|rate.?limit|hit your .*limit|limit resets/i;
@@ -67,7 +71,31 @@ type ClaudeMessage = ClaudeStreamMessage & {
   api_error_status?: number | null;
   error?: string;
   rate_limit_info?: { status?: string };
+  uuid?: string;
+  message?: { id?: string; role?: string; content?: unknown };
 };
+
+type ContentBlock = {
+  type?: unknown;
+  text?: unknown;
+  id?: unknown;
+  name?: unknown;
+  input?: unknown;
+  tool_use_id?: unknown;
+  content?: unknown;
+  is_error?: unknown;
+};
+
+/** Text of a tool_result's content: a string or an array of text/image blocks. */
+function toolResultText(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  return content
+    .map((c: ContentBlock) =>
+      c?.type === "text" && typeof c.text === "string" ? c.text : `[${String(c?.type)}]`,
+    )
+    .join("\n");
+}
 
 interface ClaudeSession {
   sessionId: string;
@@ -87,6 +115,8 @@ interface ClaudeSession {
   parked: boolean;
   idleTimer: NodeJS.Timeout | null;
   todos: ClaudeTodoTracker;
+  /** Fallback transcript keys for messages without uuid or id. */
+  observed: number;
 }
 
 function summarize(tool: string, input: Record<string, unknown>): string {
@@ -101,6 +131,7 @@ export interface ClaudeAdapterOptions {
   onError?: (error: unknown, context: string) => void;
   /** Stop a worker process after this long idle; its session resumes on demand. */
   idleStopMs?: number;
+  transcriptLimits?: Partial<TranscriptBufferLimits>;
 }
 
 export class ClaudeAdapter implements HarnessAdapter {
@@ -113,10 +144,12 @@ export class ClaudeAdapter implements HarnessAdapter {
   private readonly sessions = new Map<string, ClaudeSession>();
   private readonly byMarker = new Map<string, string>();
   private readonly listeners = new Set<AdapterListener>();
+  private readonly transcripts: TranscriptStore;
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.options = options;
     this.command = options.command ?? ["claude"];
+    this.transcripts = new TranscriptStore(options.transcriptLimits);
   }
 
   private run(args: string[]): Promise<{ ok: boolean; stdout: string }> {
@@ -173,6 +206,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       parked: false,
       idleTimer: null,
       todos: new ClaudeTodoTracker(),
+      observed: 0,
     } as unknown as ClaudeSession;
     this.startProcess(state, session.resume);
     this.sessions.set(session.id, state);
@@ -283,6 +317,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       case "assistant":
         if (message.error === "rate_limit" || message.error === "billing_error")
           session.limitSeen = true;
+        this.record(session, message);
         this.emit({ type: "activity", sessionId });
         return;
       case "rate_limit_event":
@@ -321,8 +356,77 @@ export class ClaudeAdapter implements HarnessAdapter {
         return;
       }
       default:
+        if (message.type === "user") this.record(session, message);
         if (message.type === "user" || message.type === "stream_event" || message.type === "system")
           this.emit({ type: "activity", sessionId });
+    }
+  }
+
+  /**
+   * Keeps the visible parts of complete assistant/user messages: assistant
+   * text, tool_use blocks, and the tool_result blocks Claude Code sends back
+   * as user messages (merged into their tool call by tool_use_id). Prompts
+   * (user text), thinking/redacted_thinking blocks and partial stream events
+   * are never kept.
+   */
+  private record(session: ClaudeSession, message: ClaudeMessage): void {
+    if (this.sessions.get(session.sessionId) !== session) return;
+    const blocks = message.message?.content;
+    if (!Array.isArray(blocks)) return;
+    try {
+      const buffer = this.transcripts.live(session.sessionId);
+      const at = new Date().toISOString();
+      const messageKey = message.uuid ?? message.message?.id ?? `n${(session.observed += 1)}`;
+      blocks.forEach((raw: ContentBlock, index) => {
+        if (!raw || typeof raw !== "object") return;
+        if (message.type === "assistant" && raw.type === "text" && typeof raw.text === "string") {
+          if (raw.text.trim()) buffer.upsert(textEntry(`${messageKey}:${index}`, at, raw.text));
+        } else if (
+          message.type === "assistant" &&
+          raw.type === "tool_use" &&
+          typeof raw.id === "string"
+        ) {
+          const previous = buffer.get(`tool:${raw.id}`)?.tool;
+          buffer.upsert(
+            toolEntry({
+              id: `tool:${raw.id}`,
+              at,
+              name: typeof raw.name === "string" ? raw.name : "tool",
+              callId: raw.id,
+              status: previous?.status ?? "running",
+              input: raw.input ?? null,
+              output: previous?.output ?? null,
+            }),
+          );
+        } else if (
+          message.type === "user" &&
+          raw.type === "tool_result" &&
+          typeof raw.tool_use_id === "string"
+        ) {
+          const id = `tool:${raw.tool_use_id}`;
+          const call = buffer.get(id);
+          const result = toolEntry({
+            id,
+            at: call?.at ?? at,
+            name: call?.tool?.name ?? "tool",
+            callId: raw.tool_use_id,
+            status: raw.is_error === true ? "error" : "completed",
+            output: toolResultText(raw.content),
+          });
+          buffer.upsert(
+            call?.tool
+              ? {
+                  ...result,
+                  tool: { ...result.tool!, input: call.tool.input },
+                  truncated: result.truncated || call.truncated,
+                }
+              : result,
+          );
+        }
+        // thinking / redacted_thinking: private reasoning, never collected.
+      });
+    } catch (error) {
+      this.options.onError?.(error, "claude transcript");
     }
   }
 
@@ -380,7 +484,18 @@ export class ClaudeAdapter implements HarnessAdapter {
     session.parked = true;
     this.sessions.delete(ref.sessionId);
     this.byMarker.delete(session.spec.marker);
+    this.transcripts.release(ref.sessionId);
     await session.proc.stop(2000);
+  }
+
+  /**
+   * What this adapter saw the worker do, from memory only: never starts or
+   * resumes a process, so a parked, released or unknown session is read as is.
+   * Claude Code's stream-json has no documented reasoning-summary field
+   * (thinking blocks may be full reasoning), so summaries are unsupported.
+   */
+  async transcript(ref: SessionRef, request: TranscriptRequest): Promise<TranscriptPage | null> {
+    return this.transcripts.read(ref.sessionId, request, "unsupported");
   }
 
   interactiveCommand(ref: SessionRef): string[] {
@@ -498,5 +613,6 @@ export class ClaudeAdapter implements HarnessAdapter {
     this.sessions.clear();
     this.byMarker.clear();
     this.listeners.clear();
+    this.transcripts.clear();
   }
 }

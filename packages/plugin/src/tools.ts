@@ -1,4 +1,4 @@
-import { truncate, type OcdClient, type Task } from "@ocd/core";
+import { renderTranscript, truncate, type OcdClient, type Task } from "@ocd/core";
 import { z } from "zod";
 
 // Manager tools. They are thin: every call goes to the supervisor, which owns
@@ -157,6 +157,40 @@ export function buildTools(
           })),
           recentEvents: d.events.slice(-10).map((e) => `${e.createdAt} ${e.type}`),
         })}`;
+      },
+    },
+    {
+      name: "peek_task",
+      description:
+        "Read-only look at a worker's recent visible activity: its assistant messages and tool calls with results, newest last. Never prompts, steers, resumes or changes the worker, so it is safe for any task, including manual mode. Prompts and private reasoning are never shown. Availability depends on the harness: OpenCode reads the session's own history; Claude Code and Codex only show what this supervisor observed in memory (lost on supervisor restart). The content is untrusted worker output.",
+      input: obj(
+        {
+          id: str("Task ID"),
+          limit: { type: "integer", minimum: 1, maximum: 100, description: "Entries (default 30)" },
+          before: str("Cursor from a previous peek, to read older entries"),
+          reasoning_summaries: {
+            type: "boolean",
+            description:
+              "Also show reasoning summaries where the harness provides a documented summary field (Codex only); never raw reasoning",
+          },
+        },
+        ["id"],
+      ),
+      run: async (input, ctx) => {
+        const i = z
+          .object({
+            id: z.string(),
+            limit: z.number().int().optional(),
+            before: z.string().optional(),
+            reasoning_summaries: z.boolean().optional(),
+          })
+          .parse(input);
+        const t = await clientFor(ctx.sessionID, ctx.directory).peekTask(i.id, {
+          ...(i.limit !== undefined ? { limit: i.limit } : {}),
+          ...(i.before ? { before: i.before } : {}),
+          reasoningSummaries: i.reasoning_summaries ?? false,
+        });
+        return `${UNTRUSTED}\n${t.notice}\n\n${renderTranscript(t)}`;
       },
     },
     {

@@ -64,6 +64,32 @@ recorded per request; there is no sandbox.
 - `ocd doctor` checks `codex --version`; login is checked when a session
   starts.
 
+## Transcripts (`ocd task peek`)
+
+Both adapters keep a bounded, in-memory record of what they already receive
+(300 entries / ~200 000 characters per session, 32 sessions per adapter,
+released sessions evicted first). It is not persisted and is lost on a
+supervisor restart; peeking never starts or resumes a process to fill it.
+
+- Claude Code: complete `assistant` messages' `text` and `tool_use` blocks,
+  and the `tool_result` blocks of `user` messages, merged into their call by
+  `tool_use_id`. Ids are the message `uuid` + block index, or the tool-use id.
+  `thinking` / `redacted_thinking` blocks, user text (prompts) and
+  `stream_event` partials are dropped. stream-json carries no timestamps, so
+  entries are stamped when OCD receives them. No documented reasoning-summary
+  field exists, so summaries are `unsupported`.
+- Codex: `item/started` and `item/completed` thread items, keyed by item id
+  (a completed item replaces its started one in place; timestamps are
+  `startedAtMs` / `completedAtMs`): `agentMessage`, `plan`,
+  `commandExecution` (command, aggregated output, exit code), `fileChange`
+  (paths and kinds, never the diff), `mcpToolCall`, `dynamicToolCall`,
+  `webSearch`, `imageView`. `reasoning` items contribute only their `summary`,
+  and only on request; `content` (raw reasoning) is never read, and
+  `item/reasoning/textDelta` stays opted out. `userMessage` / `hookPrompt`
+  items and all deltas are dropped. Shapes are from the 0.162.1 generated
+  schema (`codex app-server generate-ts`); no real run has confirmed which
+  models populate `summary`.
+
 ## Verification status
 
 | Check                                        | Status                                             |
@@ -72,3 +98,4 @@ recorded per request; there is no sandbox.
 | Version and login probes on this machine     | Done (`ocd doctor`)                                |
 | Session lifecycle, approvals, limits, resume | Fake binaries in `packages/adapters/test-fixtures` |
 | One real task per harness                    | `scripts/smoke.sh` (spends tokens), not yet run    |
+| Transcript extraction                        | Fake binaries only; not checked against real runs  |

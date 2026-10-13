@@ -1,4 +1,12 @@
-import type { AdapterStatus, HarnessName, PermissionPolicy, TodoItem } from "@ocd/core";
+import type {
+  AdapterStatus,
+  HarnessName,
+  PermissionPolicy,
+  ReasoningSummaries,
+  TodoItem,
+  TranscriptEntry,
+  TranscriptSource,
+} from "@ocd/core";
 
 /** What an adapter has implemented and tested against a recorded harness version. */
 export interface Capabilities {
@@ -12,6 +20,8 @@ export interface Capabilities {
   usage: boolean;
   /** Emits `todos` events: the worker's own checklist/plan, as the harness exposes it. */
   todos: boolean;
+  /** Read-only recent messages / tool activity (`transcript`). */
+  transcript: boolean;
 }
 
 export type Capability = keyof Capabilities;
@@ -135,7 +145,41 @@ export interface HarnessAdapter {
    * this; service-owned sessions can have many clients.
    */
   sessionInUse?(ref: SessionRef): Promise<{ pid: number; command: string } | null>;
+  /**
+   * Recent visible activity of a session, strictly read-only: it must never
+   * start, resume, prompt or otherwise change a worker. Null when the adapter
+   * has nothing for the session (e.g. a process-owned session it never saw).
+   */
+  transcript?(ref: SessionRef, request: TranscriptRequest): Promise<TranscriptPage | null>;
   close(): Promise<void>;
+}
+
+export interface TranscriptRequest {
+  limit: number;
+  /** Adapter cursor from a previous page's `before`. */
+  before: string | null;
+  reasoningSummaries: boolean;
+  signal?: AbortSignal;
+}
+
+export interface TranscriptPage {
+  source: TranscriptSource;
+  /** Oldest first, already redacted and bounded (see sanitizeEntry). */
+  entries: TranscriptEntry[];
+  /** Adapter cursor for older entries, or null. */
+  before: string | null;
+  /** Older entries were dropped from a bounded buffer. */
+  truncated: boolean;
+  reasoningSummaries: ReasoningSummaries;
+  notes: string[];
+}
+
+/** A cursor that does not belong to this session, or no longer resolves. */
+export class InvalidCursorError extends Error {
+  constructor(message = "The transcript cursor is invalid or expired; start from the latest page") {
+    super(message);
+    this.name = "InvalidCursorError";
+  }
 }
 
 export function requireCapability(adapter: HarnessAdapter, capability: Capability): void {

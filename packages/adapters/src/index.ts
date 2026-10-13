@@ -4,3 +4,4 @@ export * from "./opencode.ts";
 export * from "./jsonl-process.ts";
 export * from "./codex.ts";
 export * from "./claude.ts";
+export * from "./transcript-buffer.ts";
