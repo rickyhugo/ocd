@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import {
@@ -17,6 +18,7 @@ import {
 import {
   ConfigError,
   LockHeldError,
+  MacNotifier,
   PendingMigrationsError,
   SupervisorLock,
   backupDb,
@@ -29,11 +31,14 @@ import {
 } from "@ocd/supervisor";
 
 import { buildAdapters, buildManagerChannel, probeHarnesses } from "./harnesses.ts";
+import { installLaunchAgent, launchAgentStatus, uninstallLaunchAgent } from "./launchagent.ts";
 
 const HELP = `ocd — local agent control plane
 
 Supervisor
   ocd daemon [--migrate]            Run the supervisor in the foreground
+  ocd launchagent install|status|uninstall
+                                    Run the supervisor in the background (user LaunchAgent)
   ocd stop                          Stop the supervisor and report worker outcomes
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
@@ -114,6 +119,7 @@ async function main(argv: string[]): Promise<void> {
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h" },
       migrate: { type: "boolean" },
+      background: { type: "boolean" },
       profile: { type: "string" },
       base: { type: "string" },
       instructions: { type: "string" },
@@ -144,13 +150,32 @@ async function main(argv: string[]): Promise<void> {
 
   switch (command) {
     case "daemon": {
-      const daemon = await startDaemon({
-        paths,
-        foreground: true,
-        migrate: flags.migrate ?? false,
-        adapters: buildAdapters,
-        managerChannel: buildManagerChannel,
-      });
+      const background = flags.background ?? false;
+      let daemon: Awaited<ReturnType<typeof startDaemon>>;
+      try {
+        daemon = await startDaemon({
+          paths,
+          foreground: !background,
+          migrate: flags.migrate ?? false,
+          adapters: buildAdapters,
+          managerChannel: buildManagerChannel,
+        });
+      } catch (error) {
+        if (
+          background &&
+          (error instanceof LockHeldError ||
+            error instanceof PendingMigrationsError ||
+            error instanceof ConfigError)
+        ) {
+          // Under launchd a clean exit avoids a restart loop; tell the human instead.
+          console.error(`ocd: not started: ${error.message}`);
+          await new MacNotifier()
+            .notify({ title: "OCD supervisor not started", body: error.message })
+            .catch(() => undefined);
+          process.exit(0);
+        }
+        throw error;
+      }
       const shutdown = () => {
         void daemon.stop().then((report) => {
           console.error(`ocd: stopped. ${report.workerPolicy}`);
@@ -167,6 +192,45 @@ async function main(argv: string[]): Promise<void> {
         for (const w of report.workers) console.error(`  ${w.taskId} (${w.harness}): ${w.outcome}`);
       }
       process.exit(0);
+      return;
+    }
+    case "launchagent": {
+      if (sub === "install") {
+        const status = await client.status().catch(() => null);
+        const agent = await launchAgentStatus();
+        if (status && !agent.loaded) {
+          fail(
+            `a supervisor is already running (pid ${status.pid}); stop it with \`ocd stop\` first`,
+          );
+        }
+        const { plist } = await installLaunchAgent({
+          nodePath: process.execPath,
+          cliPath: realpathSync(fileURLToPath(import.meta.url)),
+          logsDir: paths.logs,
+          env: { OCD_HOME: process.env["OCD_HOME"], OCD_CONFIG: process.env["OCD_CONFIG"] },
+        });
+        print(
+          { plist },
+          json,
+          () => `installed ${plist}; the supervisor now runs in the background and starts at login`,
+        );
+      } else if (sub === "uninstall") {
+        const r = await uninstallLaunchAgent();
+        print(r, json, () =>
+          r.removed
+            ? "LaunchAgent removed; the background supervisor is stopped"
+            : "no LaunchAgent installed",
+        );
+      } else if (sub === "status" || sub === undefined) {
+        const s = await launchAgentStatus();
+        print(s, json, () =>
+          [
+            `plist: ${s.installed ? s.plist : "not installed"}`,
+            `launchd: ${s.loaded ? `${s.state ?? "loaded"}${s.pid ? ` (pid ${s.pid})` : ""}${s.lastExitCode ? `, last exit ${s.lastExitCode}` : ""}` : "not loaded"}`,
+            `logs: ${paths.logs}`,
+          ].join("\n"),
+        );
+      } else fail("usage: ocd launchagent install|status|uninstall");
       return;
     }
     case "stop": {

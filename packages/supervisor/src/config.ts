@@ -78,6 +78,22 @@ export const SupervisorConfig = z
       .boolean()
       .default(false)
       .describe("Allow profiles that use the fake harness (tests and dry runs)."),
+    backups: z
+      .object({
+        intervalHours: z
+          .number()
+          .min(0)
+          .default(24)
+          .describe("Hours between automatic database backups; 0 disables them."),
+        keep: z
+          .number()
+          .int()
+          .min(1)
+          .default(7)
+          .describe("Number of automatic backups to keep in ~/.ocd/backups."),
+      })
+      .strict()
+      .prefault({}),
     log: z
       .object({ maxBytes: z.number().int().default(5_000_000), keep: z.number().int().default(3) })
       .strict()

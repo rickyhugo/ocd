@@ -126,6 +126,25 @@ OpenCode requires a plugin directory (not a file) and loads its `server.js`,
 which re-exports the build, so run `pnpm run build` first. After changing the
 plugin config, run `opencode reload` (it reloads every OpenCode location).
 
+### Background operation (optional)
+
+```sh
+ocd launchagent install     # user LaunchAgent: starts at login, survives closing the terminal
+ocd launchagent status
+ocd launchagent uninstall
+```
+
+The agent runs `ocd daemon --background` with absolute paths to the Node
+binary and CLI that installed it (launchd does not use your shell's PATH or
+mise). launchd restarts it after a crash, not after `ocd stop`. If it cannot
+start (another daemon running, pending migration, invalid config) it sends a
+notification and exits instead of restarting in a loop. Logs: `~/.ocd/logs`.
+A restart never resumes coding runs automatically; OpenCode workers are
+reattached and anything uncertain shows up in `ocd attention list`.
+
+The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
+`backups.intervalHours` (24) and keeps the newest `backups.keep` (7).
+
 ## How work flows
 
 1. The manager calls `ocd_dispatch_task`. The supervisor persists the task and

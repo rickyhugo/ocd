@@ -6,6 +6,7 @@ import { resolveOcdPaths, type OcdPaths, type ShutdownReport } from "@ocd/core";
 import type { FastifyInstance } from "fastify";
 
 import { buildApi } from "./api.ts";
+import { autoBackupDue, runAutoBackup } from "./backups.ts";
 import {
   ConfigError,
   ConfigWatcher,
@@ -212,12 +213,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           store.updateAttentionReason(attention.id, reason);
       }
     };
+    let backupTimer: NodeJS.Timeout | null = null;
     const configWatcher = new ConfigWatcher(paths.config, () => void reloadConfig());
     // The config just loaded cleanly, so any earlier "invalid config" item is stale.
     store.settleOpenAttention(CONFIG_INVALID_KEY, "resolved");
 
     const release = async () => {
       configWatcher.stop();
+      if (backupTimer) clearInterval(backupTimer);
       await app?.close().catch(() => undefined);
       try {
         removeStaleSocket(paths.socket);
@@ -289,6 +292,26 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     chmodSync(paths.socket, 0o600);
     await supervisor.start();
     configWatcher.start();
+
+    // Automatic online backups: checked at startup and hourly.
+    const backupCheck = async () => {
+      const intervalMs = config.backups.intervalHours * 3_600_000;
+      if (
+        intervalMs <= 0 ||
+        !db?.$client.open ||
+        !autoBackupDue(paths.backups, intervalMs, clock())
+      )
+        return;
+      try {
+        const file = await runAutoBackup(db, paths.backups, config.backups.keep, clock());
+        logger.info({ file }, "automatic backup written");
+      } catch (error) {
+        logger.error({ err: error }, "automatic backup failed");
+      }
+    };
+    await backupCheck();
+    backupTimer = setInterval(() => void backupCheck(), 3_600_000);
+    backupTimer.unref();
     logger.info({ socket: paths.socket, instanceId, pid: process.pid }, "supervisor started");
 
     return { paths, store, supervisor, instanceId, closed, stop, kill, reload: reloadConfig };

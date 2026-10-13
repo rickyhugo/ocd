@@ -417,3 +417,28 @@ describe("independent verification", () => {
     });
   });
 });
+
+describe("concurrency", () => {
+  it("runs workers in parallel up to the configured limit, each in its own worktree", async () => {
+    h = await startHarness({
+      config: { concurrency: 2 },
+      fake: {
+        script: () => [
+          { type: "write", file: "out.txt", content: "x" },
+          { type: "wait", ms: 200 },
+          { type: "reply", text: '```ocd-report\n{"summary":"ok"}\n```' },
+        ],
+      },
+    });
+    await setupRepo(h, "app");
+    const ids = [];
+    for (const n of [1, 2, 3]) ids.push((await dispatch(h.human, "app", `task ${n}`)).task.id);
+    const live = await waitFor(
+      () => h.human.listTasks({ state: ["running", "starting"] }),
+      (tasks) => tasks.length === 2,
+    );
+    expect(new Set(live.map((t) => t.workspacePath)).size).toBe(2);
+    expect((await h.human.inspectTask(ids[2]!)).task.state).toBe("queued");
+    for (const id of ids) await waitForState(h, id, "ready_for_review");
+  });
+});
