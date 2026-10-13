@@ -44,12 +44,45 @@ mise exec -- pnpm test           # fake harnesses and temporary DBs/worktrees on
 
 Put `packages/cli/dist/ocd.mjs` on your PATH (for example
 `alias ocd="node $PWD/packages/cli/dist/ocd.mjs"`). State lives in `~/.ocd`
-(override with `OCD_HOME`); optional settings go in `~/.ocd/config.json`, e.g.
-`{"concurrency": 1, "stallAfterMinutes": 30}`.
+(override with `OCD_HOME`).
+
+### Configuration: `ocd.jsonc`
+
+Settings and execution profiles live in one JSONC file, read from `$OCD_CONFIG`
+or `~/.ocd/ocd.jsonc` (a symlink into a git repo works well). A profile is a
+named recipe for running a worker; the manager and repos refer to it by name.
+
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/rickyhugo/ocd/main/schema/ocd.schema.json",
+  "concurrency": 1,
+  "profiles": {
+    "oc": {
+      "harness": "opencode",
+      "model": "anthropic/claude-sonnet-4-5",
+      "permissionPolicy": "ask",
+      "description": "Default for real coding work",
+    },
+    "oc-cheap": {
+      "harness": "opencode",
+      "model": "<small model>",
+      "permissionPolicy": "ask",
+      "description": "Trivial chores: renames, docs, formatting",
+    },
+  },
+}
+```
+
+The daemon validates the file at startup and refuses typos and invalid
+profiles. `ocd reload` re-reads profiles without a restart (other settings need
+one). [`schema/ocd.schema.json`](schema/ocd.schema.json) gives editors
+completion and hover docs; it is generated from the daemon's own validation
+(`pnpm run schema`), and a test fails if it drifts. Tasks keep a snapshot of
+the profile they were dispatched with.
 
 ```sh
 ocd daemon                                   # foreground supervisor (Ctrl-C reports worker outcomes)
-ocd profile add oc --harness opencode --model anthropic/claude-sonnet-4-5 --permission ask
+ocd profile list                             # profiles from ocd.jsonc
 ocd repo add myapp ~/code/myapp --profile oc
 ocd status
 ```
@@ -82,10 +115,11 @@ even if the plugin is loaded globally. Replacing a manager needs
    branch `ocd/<task>`. Workspaces are never deleted by OCD.
 3. Permission requests block the task and notify you; only a human can approve
    them, from an interactive terminal: `ocd attention resolve <id> --approve`.
-   Profiles with `--permission deny` reject them and surface the block instead.
+   Profiles with `"permissionPolicy": "deny"` reject them and surface the block
+   instead.
 4. When the worker goes idle, OCD collects its `ocd-report` and independently
-   verifies the workspace (changed files, commits, optional repo
-   `--verify` command). A valid report makes the task `ready_for_review`.
+   checks the worktree with git (changed files, commits, uncommitted changes).
+   A valid report makes the task `ready_for_review`.
 5. You accept with `ocd task accept <id>`. Nothing is merged automatically.
 
 Crashes, restarts, lost event streams and sleep are reconciled conservatively:
@@ -101,7 +135,7 @@ request header: the human-only checks stop the manager _model_ from approving
 permissions, accepting work, or reconfiguring OCD through its tools, but they
 are not authentication. A worker or any process running as you with shell
 access could call the socket (or run `ocd`) directly. Keep worker profiles on
-`--permission ask` or `deny`, rely on the harness's own sandbox and permission
+`ask` or `deny`, rely on the harness's own sandbox and permission
 rules for shell access, and treat OCD as a coordination layer, not a security
 boundary. Approving a permission from the CLI additionally requires typing
 `approve` in an interactive terminal.

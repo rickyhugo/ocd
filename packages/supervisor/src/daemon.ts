@@ -6,7 +6,13 @@ import { resolveOcdPaths, type OcdPaths, type ShutdownReport } from "@ocd/core";
 import type { FastifyInstance } from "fastify";
 
 import { buildApi } from "./api.ts";
-import { loadConfig, type SupervisorConfig } from "./config.ts";
+import {
+  ProfileRegistry,
+  loadConfig,
+  toProfiles,
+  type SupervisorConfig,
+  type SupervisorConfigInput,
+} from "./config.ts";
 import { applyMigrations, backupDb, migrationStatus, openDb, type Db } from "./db/index.ts";
 import type { SimulatedCrash } from "./errors.ts";
 import { ensurePrivateDir, removeStaleSocket } from "./fsutil.ts";
@@ -22,7 +28,7 @@ import { WorkspaceManager } from "./workspace.ts";
 
 export interface DaemonOptions {
   paths?: OcdPaths;
-  config?: Partial<SupervisorConfig>;
+  config?: Partial<SupervisorConfigInput>;
   /** Builds adapters once config is known. */
   adapters: (ctx: {
     config: SupervisorConfig;
@@ -95,6 +101,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   ensurePrivateDir(paths.backups);
 
   const config = loadConfig(paths.config, options.config);
+  const profiles = new ProfileRegistry(toProfiles(config));
   const instanceId = newId("sup");
   const clock = options.clock ?? systemClock;
 
@@ -165,6 +172,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       logger: logger.child({ component: "supervisor" }),
       clock,
       instanceId,
+      profiles,
       ...(options.hooks ? { hooks: options.hooks } : {}),
       onCrash: (error: SimulatedCrash) => {
         logger.warn({ point: error.point }, "simulated crash");
@@ -190,6 +198,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       memory,
       workspaces,
       logger,
+      profiles,
+      reload: () => {
+        const next = toProfiles(loadConfig(paths.config, options.config));
+        profiles.replace(next);
+        logger.info({ profiles: next.map((p) => p.name) }, "profiles reloaded");
+        return profiles.list();
+      },
       requestShutdown: async () => {
         report ??= await supervisor.stop();
         setImmediate(() => void stop());

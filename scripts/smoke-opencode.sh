@@ -17,7 +17,12 @@ export OCD_HOME="$WORK/home"
 OCD=(node "$ROOT/packages/cli/dist/ocd.mjs")
 
 mkdir -p "$OCD_HOME"
-echo '{"notifications": {"enabled": false}}' > "$OCD_HOME/config.json"
+cat > "$OCD_HOME/ocd.jsonc" <<JSON
+{
+  "notifications": { "enabled": false },
+  "profiles": { "smoke": { "harness": "opencode", "model": "$MODEL", "permissionPolicy": "deny" } }
+}
+JSON
 git init -q -b main "$WORK/repo"
 git -C "$WORK/repo" -c user.email=smoke@example.com -c user.name=smoke commit -q --allow-empty -m init
 
@@ -26,7 +31,6 @@ DAEMON=$!
 trap '"${OCD[@]}" stop >/dev/null 2>&1 || kill $DAEMON 2>/dev/null; echo "artifacts: $WORK"' EXIT
 sleep 2
 
-"${OCD[@]}" profile add smoke --harness opencode --model "$MODEL" --permission deny
 "${OCD[@]}" repo add smoke "$WORK/repo" --profile smoke
 "${OCD[@]}" dispatch smoke "Smoke test" --key "smoke-$(date +%s)" \
   --instructions "Create a file HELLO.md containing exactly the line: hello from ocd. Do not run any other commands." \

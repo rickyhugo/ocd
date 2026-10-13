@@ -60,9 +60,10 @@ describe("dispatch and review", () => {
   });
 
   it("rejects unsupported harness choices (AT2)", async () => {
-    h = await startHarness();
+    h = await startHarness({
+      config: { profiles: { "codex-default": { harness: "codex", model: "gpt-x" } } },
+    });
     await setupRepo(h, "app");
-    await h.human.addProfile({ name: "codex-default", harness: "codex", model: "gpt-x" });
     await expect(
       h.human.dispatch({
         repo: "app",
@@ -73,10 +74,14 @@ describe("dispatch and review", () => {
       }),
     ).rejects.toMatchObject({ code: "harness_unsupported" });
     await expect(
-      h.human.addProfile({ name: "bad", harness: "opencode", model: "no-provider" }),
-    ).rejects.toMatchObject({
-      code: "invalid_model",
-    });
+      h.human.dispatch({
+        repo: "app",
+        profile: "missing",
+        title: "t",
+        instructions: "i",
+        idempotencyKey: "k-87654321",
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("does not launch duplicate workers for duplicate dispatch requests (AT3)", async () => {
@@ -179,12 +184,10 @@ describe("permissions and interactions", () => {
   });
 
   it("denies permissions under a deny profile and surfaces the block", async () => {
-    h = await startHarness();
-    await h.human.addProfile({
-      name: "strict",
-      harness: "fake",
-      model: "fake/model",
-      permissionPolicy: "deny",
+    h = await startHarness({
+      config: {
+        profiles: { strict: { harness: "fake", model: "fake/model", permissionPolicy: "deny" } },
+      },
     });
     await setupRepo(h, "app", "strict");
     const { task } = await dispatch(h.human, "app", "go [fake:permission]");

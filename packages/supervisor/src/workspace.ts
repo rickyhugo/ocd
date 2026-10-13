@@ -3,7 +3,6 @@ import { existsSync, realpathSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 import type { Repository, Verification } from "@ocd/core";
-import { truncate } from "@ocd/core";
 
 import { ApiError } from "./errors.ts";
 
@@ -205,10 +204,7 @@ export class WorkspaceManager {
   }
 
   /** Independent facts about the workspace, separate from the worker's claims. */
-  async verify(
-    workspace: { path: string; baseRef: string },
-    options: { command?: string[] | null; env?: Record<string, string>; timeoutMs?: number },
-  ): Promise<Verification> {
+  async verify(workspace: { path: string; baseRef: string }): Promise<Verification> {
     const status = await git(workspace.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
     const dirtyFiles = status
       .split("\n")
@@ -222,26 +218,10 @@ export class WorkspaceManager {
     const commitsAhead = Number(
       await git(workspace.path, ["rev-list", "--count", `${workspace.baseRef}..HEAD`]),
     );
-    let command: Verification["command"] = null;
-    if (options.command?.length) {
-      const [cmd, ...args] = options.command;
-      const result = await run(cmd!, args, {
-        cwd: workspace.path,
-        env: options.env ?? filteredEnv(),
-        timeoutMs: options.timeoutMs ?? 600_000,
-      });
-      command = {
-        argv: options.command,
-        exitCode: result.code,
-        timedOut: result.timedOut,
-        outputTail: truncate((result.stdout + result.stderr).slice(-4000), 4000),
-      };
-    }
     return {
       changedFiles: [...new Set([...committed, ...dirtyFiles])].sort(),
       dirty: dirtyFiles.length > 0,
       commitsAhead,
-      command,
     };
   }
 

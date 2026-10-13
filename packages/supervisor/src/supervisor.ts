@@ -27,8 +27,8 @@ import {
 } from "@ocd/adapters";
 import type { z } from "zod";
 
-import type { SupervisorConfig } from "./config.ts";
-import { ApiError, SimulatedCrash, badRequest, conflict, forbidden } from "./errors.ts";
+import type { ProfileRegistry, SupervisorConfig } from "./config.ts";
+import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } from "./errors.ts";
 import { iso, type Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
@@ -59,6 +59,7 @@ export interface SupervisorOptions {
   clock: Clock;
   instanceId: string;
   hooks?: SupervisorHooks;
+  profiles: ProfileRegistry;
   /** Called when a simulated crash fires; the daemon tears down without cleanup. */
   onCrash?: (error: SimulatedCrash) => void;
 }
@@ -275,7 +276,8 @@ export class Supervisor {
         "profile_required",
         `Repository ${repo.name} has no default profile; choose one`,
       );
-    const profile = this.store.requireProfile(profileName);
+    const profile = this.o.profiles.get(profileName);
+    if (!profile) throw notFound(`Profile ${profileName} (declare it in ocd.jsonc)`);
     this.assertHarnessUsable(profile.harness);
     const result = this.store.createTask({
       idempotencyKey: input.idempotencyKey,
@@ -921,15 +923,10 @@ export class Supervisor {
     let verifyError: string | null = null;
     if (task.workspacePath && task.baseRef) {
       try {
-        const repo = this.store.requireRepo(task.repo);
-        verification = await this.o.workspaces.verify(
-          { path: task.workspacePath, baseRef: task.baseRef },
-          {
-            command: repo.verifyCommand,
-            env: filteredEnv(task.profile.envAllowlist),
-            timeoutMs: this.o.config.verifyTimeoutMs,
-          },
-        );
+        verification = await this.o.workspaces.verify({
+          path: task.workspacePath,
+          baseRef: task.baseRef,
+        });
       } catch (error) {
         verifyError = String(error);
       }
@@ -943,9 +940,8 @@ export class Supervisor {
     this.endRun(task.id, "idle");
     const fresh = this.store.requireTask(task.id);
     if (!LIVE_STATES.has(fresh.state)) return;
-    const verifyFailed = verification?.command && verification.command.exitCode !== 0;
     if (parsed.ok) {
-      const summary = `Ready for review: ${task.title}. Worker summary: "${truncate(parsed.report.summary, 300)}". Verified changed files: ${verification?.changedFiles.length ?? "unknown"}${verifyFailed ? "; verification command FAILED" : ""}.`;
+      const summary = `Ready for review: ${task.title}. Worker summary: "${truncate(parsed.report.summary, 300)}". Verified changed files: ${verification?.changedFiles.length ?? "unknown"}.`;
       this.store.transition(task.id, "ready_for_review", {
         patch: { result, finishedAt: this.store.now() },
         attention: [

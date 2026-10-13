@@ -126,6 +126,7 @@ describe("review regressions", () => {
     const service = new FakeOpenCodeService();
     h = await startHarness({
       clock: () => now,
+      config: { profiles: { oc: { harness: "opencode", model: "anthropic/claude-x" } } },
       adapters: () => [
         new OpenCodeAdapter({
           connect: async () => ({ api: service.api, url: "http://fake" }),
@@ -133,7 +134,6 @@ describe("review regressions", () => {
         }),
       ],
     });
-    await h.human.addProfile({ name: "oc", harness: "opencode", model: "anthropic/claude-x" });
     await setupRepo(h, "app", "oc");
     service.down = true;
     const { task } = await h.human.dispatch({

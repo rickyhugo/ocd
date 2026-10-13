@@ -12,7 +12,7 @@ import {
 } from "@ocd/adapters";
 import { OcdClient, type OcdPaths, type Actor } from "@ocd/core";
 
-import type { SupervisorConfig } from "./config.ts";
+import type { SupervisorConfigInput } from "./config.ts";
 import { startDaemon, type Daemon, type DaemonOptions } from "./daemon.ts";
 import { createLogger } from "./logger.ts";
 import { RecordingManagerChannel, RecordingNotifier } from "./notify.ts";
@@ -68,7 +68,7 @@ export interface Harness {
 }
 
 export interface HarnessOptions {
-  config: Partial<SupervisorConfig>;
+  config: Partial<SupervisorConfigInput>;
   /** Replace the default fake adapter (e.g. with an OpenCode adapter over a fake service). */
   adapters: (fake: FakeAdapter) => HarnessAdapter[];
   fake: Omit<FakeAdapterOptions, "state">;
@@ -76,8 +76,9 @@ export interface HarnessOptions {
   clock: DaemonOptions["clock"];
 }
 
-export const TEST_CONFIG: Partial<SupervisorConfig> = {
+export const TEST_CONFIG: Partial<SupervisorConfigInput> = {
   allowFakeHarness: true,
+  profiles: { fake: { harness: "fake", model: "fake/model", permissionPolicy: "ask" } },
   schedulerIntervalMs: 20,
   reconcileIntervalMs: 60_000,
   outbox: { intervalMs: 20, maxAttempts: 3, baseDelayMs: 10 },
@@ -94,7 +95,11 @@ export async function startHarness(options: Partial<HarnessOptions> = {}): Promi
   const boot = async (opts: Partial<HarnessOptions>) => {
     const daemon = await startDaemon({
       paths,
-      config: { ...TEST_CONFIG, ...opts.config },
+      config: {
+        ...TEST_CONFIG,
+        ...opts.config,
+        profiles: { ...TEST_CONFIG.profiles, ...opts.config?.profiles },
+      },
       adapters: () => {
         adapter = new FakeAdapter({ ...opts.fake, state: fakeState });
         return opts.adapters ? opts.adapters(adapter) : [adapter];
@@ -137,15 +142,6 @@ export async function startHarness(options: Partial<HarnessOptions> = {}): Promi
 
 export async function setupRepo(h: Harness, name = "app", profile = "fake"): Promise<string> {
   const path = makeRepo(h.root, name);
-  const profiles = await h.human.listProfiles();
-  if (!profiles.some((p) => p.name === profile)) {
-    await h.human.addProfile({
-      name: profile,
-      harness: "fake",
-      model: "fake/model",
-      permissionPolicy: "ask",
-    });
-  }
   await h.human.addRepo({ name, path, defaultProfile: profile });
   return path;
 }

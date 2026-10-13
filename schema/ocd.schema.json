@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "JSON Schema reference for editors.",
+      "type": "string"
+    },
+    "concurrency": {
+      "default": 1,
+      "description": "Maximum number of live workers. Serial by default.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "schedulerIntervalMs": {
+      "default": 1000,
+      "description": "How often queued work is admitted.",
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 9007199254740991
+    },
+    "reconcileIntervalMs": {
+      "default": 30000,
+      "description": "How often live workers are reconciled against the harnesses.",
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 9007199254740991
+    },
+    "stallAfterMinutes": {
+      "default": 30,
+      "description": "A busy worker with no activity for this long gets an inspection request. Workers are never killed.",
+      "type": "number",
+      "minimum": 1
+    },
+    "stallRealertMinutes": {
+      "default": 120,
+      "description": "At most one stall alert per task per window.",
+      "type": "number",
+      "minimum": 1
+    },
+    "attentionExpiryMinutes": {
+      "default": 240,
+      "description": "Unanswered permission requests and questions expire and are denied; they are never replayed.",
+      "type": "number",
+      "minimum": 1
+    },
+    "outbox": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "intervalMs": {
+          "default": 2000,
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 9007199254740991
+        },
+        "maxAttempts": {
+          "default": 8,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "baseDelayMs": {
+          "default": 5000,
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
+    "notifications": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Send macOS desktop notifications.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "opencode": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "serviceFile": {
+          "description": "OpenCode service registration file; defaults to OpenCode's own discovery path.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "allowFakeHarness": {
+      "default": false,
+      "description": "Allow profiles that use the fake harness (tests and dry runs).",
+      "type": "boolean"
+    },
+    "log": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "maxBytes": {
+          "default": 5000000,
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "keep": {
+          "default": 3,
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
+    "profiles": {
+      "default": {},
+      "description": "Named execution profiles. The key is the name used in dispatches and repo defaults. Reload with `ocd reload`.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string",
+            "enum": ["opencode", "claude", "codex", "fake"],
+            "description": "Harness that runs the worker. Only opencode (and fake, for tests) are implemented."
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Model id. For OpenCode: provider/model, optionally #variant (see `opencode models`)."
+          },
+          "description": {
+            "description": "When to use this profile. Shown to the manager, which picks profiles by name.",
+            "type": "string",
+            "maxLength": 500
+          },
+          "agent": {
+            "description": "Harness agent preset, e.g. OpenCode's build agent.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "instructions": {
+            "description": "Standing guidance added to every worker prompt using this profile.",
+            "type": "string",
+            "maxLength": 8000
+          },
+          "permissionPolicy": {
+            "default": "deny",
+            "description": "ask: permission requests go to the human. deny: they are rejected and surfaced as a blocked request.",
+            "type": "string",
+            "enum": ["deny", "ask"]
+          },
+          "envAllowlist": {
+            "default": [],
+            "description": "Environment variables passed to the worker in addition to a minimal base set (PATH, HOME, ...).",
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z_][A-Z0-9_]*$"
+            }
+          }
+        },
+        "required": ["harness", "model"],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "harness": {
+                  "const": "opencode"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "model": {
+                  "pattern": "^[^/\\s]+/\\S+$",
+                  "description": "OpenCode models are written provider/model"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$id": "https://raw.githubusercontent.com/rickyhugo/ocd/main/schema/ocd.schema.json",
+  "title": "OCD configuration (ocd.jsonc)"
+}

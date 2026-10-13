@@ -29,7 +29,8 @@ export function resolveOcdPaths(env: NodeJS.ProcessEnv = process.env): OcdPaths 
   return {
     home,
     db: join(home, "ocd.db"),
-    config: join(home, "config.json"),
+    // Declarative config (settings and profiles); may be a symlink into a git repo.
+    config: resolve(env["OCD_CONFIG"] ?? join(home, "ocd.jsonc")),
     runDir,
     socket,
     lock: join(runDir, "supervisor.lock"),

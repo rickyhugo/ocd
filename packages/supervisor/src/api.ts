@@ -8,7 +8,6 @@ import {
   HEADER_ACTOR,
   HEADER_API_VERSION,
   HEADER_SESSION,
-  ProfileInput,
   RecallInput,
   RegisterManagerInput,
   RememberInput,
@@ -20,6 +19,7 @@ import {
   TaskStateSchema,
   redact,
   type ApiErrorBody,
+  type Profile,
   type ShutdownReport,
   type TaskDetail,
 } from "@ocd/core";
@@ -31,6 +31,7 @@ import Fastify, {
 } from "fastify";
 import { z, ZodError } from "zod";
 
+import { ConfigError, type ProfileRegistry } from "./config.ts";
 import { ApiError, forbidden } from "./errors.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
@@ -53,6 +54,9 @@ export interface ApiDeps {
   logger: Logger;
   /** Invoked after the shutdown response is sent. */
   requestShutdown: () => Promise<ShutdownReport>;
+  profiles: ProfileRegistry;
+  /** Re-reads ocd.jsonc and swaps the profile set; throws ConfigError when invalid. */
+  reload: () => Profile[];
 }
 
 const IdParams = z.object({ id: z.string().min(1).max(100) });
@@ -174,6 +178,13 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     if (req.actor !== "human")
       throw forbidden("human_only", "Repositories are registered by a human");
     const input = RepositoryInput.parse(req.body);
+    if (input.defaultProfile && !deps.profiles.get(input.defaultProfile)) {
+      throw new ApiError(
+        404,
+        "not_found",
+        `Profile ${input.defaultProfile} is not declared in ocd.jsonc`,
+      );
+    }
     const path = await workspaces.canonicalRepoPath(input.path);
     return store.addRepo({ ...input, path });
   });
@@ -183,23 +194,17 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   });
   app.get("/v1/profiles", async (req) => {
     requireCaller(req);
-    return store.listProfiles();
+    return deps.profiles.list();
   });
-  app.post("/v1/profiles", async (req) => {
-    if (req.actor !== "human") throw forbidden("human_only", "Profiles are defined by a human");
-    const input = ProfileInput.parse(req.body);
-    if (input.harness === "opencode" && !/^[^/\s]+\/\S+$/.test(input.model)) {
-      throw new ApiError(400, "invalid_model", "OpenCode models are written provider/model");
+  app.post("/v1/reload", async (req) => {
+    if (req.actor !== "human")
+      throw forbidden("human_only", "Only a human can reload configuration");
+    try {
+      return { profiles: deps.reload() };
+    } catch (error) {
+      if (error instanceof ConfigError) throw new ApiError(400, "invalid_config", error.message);
+      throw error;
     }
-    return store.upsertProfile({
-      name: input.name,
-      harness: input.harness,
-      model: input.model,
-      agent: input.agent ?? null,
-      instructions: input.instructions ?? null,
-      permissionPolicy: input.permissionPolicy,
-      envAllowlist: input.envAllowlist,
-    });
   });
 
   // -- tasks -------------------------------------------------------------------
