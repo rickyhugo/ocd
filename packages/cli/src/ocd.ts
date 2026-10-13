@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -17,16 +16,9 @@ import {
 } from "@ocd/core";
 import {
   ConfigError,
+  DatabaseTooNewError,
   LockHeldError,
   MacNotifier,
-  PendingMigrationsError,
-  SupervisorLock,
-  backupDb,
-  ensurePrivateDir,
-  migrationStatus,
-  openDb,
-  prepareDatabase,
-  restoreDb,
   startDaemon,
 } from "@ocd/supervisor";
 
@@ -36,7 +28,7 @@ import { installLaunchAgent, launchAgentStatus, uninstallLaunchAgent } from "./l
 const HELP = `ocd — local agent control plane
 
 Supervisor
-  ocd daemon [--migrate]            Run the supervisor in the foreground
+  ocd daemon                        Run the supervisor in the foreground
   ocd launchagent install|status|uninstall
                                     Run the supervisor in the background (user LaunchAgent)
   ocd stop                          Stop the supervisor and report worker outcomes
@@ -72,7 +64,6 @@ Memory
 
 Maintenance
   ocd outbox [--status pending|delivered|dead]
-  ocd db status | ocd db migrate | ocd db backup [path] | ocd db restore <path>
 
 Global flags: --json  (machine-readable output)
 Environment: OCD_HOME (default ~/.ocd), OCD_SOCKET
@@ -118,7 +109,6 @@ async function main(argv: string[]): Promise<void> {
     options: {
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h" },
-      migrate: { type: "boolean" },
       background: { type: "boolean" },
       profile: { type: "string" },
       base: { type: "string" },
@@ -156,7 +146,6 @@ async function main(argv: string[]): Promise<void> {
         daemon = await startDaemon({
           paths,
           foreground: !background,
-          migrate: flags.migrate ?? false,
           adapters: buildAdapters,
           managerChannel: buildManagerChannel,
         });
@@ -164,7 +153,7 @@ async function main(argv: string[]): Promise<void> {
         if (
           background &&
           (error instanceof LockHeldError ||
-            error instanceof PendingMigrationsError ||
+            error instanceof DatabaseTooNewError ||
             error instanceof ConfigError)
         ) {
           // Under launchd a clean exit avoids a restart loop; tell the human instead.
@@ -517,71 +506,8 @@ async function main(argv: string[]): Promise<void> {
       );
       return;
     }
-    case "db":
-      await dbCommand(sub, rest, json);
-      return;
     default:
       fail(`unknown command ${command}\n\n${HELP}`);
-  }
-}
-
-async function dbCommand(sub: string | undefined, rest: string[], json: boolean): Promise<void> {
-  ensurePrivateDir(paths.home);
-  ensurePrivateDir(paths.runDir);
-  if (sub === "backup") {
-    // Online backup is safe while the daemon runs; it only reads.
-    if (!existsSync(paths.db)) fail(`no database at ${paths.db}`);
-    const target = resolve(
-      rest[0] ?? join(paths.backups, `ocd-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.db`),
-    );
-    const db = openDb(paths.db, { readonly: true });
-    try {
-      await backupDb(db, target);
-    } finally {
-      db.$client.close();
-    }
-    print({ backup: target }, json, () => `backed up to ${target}`);
-    return;
-  }
-  if (sub === "status") {
-    if (!existsSync(paths.db))
-      return print({ exists: false }, json, () => `no database yet at ${paths.db}`);
-    const db = openDb(paths.db, { readonly: true });
-    const status = migrationStatus(db);
-    db.$client.close();
-    print(
-      status,
-      json,
-      () =>
-        `${paths.db}: ${status.applied}/${status.available} migrations applied, ${status.pending} pending`,
-    );
-    return;
-  }
-  // Writers must hold the supervisor lock, so the daemon has to be stopped.
-  const lock = SupervisorLock.acquire(paths.lock, {
-    pid: process.pid,
-    instanceId: `cli-${sub ?? "db"}`,
-  });
-  try {
-    if (sub === "migrate") {
-      ensurePrivateDir(paths.backups);
-      const db = await prepareDatabase(paths, { migrate: true });
-      const status = migrationStatus(db);
-      db.$client.close();
-      print(status, json, () => `migrated: ${status.applied}/${status.available} applied`);
-    } else if (sub === "restore") {
-      if (!rest[0]) fail("usage: ocd db restore <backup>");
-      const r = restoreDb(paths.db, resolve(rest[0]));
-      print(
-        r,
-        json,
-        () => `restored from ${rest[0]}; previous database kept at ${r.previous ?? "(none)"}`,
-      );
-    } else {
-      fail("usage: ocd db status|migrate|backup|restore");
-    }
-  } finally {
-    lock.release();
   }
 }
 
@@ -589,7 +515,7 @@ main(process.argv.slice(2)).catch((error: unknown) => {
   if (
     error instanceof SupervisorUnavailableError ||
     error instanceof LockHeldError ||
-    error instanceof PendingMigrationsError ||
+    error instanceof DatabaseTooNewError ||
     error instanceof ConfigError
   ) {
     fail(error.message);

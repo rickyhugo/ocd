@@ -191,10 +191,17 @@ refused.
 
 ## Maintenance
 
+The database migrates itself: on startup the daemon backs up an existing
+database to `~/.ocd/backups/pre-migrate-*.db` and applies pending reviewed
+migrations in one transaction (a failure leaves the database unchanged). It
+refuses to start on a database written by a newer OCD. Automatic backups
+(`auto-*.db`) are taken daily.
+
+To restore a backup, stop the daemon (`ocd stop`), move `~/.ocd/ocd.db` and any
+`ocd.db-wal` / `ocd.db-shm` aside, copy the backup to `~/.ocd/ocd.db`, and start
+the daemon again.
+
 ```sh
-ocd db backup                 # SQLite online backup into ~/.ocd/backups
-ocd db restore <file>         # daemon stopped; the old DB is kept, not deleted
-ocd db migrate                # applies reviewed migrations after a backup
 ocd outbox --status dead      # notifications that gave up (also listed in `ocd attention`)
 ```
 
