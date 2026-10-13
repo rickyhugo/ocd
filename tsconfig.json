@@ -6,8 +6,10 @@
     "types": ["node"],
     "skipLibCheck": true,
 
-    /* Node.js ESM */
+    /* Node.js ESM; workspace packages resolve to source via the "source" condition */
     "moduleResolution": "NodeNext",
+    "customConditions": ["source"],
+    "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
     "noEmit": true,
@@ -21,5 +23,10 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "vite.config.ts"]
+  "include": [
+    "packages/*/src",
+    "packages/*/vite.config.ts",
+    "packages/*/drizzle.config.ts",
+    "vite.config.ts"
+  ]
 }

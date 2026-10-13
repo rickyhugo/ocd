@@ -1,16 +1,14 @@
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
-  pack: {
-    entry: ["src/index.ts"],
-    platform: "node",
-    target: "node24",
-    format: ["esm"],
-    dts: true,
-    sourcemap: true,
-  },
+  // Workspace packages export their TypeScript sources under the "source" condition.
+  resolve: { conditions: ["source"] },
+  ssr: { resolve: { conditions: ["source"], externalConditions: ["source"] } },
   test: {
     environment: "node",
+    include: ["packages/*/src/**/*.test.ts"],
+    // Tests open real SQLite files, sockets, and git worktrees in temp dirs.
+    testTimeout: 20_000,
   },
   fmt: {},
   lint: {
