@@ -4,6 +4,7 @@ import {
   type Attention,
   type AttentionKind,
   type AttentionStatus,
+  type BranchSync,
   type Decision,
   type HarnessName,
   type Manager,
@@ -410,6 +411,11 @@ export class Store {
         .run();
       if (event) this.appendEvent(taskId, event.type, event.data);
     });
+  }
+
+  /** Records a branch-sync finding. Not task activity, so updatedAt is left alone. */
+  setBranchSync(taskId: string, status: BranchSync): void {
+    this.db.update(tasks).set({ branchSync: status }).where(eq(tasks.id, taskId)).run();
   }
 
   touchActivity(taskId: string, at: string): void {
@@ -1020,6 +1026,7 @@ export class Store {
       baseRef: row.baseRef,
       sessionId: row.sessionId,
       pullRequestUrl: row.pullRequestUrl,
+      branchSync: row.branchSync ?? null,
       attempts: row.attempts,
       result: row.result ?? null,
       error: row.error,

@@ -272,6 +272,9 @@ healthy idle sessions are not hangs. Inactivity requests inspection, not killing
 Create one managed Git worktree per editing task. Parallel tasks never edit the
 same checkout. Verify repository/path ownership and refuse collisions. Preserve
 dirty worktrees and unpushed commits; explicit cleanup is separate from execution.
+(Implemented: an opt-in, deterministic branch-sync watchdog reports drift from a
+repo's `baseRef` and, in `refresh` mode, fast-forwards or merges it into clean,
+idle task branches at lifecycle boundaries only; see `docs/branch-sync.md`.)
 
 Worktrees isolate edits, not secrets, network access, or arbitrary shell commands.
 Use harness sandbox/permission controls and repository branch protection. Require

@@ -386,7 +386,12 @@ says why (`available: false` with notes) instead of guessing.
 1. The manager calls `ocd_dispatch_task`. The supervisor persists the task and
    returns its ID; the worker is owned by the supervisor from then on.
 2. Each task gets its own worktree under `~/.ocd/workspaces/<repo>/<task>` on
-   branch `ocd/<task>`. Workspaces are never deleted by OCD.
+   branch `ocd/<task>`. Workspaces are never deleted by OCD. Optionally
+   (`"branchSync"`, off by default), a watchdog reports how far each task
+   branch has drifted from the repo's `baseRef` and whether merging it would
+   conflict, and in `refresh` mode fast-forwards or merges the base into clean,
+   idle task branches at safe points (never pushing, rebasing, stashing or
+   resolving conflicts). See [docs/branch-sync.md](docs/branch-sync.md).
 3. Permission requests block the task and notify you; only a human can approve
    them, from an interactive terminal: `ocd attention resolve <id> --approve`.
    Other `permissionPolicy` values: `deny` (the default) rejects requests and
