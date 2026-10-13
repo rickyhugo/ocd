@@ -196,6 +196,8 @@ export class OcdClient {
     id: string,
     options: { draft?: boolean; base?: string; commit?: boolean } = {},
   ) => this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/pull-request`, options);
+  mergePullRequest = (id: string, method?: "squash" | "merge" | "rebase") =>
+    this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/merge`, method ? { method } : {});
   acceptTask = (id: string) =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/accept`);
   resumeTask = (id: string, mode: "reattach" | "relaunch") =>

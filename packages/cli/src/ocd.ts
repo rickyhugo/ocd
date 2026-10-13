@@ -52,6 +52,8 @@ Tasks
   ocd task resume <id> --mode reattach|relaunch
   ocd task pr <id> [--draft] [--base BRANCH] [--commit]
                                     Push the task branch and open a pull request (optional; never merges)
+  ocd task merge <id> [--method squash|merge|rebase]
+                                    Merge an accepted task's PR once checks pass (never overrides protection)
   ocd task cleanup <id> [--force]   Remove a finished task's worktree and branch (refuses to lose work)
 
 Attention
@@ -126,6 +128,7 @@ async function main(argv: string[]): Promise<void> {
       mode: { type: "string" },
       approve: { type: "boolean" },
       force: { type: "boolean" },
+      method: { type: "string" },
       draft: { type: "boolean" },
       commit: { type: "boolean" },
       deny: { type: "boolean" },
@@ -386,6 +389,25 @@ async function main(argv: string[]): Promise<void> {
         print(t, json, () => `cancelled ${id}; workspace preserved at ${t.workspacePath ?? "-"}`);
       } else if (sub === "accept") {
         print(await client.acceptTask(id), json, () => `accepted ${id} as completed`);
+      } else if (sub === "merge") {
+        const method = flags.method;
+        if (
+          method !== undefined &&
+          method !== "squash" &&
+          method !== "merge" &&
+          method !== "rebase"
+        ) {
+          fail("--method must be squash, merge or rebase");
+        }
+        const t = await client.mergePullRequest(id, method);
+        const merged = (await client.inspectTask(id)).events.some(
+          (e) => e.type === "pull_request.merged",
+        );
+        print(t, json, () =>
+          merged
+            ? `merged ${t.pullRequestUrl}; worktree and branches removed`
+            : `merge requested for ${t.pullRequestUrl} (queued)`,
+        );
       } else if (sub === "cleanup") {
         const t = await client.cleanupTask(id, flags.force ?? false);
         print(t, json, () => `removed the worktree and branch of ${id}`);

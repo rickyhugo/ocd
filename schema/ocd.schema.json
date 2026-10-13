@@ -218,6 +218,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          },
+          "mergeMethod": {
+            "description": "How OCD merges this repository's pull requests when asked (default squash).",
+            "type": "string",
+            "enum": ["squash", "merge", "rebase"]
           }
         },
         "required": ["path"],

@@ -24,7 +24,7 @@ import type { SupervisorConfigInput } from "./config.ts";
 import { startDaemon, type Daemon, type DaemonOptions } from "./daemon.ts";
 import { createLogger } from "./logger.ts";
 import { RecordingManagerChannel, RecordingNotifier } from "./notify.ts";
-import type { PullRequestCreator } from "./pull-requests.ts";
+import type { PullRequestHost } from "./pull-requests.ts";
 
 // Fixtures for routine tests: temporary state directories and git repositories,
 // fake harnesses, and recording notifiers. Nothing here calls a real model.
@@ -81,7 +81,7 @@ export interface Harness {
 
 export interface HarnessOptions {
   config: Partial<SupervisorConfigInput>;
-  pullRequests: PullRequestCreator;
+  pullRequests: PullRequestHost;
   /** Replace the default fake adapter (e.g. with an OpenCode adapter over a fake service). */
   adapters: (fake: FakeAdapter) => HarnessAdapter[];
   fake: Omit<FakeAdapterOptions, "state">;

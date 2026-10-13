@@ -221,6 +221,22 @@ export function buildTools(
       },
     },
     {
+      name: "merge_pull_request",
+      description:
+        "Merge an accepted task's pull request. Only when the human explicitly says to merge in this conversation. Refuses on failing or pending checks, conflicts, drafts, or branch protection; never overrides them. Removes the task's worktree and branches afterwards.",
+      input: obj(
+        { id: str("Task ID"), method: { type: "string", enum: ["squash", "merge", "rebase"] } },
+        ["id"],
+      ),
+      run: async (input, ctx) => {
+        const i = z
+          .object({ id: z.string(), method: z.enum(["squash", "merge", "rebase"]).optional() })
+          .parse(input);
+        const t = await clientFor(ctx.sessionID, ctx.directory).mergePullRequest(i.id, i.method);
+        return `Merge done or queued for ${t.pullRequestUrl}. Check ocd_inspect_task for the pull_request.merged event.`;
+      },
+    },
+    {
       name: "cleanup_task",
       description:
         "Remove a completed or cancelled task's worktree and branch. Refuses if that would lose work (uncommitted changes, or commits not on any other branch or remote); only the human can force it.",

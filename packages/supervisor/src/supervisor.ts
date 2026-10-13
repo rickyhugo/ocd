@@ -28,7 +28,7 @@ import {
 import type { z } from "zod";
 
 import type { LiveConfig, SupervisorConfig } from "./config.ts";
-import type { PullRequestCreator } from "./pull-requests.ts";
+import type { MergeMethod, PullRequestHost } from "./pull-requests.ts";
 import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } from "./errors.ts";
 import { iso, type Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
@@ -62,7 +62,7 @@ export interface SupervisorOptions {
   hooks?: SupervisorHooks;
   live: LiveConfig;
   /** Opens pull requests on request; absent means the PR tool is unavailable. */
-  pullRequests?: PullRequestCreator;
+  pullRequests?: PullRequestHost;
   /** Called when a simulated crash fires; the daemon tears down without cleanup. */
   onCrash?: (error: SimulatedCrash) => void;
 }
@@ -1515,6 +1515,88 @@ export class Supervisor {
         taskId,
         { pullRequestUrl: url },
         { type: "pull_request.opened", data: { url, base, draft: options.draft, actor } },
+      );
+      return this.store.requireTask(taskId);
+    });
+  }
+
+  /**
+   * Merges an accepted task's pull request after checking GitHub's view of it,
+   * then removes the worktree and both branches. Never overrides branch
+   * protection, failing or pending checks, conflicts, or drafts.
+   */
+  async mergePullRequest(
+    taskId: string,
+    options: { method?: MergeMethod | undefined },
+    actor: Actor,
+  ): Promise<Task> {
+    return this.withTaskLock(taskId, async () => {
+      const task = this.store.requireTask(taskId);
+      const url = task.pullRequestUrl;
+      if (!url) throw conflict("no_pull_request", "The task has no pull request; open one first");
+      if (task.state !== "completed")
+        throw conflict("not_accepted", `Accept the task before merging (task is ${task.state})`);
+      const host = this.o.pullRequests;
+      if (!host)
+        throw new ApiError(
+          422,
+          "pr_unavailable",
+          "Pull requests are not available (gh not configured)",
+        );
+      const repo = this.store.requireRepo(task.repo, { includeRetired: true });
+      const method = options.method ?? this.o.live.mergeMethod(task.repo);
+      let status = await host.status(url, repo.path);
+      if (status.state === "closed")
+        throw conflict("pr_closed", `${url} is closed without merging`);
+      if (status.state === "open") {
+        if (status.draft)
+          throw conflict("pr_draft", `${url} is a draft; mark it ready for review first`);
+        if (status.mergeable === "conflicting")
+          throw conflict("pr_conflicts", `${url} has merge conflicts with its base`);
+        if (status.failingChecks.length) {
+          throw conflict(
+            "pr_checks_failed",
+            `Checks failing on ${url}: ${status.failingChecks.join(", ")}`,
+            { checks: status.failingChecks },
+          );
+        }
+        if (status.pendingChecks.length) {
+          throw conflict(
+            "pr_checks_pending",
+            `Checks still running on ${url}: ${status.pendingChecks.join(", ")}`,
+            { checks: status.pendingChecks },
+          );
+        }
+        if (status.mergeable === "unknown")
+          throw conflict(
+            "pr_not_ready",
+            "GitHub is still computing mergeability; try again shortly",
+          );
+        if (status.mergeState === "BLOCKED") {
+          throw conflict(
+            "pr_blocked",
+            `${url} is blocked by branch protection or required reviews; OCD never overrides that`,
+          );
+        }
+        await host.merge(url, repo.path, method);
+        status = await host.status(url, repo.path);
+        if (status.state !== "merged") {
+          // e.g. a merge queue: GitHub accepted the request but has not merged yet.
+          this.store.appendEvent(taskId, "pull_request.merge_requested", { url, method, actor });
+          return this.store.requireTask(taskId);
+        }
+      }
+      // Merged on GitHub: the work is safe there, so local copies can go.
+      const branch = task.branch ?? this.o.workspaces.branchFor(taskId);
+      await this.o.workspaces.remove(repo.path, task.workspacePath, branch, true);
+      const remoteDeleted = await this.o.workspaces.deleteRemoteBranch(repo.path, "origin", branch);
+      this.store.patchTask(
+        taskId,
+        { workspacePath: null },
+        {
+          type: "pull_request.merged",
+          data: { url, method, actor, remoteBranchDeleted: remoteDeleted },
+        },
       );
       return this.store.requireTask(taskId);
     });
