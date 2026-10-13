@@ -751,6 +751,32 @@ export class Supervisor {
       return;
     }
 
+    if (interaction.kind === "permission" && task.profile.permissionPolicy === "allow") {
+      // Explicit opt-in: approve this one request and keep an audit record. The
+      // record is written first so a repeated event never approves twice.
+      const { attention, created } = this.store.raiseAttention(
+        {
+          taskId,
+          kind: "permission",
+          dedupeKey,
+          reason: truncate(
+            redact(`Permission auto-approved by profile policy: ${interaction.summary}`),
+            2000,
+          ),
+          resolvableBy: "human",
+          ...binding,
+        },
+        { notify: false, wake: false },
+      );
+      if (!created) return;
+      await adapter.reply({ sessionId: task.sessionId! }, interaction.id, { type: "approve" });
+      this.store.settleAttention(attention.id, {
+        status: "resolved",
+        response: { type: "approve" },
+      });
+      return;
+    }
+
     // Workflow questions may be answered by the manager; permissions only by a human.
     const resolvableBy: Actor = interaction.kind === "permission" ? "human" : "manager";
     const attention = {

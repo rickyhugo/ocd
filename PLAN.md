@@ -259,7 +259,9 @@ out of scope until authentication and binding are implemented.
 
 Distinguish human workflow decisions from native harness permission checks. If
 the first adapter version cannot forward a permission safely, deny it and surface
-the block; never substitute `approve-all`. Quota limits, permission waits, and
+the block; never substitute `approve-all` by default. (Implemented: a profile may
+explicitly opt in to `"permissionPolicy": "allow"`, which approves each request
+once and records it.) Quota limits, permission waits, and
 healthy idle sessions are not hangs. Inactivity requests inspection, not killing.
 
 ## Workspace and authority boundaries

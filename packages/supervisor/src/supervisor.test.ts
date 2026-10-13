@@ -336,3 +336,21 @@ describe("API boundaries", () => {
     });
   });
 });
+
+describe("allow permission policy", () => {
+  it("approves each request once without blocking, and records it", async () => {
+    h = await startHarness({
+      config: {
+        profiles: { open: { harness: "fake", model: "fake/model", permissionPolicy: "allow" } },
+      },
+    });
+    await setupRepo(h, "app", "open");
+    const { task } = await dispatch(h.human, "app", "go [fake:permission]");
+    const detail = await waitForState(h, task.id, "ready_for_review");
+    expect(detail.events.some((e) => e.type === "state.blocked")).toBe(false);
+    const record = detail.attention.find((a) => a.kind === "permission");
+    expect(record).toMatchObject({ status: "resolved", response: { type: "approve" } });
+    expect(record?.reason).toMatch(/auto-approved/);
+    expect(h.notifier.sent.some((n) => n.body.includes("auto-approved"))).toBe(false);
+  });
+});

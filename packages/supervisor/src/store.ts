@@ -572,6 +572,21 @@ export class Store {
     return this.requireAttention(id);
   }
 
+  /** Settles every open request in a dedupe-key family (key, key#1, key#2, ...). */
+  settleOpenAttention(dedupeKey: string, status: AttentionStatus): number {
+    const escaped = dedupeKey.replaceAll(/[\\%_]/g, (c) => `\\${c}`);
+    return this.db
+      .update(attentionRequests)
+      .set({ status, resolvedAt: this.now() })
+      .where(
+        and(
+          eq(attentionRequests.status, "open"),
+          sql`(${attentionRequests.dedupeKey} = ${dedupeKey} OR ${attentionRequests.dedupeKey} LIKE ${`${escaped}#%`} ESCAPE '\\')`,
+        ),
+      )
+      .run().changes;
+  }
+
   countOpenAttention(): number {
     const row = this.db
       .select({ n: sql<number>`count(*)` })

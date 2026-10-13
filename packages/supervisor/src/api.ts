@@ -19,7 +19,6 @@ import {
   TaskStateSchema,
   redact,
   type ApiErrorBody,
-  type Profile,
   type ShutdownReport,
   type TaskDetail,
 } from "@ocd/core";
@@ -31,7 +30,7 @@ import Fastify, {
 } from "fastify";
 import { z, ZodError } from "zod";
 
-import { ConfigError, type ProfileRegistry } from "./config.ts";
+import type { ProfileRegistry } from "./config.ts";
 import { ApiError, forbidden } from "./errors.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
@@ -55,8 +54,6 @@ export interface ApiDeps {
   /** Invoked after the shutdown response is sent. */
   requestShutdown: () => Promise<ShutdownReport>;
   profiles: ProfileRegistry;
-  /** Re-reads ocd.jsonc and swaps the profile set; throws ConfigError when invalid. */
-  reload: () => Profile[];
 }
 
 const IdParams = z.object({ id: z.string().min(1).max(100) });
@@ -195,16 +192,6 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   app.get("/v1/profiles", async (req) => {
     requireCaller(req);
     return deps.profiles.list();
-  });
-  app.post("/v1/reload", async (req) => {
-    if (req.actor !== "human")
-      throw forbidden("human_only", "Only a human can reload configuration");
-    try {
-      return { profiles: deps.reload() };
-    } catch (error) {
-      if (error instanceof ConfigError) throw new ApiError(400, "invalid_config", error.message);
-      throw error;
-    }
   });
 
   // -- tasks -------------------------------------------------------------------

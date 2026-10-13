@@ -74,8 +74,10 @@ named recipe for running a worker; the manager and repos refer to it by name.
 ```
 
 The daemon validates the file at startup and refuses typos and invalid
-profiles. `ocd reload` re-reads profiles without a restart (other settings need
-one). [`schema/ocd.schema.json`](schema/ocd.schema.json) gives editors
+profiles. While it runs, saved changes to profiles apply immediately (other
+settings need a restart); if a save leaves the file invalid, the last good
+profiles stay in effect and one item appears in `ocd attention list` until the
+file is fixed. [`schema/ocd.schema.json`](schema/ocd.schema.json) gives editors
 completion and hover docs; it is generated from the daemon's own validation
 (`pnpm run schema`), and a test fails if it drifts. Tasks keep a snapshot of
 the profile they were dispatched with.
@@ -115,8 +117,9 @@ even if the plugin is loaded globally. Replacing a manager needs
    branch `ocd/<task>`. Workspaces are never deleted by OCD.
 3. Permission requests block the task and notify you; only a human can approve
    them, from an interactive terminal: `ocd attention resolve <id> --approve`.
-   Profiles with `"permissionPolicy": "deny"` reject them and surface the block
-   instead.
+   Profiles with `"permissionPolicy": "deny"` reject them and record the block
+   instead; `"allow"` approves each request once, automatically, and records it
+   (`ocd attention list --all`). The default is `deny`.
 4. When the worker goes idle, OCD collects its `ocd-report` and independently
    checks the worktree with git (changed files, commits, uncommitted changes).
    A valid report makes the task `ready_for_review`.
@@ -135,7 +138,7 @@ request header: the human-only checks stop the manager _model_ from approving
 permissions, accepting work, or reconfiguring OCD through its tools, but they
 are not authentication. A worker or any process running as you with shell
 access could call the socket (or run `ocd`) directly. Keep worker profiles on
-`ask` or `deny`, rely on the harness's own sandbox and permission
+`ask` or `deny` unless you opted into `allow`, rely on the harness's own sandbox and permission
 rules for shell access, and treat OCD as a coordination layer, not a security
 boundary. Approving a permission from the CLI additionally requires typing
 `approve` in an interactive terminal.
