@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { OpenCodeAdapter } from "@ocd/adapters";
@@ -22,6 +23,7 @@ async function boot(service: FakeOpenCodeService, paths: ReturnType<typeof testP
   return startDaemon({
     paths,
     config: {
+      manager: { directory: join(paths.home, "..", "manager") },
       schedulerIntervalMs: 20,
       reconcileIntervalMs: 60_000,
       outbox: { intervalMs: 20, maxAttempts: 3, baseDelayMs: 10 },
@@ -54,6 +56,8 @@ describe("OpenCode vertical slice through the plugin tools", () => {
   it("dispatches, gates permissions on the human, survives a supervisor restart, and reports back", async () => {
     root = tempDir();
     const paths = testPaths(join(root, "home"));
+    const managerDir = join(root, "manager");
+    mkdirSync(managerDir);
     const service = new FakeOpenCodeService();
     daemon = await boot(service, paths);
     const human = new OcdClient({ socketPath: paths.socket, actor: "human" });
@@ -61,7 +65,8 @@ describe("OpenCode vertical slice through the plugin tools", () => {
 
     const tools = new Map<string, OcdTool>(
       buildTools(
-        (sessionId) => new OcdClient({ socketPath: paths.socket, actor: "manager", sessionId }),
+        (sessionId, directory) =>
+          new OcdClient({ socketPath: paths.socket, actor: "manager", sessionId, directory }),
       ).map((t) => [t.name, t]),
     );
     const call = (
@@ -69,11 +74,11 @@ describe("OpenCode vertical slice through the plugin tools", () => {
       input: unknown,
       sessionID = "ses_mgr",
       callID = `call_${Math.random()}`,
-    ) => runTool(tools.get(name)!, input, { sessionID, callID, directory: root! });
+      directory = managerDir,
+    ) => runTool(tools.get(name)!, input, { sessionID, callID, directory });
 
-    expect(await call("list_tasks", {})).toMatch(/no_manager/);
-    expect(await call("register_manager", {})).toMatch(/Registered ses_mgr/);
-    expect(await call("register_manager", {}, "ses_intruder")).toMatch(/manager_exists/);
+    expect(await call("list_tasks", {}, "ses_elsewhere", "c", root!)).toMatch(/not_manager/);
+    expect(await call("list_tasks", {})).toMatch(/No matching tasks/);
     expect(await call("list_repos", {})).toMatch(/app \(default profile: oc\)/);
     expect(await call("list_repos", {})).toMatch(
       /oc: opencode anthropic\/claude-x agent=build, permissions=ask — Default worker/,
@@ -153,7 +158,7 @@ describe("OpenCode vertical slice through the plugin tools", () => {
     );
 
     // A fresh or compacted manager context gets a bounded briefing; other sessions get nothing.
-    const briefing = new BriefingCache(paths.socket);
+    const briefing = new BriefingCache(paths.socket, managerDir);
     expect(await briefing.forSession("ses_mgr")).toContain(taskId);
     expect(await briefing.forSession(workerId)).toBeNull();
 

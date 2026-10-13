@@ -121,6 +121,19 @@
       },
       "additionalProperties": false
     },
+    "manager": {
+      "description": "The manager: sessions in this directory act as manager, and the most recently used one receives updates.",
+      "type": "object",
+      "properties": {
+        "directory": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Working directory of the manager. OpenCode sessions started here may use the ocd_* tools; `~` is expanded."
+        }
+      },
+      "required": ["directory"],
+      "additionalProperties": false
+    },
     "profiles": {
       "default": {},
       "description": "Named execution profiles. The key is the name used in dispatches and repo defaults. Saved changes apply automatically.",

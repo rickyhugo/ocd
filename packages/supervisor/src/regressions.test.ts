@@ -177,10 +177,8 @@ describe("review regressions", () => {
       () => h.human.inspectTask(task.id),
       (d) => d.runs.length === 2 && d.task.state === "running",
     );
-    await expect(
-      h
-        .manager(first.task.sessionId!)
-        .registerManager({ sessionId: first.task.sessionId!, directory: h.root }),
-    ).rejects.toMatchObject({ code: "worker_session" });
+    await expect(h.manager(first.task.sessionId!).listTasks()).rejects.toMatchObject({
+      code: "worker_session",
+    });
   });
 });

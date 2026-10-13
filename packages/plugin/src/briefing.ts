@@ -1,55 +1,48 @@
-import { OcdClient } from "@ocd/core";
+import { OcdApiError, OcdClient } from "@ocd/core";
 
-const MANAGER_TTL_MS = 30_000;
 const BRIEFING_TTL_MS = 15_000;
+const NOT_MANAGER_TTL_MS = 30_000;
 
 /**
- * Supplies the bounded briefing for the registered manager session only. The
- * context hook runs on every model request, so results are cached briefly.
+ * Supplies the bounded briefing to manager sessions only: the supervisor
+ * decides from the session's directory. The context hook runs on every model
+ * request, so results (including "not a manager") are cached briefly.
  */
 export class BriefingCache {
   private readonly socketPath: string;
-  private manager: { sessionId: string | null; at: number } | null = null;
-  private briefing: { sessionId: string; text: string; at: number } | null = null;
+  private readonly directory: string;
   private readonly now: () => number;
+  private readonly cache = new Map<string, { text: string | null; at: number; ttl: number }>();
 
-  constructor(socketPath: string, now: () => number = Date.now) {
+  constructor(socketPath: string, directory: string, now: () => number = Date.now) {
     this.socketPath = socketPath;
+    this.directory = directory;
     this.now = now;
   }
 
-  private client(sessionId?: string): OcdClient {
-    return new OcdClient({
+  async forSession(sessionId: string): Promise<string | null> {
+    const cached = this.cache.get(sessionId);
+    if (cached && this.now() - cached.at < cached.ttl) return cached.text;
+    const client = new OcdClient({
       socketPath: this.socketPath,
       actor: "manager",
+      sessionId,
+      directory: this.directory,
       timeoutMs: 5_000,
-      ...(sessionId ? { sessionId } : {}),
     });
-  }
-
-  private async managerSession(): Promise<string | null> {
-    if (this.manager && this.now() - this.manager.at < MANAGER_TTL_MS)
-      return this.manager.sessionId;
     try {
-      const manager = await this.client().getManager();
-      this.manager = { sessionId: manager?.sessionId ?? null, at: this.now() };
-    } catch {
-      // Keep the last known manager while the supervisor is unreachable.
-      if (!this.manager) return null;
-    }
-    return this.manager?.sessionId ?? null;
-  }
-
-  async forSession(sessionId: string): Promise<string | null> {
-    if ((await this.managerSession()) !== sessionId) return null;
-    if (this.briefing?.sessionId === sessionId && this.now() - this.briefing.at < BRIEFING_TTL_MS)
-      return this.briefing.text;
-    try {
-      const briefing = await this.client(sessionId).briefing();
-      this.briefing = { sessionId, text: briefing.text, at: this.now() };
+      const briefing = await client.briefing();
+      this.cache.set(sessionId, { text: briefing.text, at: this.now(), ttl: BRIEFING_TTL_MS });
       return briefing.text;
-    } catch {
-      return "## OCD briefing\nThe OCD supervisor is unreachable, so task state may be stale. Ask the human to check `ocd status`.";
+    } catch (error) {
+      if (error instanceof OcdApiError && error.status === 403) {
+        this.cache.set(sessionId, { text: null, at: this.now(), ttl: NOT_MANAGER_TTL_MS });
+        return null;
+      }
+      // Only a session that has been a manager hears that the supervisor is down.
+      return cached?.text
+        ? "## OCD briefing\nThe OCD supervisor is unreachable, so task state may be stale. Ask the human to check `ocd status`."
+        : null;
     }
   }
 }

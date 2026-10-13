@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -62,7 +62,10 @@ export interface Harness {
   daemon: Daemon;
   adapter: FakeAdapter;
   human: OcdClient;
-  manager(sessionId: string): OcdClient;
+  /** `manager.directory` configured for this harness. */
+  managerDirectory: string;
+  /** A plugin-style client for an OpenCode session in `directory` (default: the manager directory). */
+  manager(sessionId: string, directory?: string): OcdClient;
   restart(overrides?: Partial<HarnessOptions>): Promise<Daemon>;
   cleanup(): Promise<void>;
 }
@@ -92,10 +95,13 @@ export async function startHarness(options: Partial<HarnessOptions> = {}): Promi
   const managerChannel = new RecordingManagerChannel();
   let adapter!: FakeAdapter;
 
+  const managerDirectory = join(root, "manager");
+  mkdirSync(managerDirectory);
   const boot = async (opts: Partial<HarnessOptions>) => {
     const daemon = await startDaemon({
       paths,
       config: {
+        manager: { directory: managerDirectory },
         ...TEST_CONFIG,
         ...opts.config,
         profiles: { ...TEST_CONFIG.profiles, ...opts.config?.profiles },
@@ -113,8 +119,13 @@ export async function startHarness(options: Partial<HarnessOptions> = {}): Promi
     return daemon;
   };
 
-  const client = (actor: Actor, sessionId?: string) =>
-    new OcdClient({ socketPath: paths.socket, actor, ...(sessionId ? { sessionId } : {}) });
+  const client = (actor: Actor, sessionId?: string, directory?: string) =>
+    new OcdClient({
+      socketPath: paths.socket,
+      actor,
+      ...(sessionId ? { sessionId } : {}),
+      ...(directory ? { directory } : {}),
+    });
 
   const harness: Harness = {
     root,
@@ -127,7 +138,8 @@ export async function startHarness(options: Partial<HarnessOptions> = {}): Promi
       return adapter;
     },
     human: client("human"),
-    manager: (sessionId) => client("manager", sessionId),
+    managerDirectory,
+    manager: (sessionId, directory = managerDirectory) => client("manager", sessionId, directory),
     async restart(overrides = {}) {
       harness.daemon = await boot({ ...options, ...overrides });
       return harness.daemon;

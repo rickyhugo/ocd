@@ -98,10 +98,11 @@ plugin SDK. The skeleton's root `src/index.ts` is temporary, not the final daemo
 
 ## Global manager and plugin
 
-Explicitly register the manager session and its OpenCode service identity. A
-globally configured plugin may load in multiple locations; this does not create
-a singleton manager. Route worker results and attention requests to the
-registered manager only. A plugin reload must not create another supervisor or
+Declare the manager explicitly. (Implemented as `manager.directory` in
+`ocd.jsonc`: sessions in that directory act as manager, and the most recently
+used one receives updates.) A globally configured plugin may load in multiple
+locations; this does not create a singleton manager. Route worker results and
+attention requests to the active manager session only. A plugin reload must not create another supervisor or
 manager, and workers must not receive unrestricted dispatch tools.
 
 Use a dedicated control-plane directory outside any application repository for

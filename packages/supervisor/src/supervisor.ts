@@ -27,7 +27,7 @@ import {
 } from "@ocd/adapters";
 import type { z } from "zod";
 
-import type { ProfileRegistry, SupervisorConfig } from "./config.ts";
+import type { LiveConfig, SupervisorConfig } from "./config.ts";
 import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } from "./errors.ts";
 import { iso, type Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
@@ -59,7 +59,7 @@ export interface SupervisorOptions {
   clock: Clock;
   instanceId: string;
   hooks?: SupervisorHooks;
-  profiles: ProfileRegistry;
+  live: LiveConfig;
   /** Called when a simulated crash fires; the daemon tears down without cleanup. */
   onCrash?: (error: SimulatedCrash) => void;
 }
@@ -276,7 +276,7 @@ export class Supervisor {
         "profile_required",
         `Repository ${repo.name} has no default profile; choose one`,
       );
-    const profile = this.o.profiles.get(profileName);
+    const profile = this.o.live.getProfile(profileName);
     if (!profile) throw notFound(`Profile ${profileName} (declare it in ocd.jsonc)`);
     this.assertHarnessUsable(profile.harness);
     const result = this.store.createTask({

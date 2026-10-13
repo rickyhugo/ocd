@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, realpathSync, watch, type FSWatcher } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync, watch, type FSWatcher } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { ProfilesConfig, type Profile } from "@ocd/core";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
@@ -81,6 +82,20 @@ export const SupervisorConfig = z
       .object({ maxBytes: z.number().int().default(5_000_000), keep: z.number().int().default(3) })
       .strict()
       .prefault({}),
+    manager: z
+      .object({
+        directory: z
+          .string()
+          .min(1)
+          .describe(
+            "Working directory of the manager. OpenCode sessions started here may use the ocd_* tools; `~` is expanded.",
+          ),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "The manager: sessions in this directory act as manager, and the most recently used one receives updates.",
+      ),
     profiles: ProfilesConfig.default({}).describe(
       "Named execution profiles. The key is the name used in dispatches and repo defaults. Saved changes apply automatically.",
     ),
@@ -150,23 +165,35 @@ export function toProfiles(config: Pick<SupervisorConfig, "profiles">): Profile[
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** The current profile set. Replaced atomically when ocd.jsonc changes; tasks keep their own snapshot. */
-export class ProfileRegistry {
+/** Expands `~` and resolves symlinks so directory comparisons are exact. */
+export function normalizeDirectory(directory: string): string {
+  const expanded =
+    directory === "~" || directory.startsWith("~/")
+      ? join(homedir(), directory.slice(1))
+      : directory;
+  const absolute = resolve(expanded);
+  return existsSync(absolute) ? realpathSync(absolute) : absolute;
+}
+
+/** The parts of ocd.jsonc that apply live. Replaced atomically on save; tasks keep their own profile snapshot. */
+export class LiveConfig {
   private profiles = new Map<string, Profile>();
+  managerDirectory: string | null = null;
 
-  constructor(profiles: Profile[] = []) {
-    this.replace(profiles);
+  constructor(config: SupervisorConfig) {
+    this.apply(config);
   }
 
-  replace(profiles: Profile[]): void {
-    this.profiles = new Map(profiles.map((p) => [p.name, p]));
+  apply(config: SupervisorConfig): void {
+    this.profiles = new Map(toProfiles(config).map((p) => [p.name, p]));
+    this.managerDirectory = config.manager ? normalizeDirectory(config.manager.directory) : null;
   }
 
-  get(name: string): Profile | null {
+  getProfile(name: string): Profile | null {
     return this.profiles.get(name) ?? null;
   }
 
-  list(): Profile[] {
+  listProfiles(): Profile[] {
     return [...this.profiles.values()];
   }
 }
@@ -174,7 +201,8 @@ export class ProfileRegistry {
 /**
  * Watches ocd.jsonc for saves. Editors often replace the file (write + rename)
  * and the path may be a symlink, so the directories of both the link and its
- * target are watched and changes are debounced.
+ * target are watched and changes are debounced. File events can be delayed or
+ * dropped, so a slow stat poll backs them up.
  */
 export class ConfigWatcher {
   private readonly path: string;
@@ -182,11 +210,30 @@ export class ConfigWatcher {
   private readonly debounceMs: number;
   private watchers: FSWatcher[] = [];
   private timer: NodeJS.Timeout | null = null;
+  private poll: NodeJS.Timeout | null = null;
+  private readonly pollMs: number;
+  private fingerprint: string;
 
-  constructor(path: string, onChange: () => void, debounceMs = 150) {
+  constructor(
+    path: string,
+    onChange: () => void,
+    options: { debounceMs?: number; pollMs?: number } = {},
+  ) {
     this.path = path;
     this.onChange = onChange;
-    this.debounceMs = debounceMs;
+    this.debounceMs = options.debounceMs ?? 150;
+    this.pollMs = options.pollMs ?? 2000;
+    this.fingerprint = this.stat();
+  }
+
+  /** Identity of the current file content; follows symlinks. */
+  private stat(): string {
+    try {
+      const s = statSync(this.path);
+      return `${s.ino}:${s.size}:${s.mtimeMs}`;
+    } catch {
+      return "missing";
+    }
   }
 
   start(): void {
@@ -205,9 +252,14 @@ export class ConfigWatcher {
       watcher.on("error", () => undefined);
       this.watchers.push(watcher);
     }
+    this.poll = setInterval(() => {
+      if (this.stat() !== this.fingerprint) this.schedule();
+    }, this.pollMs);
+    this.poll.unref();
   }
 
   private schedule(): void {
+    this.fingerprint = this.stat();
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -217,6 +269,7 @@ export class ConfigWatcher {
 
   stop(): void {
     if (this.timer) clearTimeout(this.timer);
+    if (this.poll) clearInterval(this.poll);
     for (const watcher of this.watchers.splice(0)) watcher.close();
   }
 }

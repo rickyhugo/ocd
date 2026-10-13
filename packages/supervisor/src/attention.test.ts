@@ -130,7 +130,7 @@ describe("notifications and the outbox (AT9)", () => {
     const held = await h.human.listOutbox({ status: "pending" });
     expect(held.filter((e) => e.kind === "manager_wake" && e.attempts === 0).length).toBe(2);
 
-    await h.human.registerManager({ sessionId: "mgr", directory: h.root });
+    await h.manager("mgr").listTasks(); // a session in the manager directory becomes active
     await waitFor(
       () => h.managerChannel.sent.length,
       (n) => n >= 1,

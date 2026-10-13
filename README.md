@@ -92,22 +92,28 @@ ocd status
 The supervisor needs the OpenCode background service (`opencode service start`).
 It discovers it and never starts it itself.
 
-### Manager session (explicit, manual)
+### Manager session
 
-Nothing installs the plugin for you. The recommended setup keeps it out of your
-application repos by using a dedicated manager directory with a project-level
-OpenCode config:
+The manager is whichever OpenCode session runs in the directory configured in
+`ocd.jsonc`:
+
+```jsonc
+"manager": { "directory": "~/ocd-manager" }
+```
+
+Sessions started there may use the `ocd_*` tools and get the briefing; the one
+used most recently receives supervisor updates. Sessions anywhere else, and
+worker sessions, are refused. There is no registration step: a fresh session in
+that directory simply takes over. `ocd manager` shows the configured directory
+and the active session.
+
+Nothing installs the plugin for you. Load it only in that directory with a
+project-level OpenCode config:
 
 ```jsonc
 // ~/ocd-manager/.opencode/opencode.jsonc
-{ "plugins": ["/absolute/path/to/ocd/packages/plugin"] }
+{ "plugins": ["/absolute/path/to/ocd/packages/plugin/dist/index.mjs"] }
 ```
-
-Open OpenCode in `~/ocd-manager`, ask it to call `ocd_register_manager`, or
-register the session yourself with `ocd manager register <session-id>`. Only
-the registered manager may use the `ocd_*` tools; worker sessions are refused
-even if the plugin is loaded globally. Replacing a manager needs
-`ocd manager register <id> --replace` from the CLI.
 
 ## How work flows
 

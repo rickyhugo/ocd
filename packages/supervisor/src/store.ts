@@ -878,58 +878,46 @@ export class Store {
   activeManager(): Manager | null {
     const row = this.db.select().from(managers).where(eq(managers.active, true)).get();
     return row
-      ? {
-          id: row.id,
-          sessionId: row.sessionId,
-          directory: row.directory,
-          registeredBy: row.registeredBy,
-          registeredAt: row.registeredAt,
-        }
+      ? { sessionId: row.sessionId, directory: row.directory, activatedAt: row.registeredAt }
       : null;
   }
 
-  registerManager(input: {
-    sessionId: string;
-    directory: string;
-    registeredBy: Actor;
-    replace: boolean;
-  }): Manager {
+  /**
+   * Makes this session the active manager: the one that receives wake-ups.
+   * Called whenever a session from the configured manager directory uses OCD.
+   */
+  activateManager(sessionId: string, directory: string): Manager {
     return this.tx(() => {
       const current = this.activeManager();
-      if (current && current.sessionId === input.sessionId) return current;
-      if (current && !input.replace) {
-        throw conflict(
-          "manager_exists",
-          `Manager session ${current.sessionId} is already registered; replace it explicitly`,
-        );
-      }
-      if (current) {
-        this.db
-          .update(managers)
-          .set({ active: false, retiredAt: this.now() })
-          .where(eq(managers.id, current.id))
-          .run();
-      }
-      // Wake-ups held while no manager existed become deliverable now.
+      if (current?.sessionId === sessionId && current.directory === directory) return current;
+      this.retireManager();
+      // Wake-ups held while no manager was active become deliverable now.
       this.db
         .update(outbox)
         .set({ nextAttemptAt: this.now() })
         .where(and(eq(outbox.kind, "manager_wake"), eq(outbox.status, "pending")))
         .run();
-      const id = newId("mgr");
       this.db
         .insert(managers)
         .values({
-          id,
-          sessionId: input.sessionId,
-          directory: input.directory,
-          registeredBy: input.registeredBy,
+          id: newId("mgr"),
+          sessionId,
+          directory,
+          registeredBy: "manager",
           active: true,
           registeredAt: this.now(),
         })
         .run();
       return this.activeManager()!;
     });
+  }
+
+  retireManager(): void {
+    this.db
+      .update(managers)
+      .set({ active: false, retiredAt: this.now() })
+      .where(eq(managers.active, true))
+      .run();
   }
 
   getSetting<T>(key: string, fallback: T): T {

@@ -12,7 +12,6 @@ describe("memory", () => {
   it("confirms explicit human statements and keeps inferred lessons as proposals", async () => {
     h = await startHarness();
     await setupRepo(h, "app");
-    await h.human.registerManager({ sessionId: "mgr", directory: h.root });
     const mgr = h.manager("mgr");
     const stated = await mgr.remember({
       scope: "global",
@@ -140,7 +139,6 @@ describe("cold-start briefing (AT4)", () => {
   it("reconstructs open tasks, pending decisions, and confirmed decisions for a replacement manager", async () => {
     h = await startHarness({ fake: { script: () => [{ type: "hang" }] } });
     await setupRepo(h, "app");
-    await h.human.registerManager({ sessionId: "mgr-1", directory: h.root });
     const { task } = await h.manager("mgr-1").dispatch({
       repo: "app",
       title: "Long running work",
@@ -153,12 +151,11 @@ describe("cold-start briefing (AT4)", () => {
       .manager("mgr-1")
       .remember({ scope: "global", content: "Human prefers terse updates", source: "human" });
 
-    // The old manager session is gone; the human explicitly registers a replacement.
+    // The old manager session is gone; a fresh session in the manager directory takes over.
     await h.daemon.stop();
     await h.restart();
-    await h.human.registerManager({ sessionId: "mgr-2", directory: h.root, replace: true });
-    await expect(h.manager("mgr-1").listTasks()).rejects.toMatchObject({ code: "not_manager" });
     const briefing = await h.manager("mgr-2").briefing();
+    expect((await h.human.getManager()).active?.sessionId).toBe("mgr-2");
     expect(briefing.activeTasks.map((t) => t.id)).toContain(task.id);
     expect(briefing.text).toContain("Ship behind a feature flag");
     expect(briefing.text).toContain("Human prefers terse updates");

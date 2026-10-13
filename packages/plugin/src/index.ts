@@ -9,16 +9,16 @@ export { buildTools, runTool, type OcdTool, type ToolCallContext } from "./tools
 
 /**
  * OCD's OpenCode V2 plugin. A global plugin loads in every session, including
- * workers; the supervisor decides which session is the manager and refuses
- * control calls from anyone else. Options: { "socket": "/path/to/ocd.sock" }.
+ * workers; the supervisor accepts control calls only from sessions in the
+ * manager directory configured in ocd.jsonc. Options: { "socket": "/path/to/ocd.sock" }.
  */
 export default Plugin.define({
   id: "ocd",
   async setup(ctx) {
     const socketOption = ctx.options["socket"];
     const socketPath = typeof socketOption === "string" ? socketOption : resolveOcdPaths().socket;
-    const clientFor = (sessionId: string) =>
-      new OcdClient({ socketPath, actor: "manager", sessionId, timeoutMs: 15_000 });
+    const clientFor = (sessionId: string, directory: string) =>
+      new OcdClient({ socketPath, actor: "manager", sessionId, directory, timeoutMs: 15_000 });
     const tools = buildTools(clientFor);
 
     const toolRegistration = await ctx.tool.transform((editor) => {
@@ -44,7 +44,7 @@ export default Plugin.define({
       }
     });
 
-    const briefing = new BriefingCache(socketPath);
+    const briefing = new BriefingCache(socketPath, ctx.location.directory);
     const hookRegistration = await ctx.session.hook("context", async (event) => {
       const text = await briefing.forSession(event.sessionID);
       if (text) event.system.push({ type: "text", text });

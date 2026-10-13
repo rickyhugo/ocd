@@ -8,9 +8,8 @@ import type { FastifyInstance } from "fastify";
 import { buildApi } from "./api.ts";
 import {
   ConfigWatcher,
-  ProfileRegistry,
+  LiveConfig,
   loadConfig,
-  toProfiles,
   type SupervisorConfig,
   type SupervisorConfigInput,
 } from "./config.ts";
@@ -104,7 +103,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   ensurePrivateDir(paths.backups);
 
   const config = loadConfig(paths.config, options.config);
-  const profiles = new ProfileRegistry(toProfiles(config));
+  const live = new LiveConfig(config);
   const instanceId = newId("sup");
   const clock = options.clock ?? systemClock;
 
@@ -147,10 +146,18 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     // keeps the last good profiles and raises one inbox item until it is fixed.
     const reloadProfiles = () => {
       try {
-        const next = toProfiles(loadConfig(paths.config, options.config));
-        profiles.replace(next);
+        live.apply(loadConfig(paths.config, options.config));
+        // A manager session outside a changed manager directory stops receiving updates.
+        const active = store.activeManager();
+        if (active && active.directory !== live.managerDirectory) store.retireManager();
         store.settleOpenAttention(CONFIG_INVALID_KEY, "resolved");
-        logger.info({ profiles: next.map((p) => p.name) }, "profiles reloaded from ocd.jsonc");
+        logger.info(
+          {
+            profiles: live.listProfiles().map((p) => p.name),
+            managerDirectory: live.managerDirectory,
+          },
+          "reloaded ocd.jsonc",
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error({ err: error }, "ocd.jsonc is invalid; keeping the previous profiles");
@@ -167,6 +174,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       }
     };
     const configWatcher = new ConfigWatcher(paths.config, reloadProfiles);
+    // The config just loaded cleanly, so any earlier "invalid config" item is stale.
+    store.settleOpenAttention(CONFIG_INVALID_KEY, "resolved");
 
     const release = async () => {
       configWatcher.stop();
@@ -201,7 +210,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       logger: logger.child({ component: "supervisor" }),
       clock,
       instanceId,
-      profiles,
+      live,
       ...(options.hooks ? { hooks: options.hooks } : {}),
       onCrash: (error: SimulatedCrash) => {
         logger.warn({ point: error.point }, "simulated crash");
@@ -227,7 +236,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       memory,
       workspaces,
       logger,
-      profiles,
+      live,
 
       requestShutdown: async () => {
         report ??= await supervisor.stop();
