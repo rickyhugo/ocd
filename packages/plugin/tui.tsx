@@ -10,9 +10,13 @@
 // - Manual mode: /takeover (or a row action) stops OCD driving a worker and
 //   opens its session in a tmux window; /giveback hands it back to the manager.
 // - /task: pick an OCD task and send the manager a message about it.
+// - /spill: a read-only snapshot of all open work, straight from the supervisor.
 import {
   OcdClient,
   TAKEOVER_STATES,
+  buildSpill,
+  collectSpill,
+  formatSpill,
   resolveOcdPaths,
   type Attention,
   type OcdApiError,
@@ -35,6 +39,8 @@ import { matchTasks } from "./src/task-match.ts";
 
 const POLL_MS = 4000;
 const MAX_ROWS = 8;
+/** Entries per /spill section; `ocd spill` in a terminal lists every one. */
+const SPILL_ROWS = 8;
 /** Usable width of a sidebar row; titles get what the glyph and detail leave. */
 const ROW_WIDTH = 36;
 
@@ -316,6 +322,19 @@ export default Plugin.define({
       );
     };
 
+    /**
+     * /spill: what is running, waiting, queued and ready for review. Reads the
+     * supervisor as the human (list and inspect only) and shows the result;
+     * nothing is sent to the manager or the workers.
+     */
+    const spill = async () => {
+      const text = formatSpill(buildSpill(await collectSpill(client)), {
+        maxPerSection: SPILL_ROWS,
+        continuation: "ocd spill",
+      });
+      await ctx.ui.dialog.alert({ title: "OCD: open work", message: text });
+    };
+
     const muted = () => color("textMuted");
 
     const RowView = (props: { row: Row; indent: string }) => (
@@ -440,6 +459,20 @@ export default Plugin.define({
             try {
               const task = await pickTask("OCD task");
               if (task) await askAbout(task);
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.spill",
+          title: "OCD: summary of all open work (read-only)",
+          group: "OCD",
+          palette: true,
+          slash: { name: "spill" },
+          run: async () => {
+            try {
+              await spill();
             } catch (error) {
               fail(error);
             }

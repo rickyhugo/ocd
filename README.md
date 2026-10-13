@@ -94,6 +94,7 @@ ocd daemon                                   # foreground supervisor (Ctrl-C rep
 ocd profile list                             # profiles from ocd.jsonc
 ocd repo list                                # repos from ocd.jsonc
 ocd status
+ocd spill                                    # what is running, waiting and ready for review
 ```
 
 The supervisor needs the OpenCode background service (`opencode service start`).
@@ -254,6 +255,20 @@ plugin directory) adds:
   skips the picker when it matches one task. The manager receives "Regarding OCD
   task t_… (title, repo, state): your message". OpenCode has no plugin API for
   custom `@` mentions, so this is a slash command.
+
+- **`/spill`:** a read-only summary of all open work, read from the
+  supervisor when you ask (the same as `ocd spill` in a terminal). It starts
+  with counts (`OCD · 3 running · 1 blocked/waiting · 2 ready for review`),
+  then lists every open task once under Running, Blocked / waiting, Manual
+  (you), Stuck, Queued / starting and Ready for review, plus attention not tied
+  to a task. Each entry is the title, then repo, state and age, last activity
+  (or `quiet` after 10 minutes), the latest supervisor milestone (`latest:
+  follow-up sent 8m ago`), what a blocked task waits on and for whom, and the
+  task id for `/task` or `ocd task show`. Completed and cancelled tasks are
+  left out. It only reports what OCD recorded: no model summary, transcript or
+  worker-written report text, and nothing is sent to the manager or workers.
+  The TUI shows up to 8 entries per section and says how many more `ocd spill`
+  lists; `ocd spill --json` gives the structured snapshot.
 
 ### Manual mode: drive a worker yourself
 
