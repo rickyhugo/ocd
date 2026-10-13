@@ -191,6 +191,47 @@ export function buildTools(
       },
     },
     {
+      name: "open_pull_request",
+      description:
+        "Optional: push a task's branch and open a pull request for human review. Only when the human asks for a PR. Never merges. Use commit=true if the worker left uncommitted changes.",
+      input: obj(
+        {
+          id: str("Task ID"),
+          draft: { type: "boolean", description: "Open as a draft" },
+          base: str("Target branch; defaults to the repository's default branch"),
+          commit: { type: "boolean", description: "Commit uncommitted changes first" },
+        },
+        ["id"],
+      ),
+      run: async (input, ctx) => {
+        const i = z
+          .object({
+            id: z.string(),
+            draft: z.boolean().optional(),
+            base: z.string().optional(),
+            commit: z.boolean().optional(),
+          })
+          .parse(input);
+        const t = await clientFor(ctx.sessionID, ctx.directory).openPullRequest(i.id, {
+          ...(i.draft !== undefined ? { draft: i.draft } : {}),
+          ...(i.base ? { base: i.base } : {}),
+          ...(i.commit !== undefined ? { commit: i.commit } : {}),
+        });
+        return `Pull request: ${t.pullRequestUrl}`;
+      },
+    },
+    {
+      name: "cleanup_task",
+      description:
+        "Remove a completed or cancelled task's worktree and branch. Refuses if that would lose work (uncommitted changes, or commits not on any other branch or remote); only the human can force it.",
+      input: obj({ id: str("Task ID") }, ["id"]),
+      run: async (input, ctx) => {
+        const { id } = z.object({ id: z.string() }).parse(input);
+        await clientFor(ctx.sessionID, ctx.directory).cleanupTask(id);
+        return `Removed the worktree and branch of ${id}.`;
+      },
+    },
+    {
       name: "list_attention",
       description:
         "List requests that need a decision. Requests marked [human] can only be resolved by the human with the ocd CLI.",

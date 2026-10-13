@@ -242,6 +242,101 @@ export class WorkspaceManager {
     };
   }
 
+  /**
+   * Facts that decide whether a task's worktree and branch can be removed:
+   * uncommitted files, and commits on the branch that exist nowhere else
+   * (no other local branch or remote-tracking branch contains them).
+   */
+  async branchSafety(
+    repoPath: string,
+    workspacePath: string | null,
+    branch: string,
+  ): Promise<{
+    worktreeExists: boolean;
+    branchExists: boolean;
+    dirtyFiles: string[];
+    unmergedCommits: number;
+  }> {
+    const worktreeExists = workspacePath !== null && existsSync(workspacePath);
+    const dirtyFiles = worktreeExists
+      ? parsePorcelainZ(
+          await git(workspacePath, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+            trim: false,
+          }),
+        )
+      : [];
+    const ref = `refs/heads/${branch}`;
+    const branchExists =
+      (await run("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoPath })).code === 0;
+    const unmergedCommits = branchExists
+      ? Number(
+          await git(repoPath, [
+            "rev-list",
+            "--count",
+            ref,
+            "--not",
+            `--exclude=${branch}`, // --exclude matches short names (ocd/<task>)
+            "--branches",
+            "--remotes",
+          ]),
+        )
+      : 0;
+    return { worktreeExists, branchExists, dirtyFiles, unmergedCommits };
+  }
+
+  /** Removes a task's worktree and branch. Callers check branchSafety first. */
+  async remove(
+    repoPath: string,
+    workspacePath: string | null,
+    branch: string,
+    force: boolean,
+  ): Promise<void> {
+    if (workspacePath && existsSync(workspacePath)) {
+      await git(repoPath, ["worktree", "remove", ...(force ? ["--force"] : []), workspacePath]);
+    }
+    await git(repoPath, ["worktree", "prune"]);
+    if (
+      (
+        await run("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+          cwd: repoPath,
+        })
+      ).code === 0
+    ) {
+      await git(repoPath, ["branch", force ? "-D" : "-d", branch]);
+    }
+  }
+
+  /** Commits everything in the worktree (used only when explicitly asked). */
+  async commitAll(workspacePath: string, message: string): Promise<boolean> {
+    await git(workspacePath, ["add", "-A"]);
+    const staged =
+      (await run("git", ["diff", "--cached", "--quiet"], { cwd: workspacePath })).code !== 0;
+    if (staged) await git(workspacePath, ["commit", "-m", message]);
+    return staged;
+  }
+
+  /** Pushes the task branch with the user's own git credentials (full environment). */
+  async push(workspacePath: string, remote: string, branch: string): Promise<void> {
+    const result = await run("git", ["push", "-u", remote, `${branch}:${branch}`], {
+      cwd: workspacePath,
+      env: process.env as Record<string, string>,
+      timeoutMs: 120_000,
+    });
+    if (result.code !== 0)
+      throw new Error(`git push failed: ${(result.stderr || result.stdout).trim()}`);
+  }
+
+  /** The remote's default branch (e.g. main), falling back to "main". */
+  async defaultBranch(repoPath: string, remote: string): Promise<string> {
+    const result = await run("git", ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], {
+      cwd: repoPath,
+    });
+    const ref = result.stdout.trim();
+    return result.code === 0 && ref.startsWith(`${remote}/`)
+      ? ref.slice(remote.length + 1)
+      : "main";
+  }
+
   relative(path: string): string {
     return relative(this.root, path);
   }

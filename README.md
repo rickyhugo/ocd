@@ -162,8 +162,14 @@ The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
 4. When the worker goes idle, OCD collects its `ocd-report` and independently
    checks the worktree with git (changed files, commits, uncommitted changes).
    A valid report makes the task `ready_for_review`.
-5. You accept with `ocd task accept <id>`, or tell the manager to accept it
-   (`ocd_accept_task`). Nothing is merged automatically.
+5. Workers commit to `ocd/<task>` (never push). You accept with
+   `ocd task accept <id>`, or tell the manager to accept it (`ocd_accept_task`).
+   Nothing is merged automatically.
+6. Optionally, `ocd task pr <id> [--draft] [--commit]` (or `ocd_open_pull_request`)
+   pushes the branch and opens a GitHub pull request with `gh`; you merge it.
+7. `ocd task cleanup <id>` (or `ocd_cleanup_task`) removes a finished task's
+   worktree and branch. It refuses while that would lose work (uncommitted
+   changes, or commits on no other branch or remote) unless you pass `--force`.
 
 Crashes, restarts, lost event streams and sleep are reconciled conservatively:
 uncertain launches become `needs_attention` instead of being retried, and

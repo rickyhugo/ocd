@@ -190,6 +190,12 @@ export class OcdClient {
       `/v1/tasks/${encodeURIComponent(id)}/cancel`,
       reason === undefined ? {} : { reason },
     );
+  cleanupTask = (id: string, force = false) =>
+    this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/cleanup`, { force });
+  openPullRequest = (
+    id: string,
+    options: { draft?: boolean; base?: string; commit?: boolean } = {},
+  ) => this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/pull-request`, options);
   acceptTask = (id: string) =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/accept`);
   resumeTask = (id: string, mode: "reattach" | "relaunch") =>

@@ -17,12 +17,13 @@ import {
 import {
   ConfigError,
   DatabaseTooNewError,
+  GhPullRequests,
   LockHeldError,
   MacNotifier,
   startDaemon,
 } from "@ocd/supervisor";
 
-import { buildAdapters, buildManagerChannel, probeHarnesses } from "./harnesses.ts";
+import { buildAdapters, buildManagerChannel, findBinary, probeHarnesses } from "./harnesses.ts";
 import { installLaunchAgent, launchAgentStatus, uninstallLaunchAgent } from "./launchagent.ts";
 
 const HELP = `ocd — local agent control plane
@@ -49,6 +50,9 @@ Tasks
   ocd task cancel <id> [--reason TEXT]
   ocd task accept <id>
   ocd task resume <id> --mode reattach|relaunch
+  ocd task pr <id> [--draft] [--base BRANCH] [--commit]
+                                    Push the task branch and open a pull request (optional; never merges)
+  ocd task cleanup <id> [--force]   Remove a finished task's worktree and branch (refuses to lose work)
 
 Attention
   ocd attention list [--all]
@@ -121,6 +125,9 @@ async function main(argv: string[]): Promise<void> {
       reason: { type: "string" },
       mode: { type: "string" },
       approve: { type: "boolean" },
+      force: { type: "boolean" },
+      draft: { type: "boolean" },
+      commit: { type: "boolean" },
       deny: { type: "boolean" },
       message: { type: "string" },
       answer: { type: "string" },
@@ -148,6 +155,7 @@ async function main(argv: string[]): Promise<void> {
           foreground: !background,
           adapters: buildAdapters,
           managerChannel: buildManagerChannel,
+          pullRequests: new GhPullRequests(findBinary("gh")),
         });
       } catch (error) {
         if (
@@ -350,6 +358,7 @@ async function main(argv: string[]): Promise<void> {
             taskLine(d.task),
             `workspace: ${d.task.workspacePath ?? "-"} (branch ${d.task.branch ?? "-"}, base ${d.task.baseRef ?? "-"})`,
             `session: ${d.task.sessionId ?? "-"}  attempts: ${d.task.attempts}`,
+            d.task.pullRequestUrl ? `pull request: ${d.task.pullRequestUrl}` : "",
             d.task.error ? `error: ${d.task.error}` : "",
             d.task.result?.reported
               ? `reported: ${d.task.result.reported.summary}`
@@ -377,6 +386,16 @@ async function main(argv: string[]): Promise<void> {
         print(t, json, () => `cancelled ${id}; workspace preserved at ${t.workspacePath ?? "-"}`);
       } else if (sub === "accept") {
         print(await client.acceptTask(id), json, () => `accepted ${id} as completed`);
+      } else if (sub === "cleanup") {
+        const t = await client.cleanupTask(id, flags.force ?? false);
+        print(t, json, () => `removed the worktree and branch of ${id}`);
+      } else if (sub === "pr") {
+        const t = await client.openPullRequest(id, {
+          draft: flags.draft ?? false,
+          commit: flags.commit ?? false,
+          ...(flags.base ? { base: flags.base } : {}),
+        });
+        print(t, json, () => `pull request: ${t.pullRequestUrl}`);
       } else if (sub === "resume") {
         if (flags.mode !== "reattach" && flags.mode !== "relaunch")
           fail("--mode reattach|relaunch is required");

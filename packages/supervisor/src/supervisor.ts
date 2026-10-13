@@ -28,6 +28,7 @@ import {
 import type { z } from "zod";
 
 import type { LiveConfig, SupervisorConfig } from "./config.ts";
+import type { PullRequestCreator } from "./pull-requests.ts";
 import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } from "./errors.ts";
 import { iso, type Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
@@ -60,6 +61,8 @@ export interface SupervisorOptions {
   instanceId: string;
   hooks?: SupervisorHooks;
   live: LiveConfig;
+  /** Opens pull requests on request; absent means the PR tool is unavailable. */
+  pullRequests?: PullRequestCreator;
   /** Called when a simulated crash fires; the daemon tears down without cleanup. */
   onCrash?: (error: SimulatedCrash) => void;
 }
@@ -429,7 +432,7 @@ export class Supervisor {
       relaunch
         ? "This workspace may contain changes from an earlier attempt. Inspect `git status` and `git log` first and continue from there; do not discard existing changes."
         : "",
-      "Do not merge, push to shared branches, delete branches or worktrees, or try to dispatch other tasks.",
+      "When your changes are complete, commit them to the current branch with a clear message. Do not push, merge, delete branches or worktrees, or try to dispatch other tasks.",
       REPORT_INSTRUCTIONS,
     ];
     return parts.filter(Boolean).join("\n\n");
@@ -1398,6 +1401,143 @@ export class Supervisor {
       if (!needsPrompt) await this.applySnapshot(adapter, taskId, snap);
       return this.store.requireTask(taskId);
     });
+  }
+
+  /**
+   * Removes a finished task's worktree and branch. Refuses when that would
+   * lose work (uncommitted files, or commits that exist on no other branch or
+   * remote) unless forced; only a human may force.
+   */
+  async cleanup(taskId: string, force: boolean, actor: Actor): Promise<Task> {
+    if (force && actor !== "human")
+      throw forbidden("human_only", "Only a human can force a cleanup that discards work");
+    return this.withTaskLock(taskId, async () => {
+      const task = this.store.requireTask(taskId);
+      if (task.state !== "completed" && task.state !== "cancelled") {
+        throw conflict(
+          "not_finished",
+          `Only completed or cancelled tasks can be cleaned up (task is ${task.state})`,
+        );
+      }
+      const repo = this.store.requireRepo(task.repo, { includeRetired: true });
+      const branch = task.branch ?? this.o.workspaces.branchFor(taskId);
+      const safety = await this.o.workspaces.branchSafety(repo.path, task.workspacePath, branch);
+      if (!safety.worktreeExists && !safety.branchExists) return task;
+      if (!force && safety.dirtyFiles.length > 0) {
+        throw conflict(
+          "workspace_dirty",
+          `${safety.dirtyFiles.length} uncommitted file(s) in ${task.workspacePath}; commit or open a PR first, or force`,
+          {
+            files: safety.dirtyFiles.slice(0, 20),
+          },
+        );
+      }
+      if (!force && safety.unmergedCommits > 0) {
+        throw conflict(
+          "unmerged_commits",
+          `${safety.unmergedCommits} commit(s) on ${branch} exist on no other branch or remote; merge or push them (e.g. open a PR), or force`,
+        );
+      }
+      await this.o.workspaces.remove(repo.path, task.workspacePath, branch, force);
+      this.store.patchTask(
+        taskId,
+        { workspacePath: null },
+        {
+          type: "workspace.cleaned",
+          data: {
+            path: task.workspacePath,
+            branch,
+            forced: force,
+            actor,
+            discarded: force ? safety : null,
+          },
+        },
+      );
+      return this.store.requireTask(taskId);
+    });
+  }
+
+  /**
+   * Optional: pushes the task branch and opens a pull request. Never merges.
+   * With commit, uncommitted worker changes are committed first.
+   */
+  async openPullRequest(
+    taskId: string,
+    options: { draft: boolean; base?: string | undefined; commit: boolean },
+    actor: Actor,
+  ): Promise<Task> {
+    return this.withTaskLock(taskId, async () => {
+      const task = this.store.requireTask(taskId);
+      if (task.pullRequestUrl) return task;
+      if (task.state !== "ready_for_review" && task.state !== "completed") {
+        throw conflict(
+          "not_reviewable",
+          `Open a pull request after the work is done (task is ${task.state})`,
+        );
+      }
+      if (!this.o.pullRequests)
+        throw new ApiError(
+          422,
+          "pr_unavailable",
+          "Pull requests are not available (gh not configured)",
+        );
+      if (!task.workspacePath || !task.branch || !task.baseRef)
+        throw conflict("no_workspace", "The task has no workspace to push");
+      const repo = this.store.requireRepo(task.repo, { includeRetired: true });
+      if (options.commit)
+        await this.o.workspaces.commitAll(
+          task.workspacePath,
+          `${task.title}\n\nOCD task ${task.id}`,
+        );
+      const facts = await this.o.workspaces.verify({
+        path: task.workspacePath,
+        baseRef: task.baseRef,
+      });
+      if (facts.dirty)
+        throw conflict(
+          "workspace_dirty",
+          "The worktree has uncommitted changes; commit them first (--commit)",
+        );
+      if (facts.commitsAhead === 0)
+        throw conflict("nothing_to_push", `${task.branch} has no commits beyond its base`);
+      const remote = "origin";
+      const base = options.base ?? (await this.o.workspaces.defaultBranch(repo.path, remote));
+      await this.o.workspaces.push(task.workspacePath, remote, task.branch);
+      const { url } = await this.o.pullRequests.create({
+        cwd: task.workspacePath,
+        head: task.branch,
+        base,
+        title: task.title,
+        body: this.pullRequestBody(task, facts.changedFiles),
+        draft: options.draft,
+      });
+      this.store.patchTask(
+        taskId,
+        { pullRequestUrl: url },
+        { type: "pull_request.opened", data: { url, base, draft: options.draft, actor } },
+      );
+      return this.store.requireTask(taskId);
+    });
+  }
+
+  private pullRequestBody(task: Task, changedFiles: string[]): string {
+    const report = task.result?.reported;
+    return [
+      report ? `## Summary\n\n${report.summary}` : "",
+      task.acceptanceCriteria.length
+        ? `## Acceptance criteria\n\n${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}`
+        : "",
+      report?.tests.length
+        ? `## Worker-reported checks\n\n${report.tests.map((t) => `- ${t.outcome}: \`${t.command}\``).join("\n")}`
+        : "",
+      report?.unresolved.length
+        ? `## Unresolved\n\n${report.unresolved.map((u) => `- ${u}`).join("\n")}`
+        : "",
+      `## Changed files (verified by OCD)\n\n${changedFiles.map((f) => `- \`${f}\``).join("\n") || "none"}`,
+      `---\nOpened by OCD for task \`${task.id}\` (${task.harness}, ${task.model}). Review before merging.`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   /** Finished tasks need no live worker; process-owned harnesses stop theirs. */

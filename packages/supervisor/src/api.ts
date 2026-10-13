@@ -3,6 +3,8 @@ import {
   Actor,
   AttentionFilter,
   CancelTaskInput,
+  CleanupTaskInput,
+  OpenPullRequestInput,
   DecisionInput,
   DispatchTaskInput,
   HEADER_ACTOR,
@@ -237,6 +239,16 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
       IdParams.parse(req.params).id,
       CancelTaskInput.parse(req.body ?? {}).reason,
     );
+  });
+  app.post("/v1/tasks/:id/cleanup", async (req) => {
+    requireCaller(req);
+    const { force } = CleanupTaskInput.parse(req.body ?? {});
+    return supervisor.cleanup(IdParams.parse(req.params).id, force, req.actor);
+  });
+  app.post("/v1/tasks/:id/pull-request", async (req) => {
+    requireCaller(req);
+    const input = OpenPullRequestInput.parse(req.body ?? {});
+    return supervisor.openPullRequest(IdParams.parse(req.params).id, input, req.actor);
   });
   app.post("/v1/tasks/:id/accept", async (req) => {
     requireCaller(req);

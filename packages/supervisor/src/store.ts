@@ -1007,6 +1007,7 @@ export class Store {
       branch: row.branch,
       baseRef: row.baseRef,
       sessionId: row.sessionId,
+      pullRequestUrl: row.pullRequestUrl,
       attempts: row.attempts,
       result: row.result ?? null,
       error: row.error,
