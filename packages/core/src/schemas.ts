@@ -58,7 +58,7 @@ export interface Repository {
 export const ProfileConfig = z
   .object({
     harness: HarnessName.describe(
-      "Harness that runs the worker. Only opencode (and fake, for tests) are implemented.",
+      "Harness that runs the worker: opencode (sessions in the OpenCode service), claude (Claude Code CLI), codex (codex app-server), or fake (tests).",
     ),
     model: z
       .string()

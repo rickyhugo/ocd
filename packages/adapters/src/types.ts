@@ -102,6 +102,12 @@ export interface HarnessAdapter {
   inspect(ref: SessionRef): Promise<SessionSnapshot>;
   interrupt(ref: SessionRef): Promise<void>;
   reply(ref: SessionRef, interactionId: string, reply: InteractionReply): Promise<void>;
+  /**
+   * Brings back a session whose worker process is gone (e.g. after a
+   * supervisor restart) from the harness's own on-disk state. Process-owned
+   * harnesses implement this; service-owned ones never lose sessions.
+   */
+  revive?(ref: SessionRef, spec: SessionSpec): Promise<void>;
   close(): Promise<void>;
 }
 

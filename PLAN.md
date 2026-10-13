@@ -14,8 +14,8 @@ Build a small, local-first control plane for personal agentic coding workflows:
 Keep Gas Town's delegation idea, not its organizational machinery. The manager's
 conversation is an interface, **not the source of truth**.
 
-This document describes planned behavior. Milestones 1–3 are implemented (see
-`README.md` for the current status and known gaps); milestones 4–5 are not.
+This document describes planned behavior. Milestones 1–5 are implemented (see
+`README.md` for the current status and known gaps).
 
 ## First-iteration boundaries
 

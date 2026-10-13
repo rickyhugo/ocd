@@ -104,6 +104,8 @@ export const defaultFakeScript: FakeScript = (prompt) => {
 /** Shared harness state. Reusing it across adapter instances simulates a service that outlives the supervisor. */
 export class FakeHarnessState {
   readonly sessions = new Map<string, FakeSession>();
+  /** Sessions whose process died but whose transcript a harness could resume from disk. */
+  readonly onDisk = new Map<string, FakeSession>();
   readonly listeners = new Set<AdapterListener>();
   createdCount = 0;
   promptCount = 0;
@@ -375,7 +377,17 @@ export class FakeAdapter implements HarnessAdapter {
       session.abort?.abort(new Error("supervisor exited"));
       session.abort = null;
       session.pending.clear();
+      session.status = "idle";
+      this.state.onDisk.set(session.id, session);
       this.state.sessions.delete(session.id);
     }
+  }
+
+  /** Like `claude --resume`: restores a session from "disk" in a new process. */
+  async revive(ref: SessionRef): Promise<void> {
+    const session = this.state.onDisk.get(ref.sessionId);
+    if (!session) throw new Error(`No resumable fake session ${ref.sessionId}`);
+    this.state.onDisk.delete(ref.sessionId);
+    this.state.sessions.set(session.id, session);
   }
 }

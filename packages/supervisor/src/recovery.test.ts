@@ -202,3 +202,45 @@ describe("database durability (AT13)", () => {
     await waitForState(h, task.id, "interrupted");
   });
 });
+
+describe("process-owned workers", () => {
+  it("reattaches to a session from disk after the worker died with the supervisor", async () => {
+    let calls = 0;
+    h = await startHarness({
+      fake: {
+        survive: false,
+        script: () => {
+          calls += 1;
+          return calls === 1
+            ? [{ type: "write", file: "part1.txt", content: "1" }, { type: "hang" }]
+            : [
+                { type: "write", file: "part2.txt", content: "2" },
+                { type: "reply", text: '```ocd-report\n{"summary":"resumed"}\n```' },
+              ];
+        },
+      },
+    });
+    await setupRepo(h, "app");
+    const { task } = await h.human.dispatch({
+      repo: "app",
+      title: "t",
+      instructions: "x",
+      idempotencyKey: "revive-1",
+    });
+    const running = await waitFor(
+      () => h.human.inspectTask(task.id),
+      (d) =>
+        d.task.state === "running" &&
+        h.fakeState.sessions.get(d.task.sessionId!)?.status === "busy",
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    await h.daemon.kill();
+    await h.restart();
+    await waitForState(h, task.id, "interrupted");
+    await h.human.resumeTask(task.id, "reattach");
+    const done = await waitForState(h, task.id, "ready_for_review");
+    expect(done.task.sessionId).toBe(running.task.sessionId);
+    expect(done.runs).toHaveLength(1);
+    expect(done.task.result?.verification?.changedFiles).toEqual(["part1.txt", "part2.txt"]);
+  });
+});
