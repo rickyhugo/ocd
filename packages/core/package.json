@@ -1,0 +1,20 @@
+{
+  "name": "@ocd/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Zod contracts, task states, paths, redaction, and the typed supervisor API client.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "vp pack"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  }
+}

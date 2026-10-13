@@ -5,11 +5,11 @@
   "description": "A local agent control plane with an OpenCode manager and durable supervision.",
   "type": "module",
   "scripts": {
-    "dev": "vp pack --watch",
-    "build": "vp pack",
+    "build": "vp run -r build",
     "check": "vp check",
     "check:fix": "vp check --fix",
-    "test": "vp test"
+    "test": "vp test",
+    "db:generate": "vp run --filter @ocd/supervisor db:generate"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

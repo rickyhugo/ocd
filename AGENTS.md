@@ -40,8 +40,9 @@ release. Add a tool name to select part of the graph. For example, run
 
 ## OCD project
 
-- Read `PLAN.md` before implementing the control plane. The current source is a
-  Node package skeleton, not a working supervisor or browser application.
+- Read `PLAN.md` before changing the control plane. Milestones 1–3 are
+  implemented in `packages/` (core, adapters, supervisor, plugin, cli); Claude
+  Code/Codex adapters and the LaunchAgent (milestones 4–5) are not.
 - Use Drizzle ORM with SQLite, not Kysely. Add runtime dependencies alongside
   their implementation and review generated migrations.
 - Use TypeScript 7 and its built-in `tsc` LSP. Keep editor tools pinned locally.
