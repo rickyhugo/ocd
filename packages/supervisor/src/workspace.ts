@@ -69,13 +69,30 @@ function run(
   });
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
+async function git(cwd: string, args: string[], options: { trim?: boolean } = {}): Promise<string> {
   const result = await run("git", args, { cwd });
   if (result.code !== 0)
     throw new Error(
       `git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`,
     );
-  return result.stdout.trim();
+  return options.trim === false ? result.stdout : result.stdout.trim();
+}
+
+/**
+ * Paths from `git status --porcelain=v1 -z`. Each entry is "XY path"; renames
+ * and copies are followed by the original path as a separate entry. Never trim
+ * this output: the status column may start with a space.
+ */
+export function parsePorcelainZ(output: string): string[] {
+  const fields = output.split("\0");
+  const paths: string[] = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const entry = fields[i]!;
+    if (entry.length < 4) continue;
+    paths.push(entry.slice(3));
+    if (entry[0] === "R" || entry[0] === "C") i += 1;
+  }
+  return paths;
 }
 
 export class WorkspaceError extends ApiError {
@@ -205,11 +222,11 @@ export class WorkspaceManager {
 
   /** Independent facts about the workspace, separate from the worker's claims. */
   async verify(workspace: { path: string; baseRef: string }): Promise<Verification> {
-    const status = await git(workspace.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    const dirtyFiles = status
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => line.slice(3).split(" -> ").at(-1)!);
+    const dirtyFiles = parsePorcelainZ(
+      await git(workspace.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+        trim: false,
+      }),
+    );
     const committed = (
       await git(workspace.path, ["diff", "--name-only", `${workspace.baseRef}...HEAD`])
     )

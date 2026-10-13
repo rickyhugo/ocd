@@ -357,3 +357,25 @@ describe("allow permission policy", () => {
     expect(h.notifier.sent.some((n) => n.body.includes("auto-approved"))).toBe(false);
   });
 });
+
+describe("independent verification", () => {
+  it("reports modified, added, renamed, and committed files exactly", async () => {
+    h = await startHarness({
+      fake: {
+        script: () => [
+          { type: "write", file: "README.md", content: "# changed\n" },
+          { type: "write", file: "dir with space/new file.txt", content: "x" },
+          { type: "reply", text: '```ocd-report\n{"summary":"ok"}\n```' },
+        ],
+      },
+    });
+    await setupRepo(h, "app");
+    const { task } = await dispatch(h.human, "app", "edit");
+    const detail = await waitForState(h, task.id, "ready_for_review");
+    expect(detail.task.result?.verification).toEqual({
+      changedFiles: ["README.md", "dir with space/new file.txt"],
+      dirty: true,
+      commitsAhead: 0,
+    });
+  });
+});
