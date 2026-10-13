@@ -96,6 +96,8 @@ export const TEST_CONFIG: Partial<SupervisorConfigInput> = {
   backups: { intervalHours: 0 },
   reconcileIntervalMs: 60_000,
   outbox: { intervalMs: 20, maxAttempts: 3, baseDelayMs: 10 },
+  // Digests have their own tests (outbox.test.ts); elsewhere, deliver on the next pass.
+  notifications: { digestWindowMs: 0 },
 };
 
 export async function startHarness(options: Partial<HarnessOptions> = {}): Promise<Harness> {

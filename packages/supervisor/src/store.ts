@@ -50,6 +50,10 @@ export interface OutboxInput {
 export interface NotifyPayload {
   title: string;
   body: string;
+  /** Lets a digest count each task once. */
+  taskId?: string;
+  /** The attention kind; "review" counts as ready for review, anything else as needing you. */
+  kind?: AttentionKind;
 }
 
 export interface WakePayload {
@@ -534,7 +538,12 @@ export class Store {
         entries.push({
           kind: "notify",
           dedupeKey: `notify:${id}`,
-          payload: { title: `OCD: ${label}`, body: attention.reason },
+          payload: {
+            title: `OCD: ${label}`,
+            body: attention.reason,
+            ...(attention.taskId ? { taskId: attention.taskId } : {}),
+            kind: attention.kind,
+          },
         });
       }
       if (delivery.wake) {

@@ -63,6 +63,14 @@ export const SupervisorConfig = z
           .boolean()
           .default(true)
           .describe("Send desktop notifications (macOS and Linux)."),
+        digestWindowMs: z
+          .number()
+          .int()
+          .min(0)
+          .default(3000)
+          .describe(
+            'Notifications raised within this many milliseconds of the first one are sent as one digest ("4 ready for review, 1 needs you"). 0 sends on the next outbox pass without waiting.',
+          ),
         focusApp: z
           .string()
           .optional()

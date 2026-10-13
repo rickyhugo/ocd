@@ -197,6 +197,16 @@ notification runs `ocd focus`, which switches tmux to the pane running OpenCode
 in the manager directory and raises the terminal window. `ocd doctor` shows
 which backend is in use.
 
+Notifications raised within a few seconds of each other arrive as one digest,
+such as "OCD: 4 ready for review, 1 needs you", listing the task ids; a lone
+notification is sent as is. Each task counts once, as its latest notification.
+The window opens with the first notification and lasts
+`notifications.digestWindowMs` (3000 by default; 0 sends on the next outbox
+pass). Only desktop notifications wait: task states, inbox items and manager
+wake-ups are immediate, and stopping the daemon sends anything still held.
+Clicking a digest runs `ocd focus` like any other notification, and
+`ocd attention list` shows the items behind it.
+
 | Platform | Backend                                                | Click opens the manager                             |
 | -------- | ------------------------------------------------------ | --------------------------------------------------- |
 | macOS    | `terminal-notifier` (`brew install terminal-notifier`) | yes                                                 |

@@ -1266,6 +1266,7 @@ export class Supervisor {
           payload: {
             title: "OCD: request expired",
             body: `${a.kind} ${a.id} expired and was denied.`,
+            ...(a.taskId ? { taskId: a.taskId } : {}),
           },
         },
       ]);
