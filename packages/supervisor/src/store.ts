@@ -639,16 +639,30 @@ export class Store {
         if (!row) continue;
         const attempts = countAttempt ? row.attempts + 1 : row.attempts;
         const delay = Math.min(baseDelayMs * 2 ** Math.max(0, attempts - 1), 3_600_000);
+        const dead = attempts >= maxAttempts;
         this.db
           .update(outbox)
           .set({
             attempts,
             lastError: error,
-            status: attempts >= maxAttempts ? "dead" : "pending",
+            status: dead ? "dead" : "pending",
             nextAttemptAt: iso(this.clock() + delay),
           })
           .where(eq(outbox.id, id))
           .run();
+        if (dead) {
+          // A delivery that gave up stays visible in the inbox, not only in logs.
+          this.raiseAttention(
+            {
+              taskId: (row.payload as { taskId?: string }).taskId ?? null,
+              kind: "failure",
+              dedupeKey: `delivery-dead:${id}`,
+              reason: `Could not deliver ${row.kind === "notify" ? "a notification" : "a manager update"} after ${attempts} attempts: ${error}`,
+              resolvableBy: "human",
+            },
+            { notify: false, wake: false },
+          );
+        }
       }
     });
   }
@@ -879,6 +893,12 @@ export class Store {
           .where(eq(managers.id, current.id))
           .run();
       }
+      // Wake-ups held while no manager existed become deliverable now.
+      this.db
+        .update(outbox)
+        .set({ nextAttemptAt: this.now() })
+        .where(and(eq(outbox.kind, "manager_wake"), eq(outbox.status, "pending")))
+        .run();
       const id = newId("mgr");
       this.db
         .insert(managers)

@@ -168,6 +168,15 @@ export class Supervisor {
         });
       this.store.transition(row.id, "interrupted", {
         event: { type: "shutdown.interrupted", data: { sessionId: row.sessionId } },
+        attention: [
+          this.attentionFor(
+            { id: row.id, harness: row.harness, sessionId: row.sessionId },
+            "failure",
+            `shutdown:${run?.id ?? "none"}`,
+            `The supervisor stopped and interrupted this worker (session ${row.sessionId ?? "none"}). The workspace is preserved; resume explicitly.`,
+            "human",
+          ),
+        ],
       });
       report.workers.push({
         taskId: row.id,
@@ -1093,30 +1102,38 @@ export class Supervisor {
       limit: 200,
     })) {
       if (!a.expiresAt || a.expiresAt > now || !a.taskId) continue;
-      void this.withTaskLock(a.taskId, async () => {
-        const task = this.store.getTask(a.taskId!);
-        const adapter = task ? this.adapters.get(task.harness) : undefined;
-        if (adapter && a.sessionId && a.requestRef) {
-          await adapter
-            .reply({ sessionId: a.sessionId }, a.requestRef, {
-              type: "deny",
-              message: "Request expired without a human decision.",
-            })
-            .catch(() => undefined);
-        }
-        this.store.settleAttention(a.id, { status: "expired" });
-        this.store.enqueue([
-          {
-            kind: "notify",
-            dedupeKey: `notify:expired:${a.id}`,
-            payload: {
-              title: "OCD: request expired",
-              body: `${a.kind} ${a.id} expired and was denied.`,
-            },
-          },
-        ]);
-      });
+      void this.withTaskLock(a.taskId, () => this.expireInteraction(a.id));
     }
+  }
+
+  /** Denies an expired request in the harness so the worker is not left waiting; never replays it. */
+  private async expireInteraction(attentionId: string): Promise<void> {
+    const a = this.store.requireAttention(attentionId);
+    if (a.status !== "open") return;
+    const task = a.taskId ? this.store.getTask(a.taskId) : null;
+    const adapter = task ? this.adapters.get(task.harness) : undefined;
+    if (adapter && a.sessionId && a.requestRef) {
+      await adapter
+        .reply({ sessionId: a.sessionId }, a.requestRef, {
+          type: "deny",
+          message: "Request expired without a human decision.",
+        })
+        .catch(() => undefined);
+    }
+    this.store.tx(() => {
+      this.store.settleAttention(a.id, { status: "expired" });
+      if (a.taskId) this.store.appendEvent(a.taskId, "attention.expired", { id: a.id });
+      this.store.enqueue([
+        {
+          kind: "notify",
+          dedupeKey: `notify:expired:${a.id}`,
+          payload: {
+            title: "OCD: request expired",
+            body: `${a.kind} ${a.id} expired and was denied.`,
+          },
+        },
+      ]);
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1292,7 +1309,9 @@ export class Supervisor {
       );
     }
     if (attention.expiresAt && attention.expiresAt <= this.store.now()) {
-      this.store.settleAttention(id, { status: "expired" });
+      if (attention.kind === "permission" || attention.kind === "question")
+        await this.expireInteraction(id);
+      else this.store.settleAttention(id, { status: "expired" });
       throw new ApiError(410, "expired", "The request expired; it will not be replayed");
     }
 

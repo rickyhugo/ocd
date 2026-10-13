@@ -1,60 +1,129 @@
 # OCD
 
-A local agent control plane: one OpenCode manager, durable task and memory state,
-and notifications when work needs human attention.
+A local agent control plane: one OpenCode manager session delegates coding work
+to isolated workers, a deterministic supervisor owns durable task, decision and
+memory state, and you get notified when something needs a human.
 
-**Status:** planning and Node tooling skeleton only. No supervisor, harness
-adapters, plugin, database, or background service is implemented or installed yet.
+See [PLAN.md](PLAN.md) for the architecture, safety boundaries and milestones.
 
-See [PLAN.md](PLAN.md) for the architecture, safety boundaries, implementation
-milestones, and acceptance tests.
+## Status
 
-## Stack
+| Milestone                       | State                                                                |
+| ------------------------------- | -------------------------------------------------------------------- |
+| 1. Durable core and daemon      | Implemented and tested with fake harnesses                           |
+| 2. OpenCode vertical slice      | Implemented against `@opencode/*` 2.0.27; tested with a fake service |
+| 3. Memory and attention         | Implemented and tested                                               |
+| 4. Claude Code / Codex adapters | Not started (profiles using them are refused)                        |
+| 5. LaunchAgent background mode  | Not started (run `ocd daemon` in the foreground)                     |
 
-- Node.js 24 and pnpm, pinned in `mise.toml`.
-- Strict TypeScript 7 ESM and Vite+ for checking, testing, and packaging.
-- Planned: Fastify, Zod, Pino, SQLite via `better-sqlite3`, **Drizzle ORM**, and
-  reviewed Drizzle Kit migrations.
-- Planned: OpenCode V2 plugin/client, Claude Code CLI, and Codex app-server adapters.
-- Planned: a user LaunchAgent on macOS; no Docker or web application.
+No real model call has been made by the test suite. The only checks against the
+real OpenCode service are read-only (`ocd doctor`). See
+[docs/opencode-adapter.md](docs/opencode-adapter.md) for exactly what is verified.
 
-Runtime dependencies will be added with their implementations, not preinstalled
-as unused placeholders.
+## Packages
 
-## Development
+```text
+packages/
+  core/        Zod contracts, task states, redaction, report protocol, socket API client
+  supervisor/  Fastify API on a Unix socket, Drizzle schema + migrations, scheduler, recovery, outbox
+  adapters/    Fake harness and the OpenCode V2 adapter (+ in-memory OpenCode service for tests)
+  plugin/      OpenCode V2 plugin: ocd_* manager tools and the manager briefing (no database)
+  cli/         The `ocd` command
+```
+
+## Setup
 
 With the pinned mise tools installed:
 
 ```sh
 mise exec -- pnpm install
-mise exec -- pnpm run check
-mise exec -- pnpm run build
-mise exec -- pnpm run dev
+mise exec -- pnpm run build      # vp pack for every package
+mise exec -- pnpm run check      # format, lint, type-check
+mise exec -- pnpm test           # fake harnesses and temporary DBs/worktrees only
 ```
 
-`dev` watches the Node package build; it does not start a browser dev server or a
-supervisor. `build` uses `vp pack`, not the web application's `vp build`.
-
-`pnpm test` is configured for Vitest's Node environment. There are no tests yet;
-the normal command intentionally fails when no tests are found. During this
-planning-only scaffold, validate the runner with:
+Put `packages/cli/dist/ocd.mjs` on your PATH (for example
+`alias ocd="node $PWD/packages/cli/dist/ocd.mjs"`). State lives in `~/.ocd`
+(override with `OCD_HOME`); optional settings go in `~/.ocd/config.json`, e.g.
+`{"concurrency": 1, "stallAfterMinutes": 30}`.
 
 ```sh
-mise exec -- pnpm exec vp test --passWithNoTests
+ocd daemon                                   # foreground supervisor (Ctrl-C reports worker outcomes)
+ocd profile add oc --harness opencode --model anthropic/claude-sonnet-4-5 --permission ask
+ocd repo add myapp ~/code/myapp --profile oc
+ocd status
 ```
 
-Do not retain `--passWithNoTests` as the implementation's test policy.
+The supervisor needs the OpenCode background service (`opencode service start`).
+It discovers it and never starts it itself.
+
+### Manager session (explicit, manual)
+
+Nothing installs the plugin for you. The recommended setup keeps it out of your
+application repos by using a dedicated manager directory with a project-level
+OpenCode config:
+
+```jsonc
+// ~/ocd-manager/.opencode/opencode.jsonc
+{ "plugins": ["/absolute/path/to/ocd/packages/plugin"] }
+```
+
+Open OpenCode in `~/ocd-manager`, ask it to call `ocd_register_manager`, or
+register the session yourself with `ocd manager register <session-id>`. Only
+the registered manager may use the `ocd_*` tools; worker sessions are refused
+even if the plugin is loaded globally. Replacing a manager needs
+`ocd manager register <id> --replace` from the CLI.
+
+## How work flows
+
+1. The manager calls `ocd_dispatch_task`. The supervisor persists the task and
+   returns its ID; the worker is owned by the supervisor from then on.
+2. Each task gets its own worktree under `~/.ocd/workspaces/<repo>/<task>` on
+   branch `ocd/<task>`. Workspaces are never deleted by OCD.
+3. Permission requests block the task and notify you; only a human can approve
+   them, from an interactive terminal: `ocd attention resolve <id> --approve`.
+   Profiles with `--permission deny` reject them and surface the block instead.
+4. When the worker goes idle, OCD collects its `ocd-report` and independently
+   verifies the workspace (changed files, commits, optional repo
+   `--verify` command). A valid report makes the task `ready_for_review`.
+5. You accept with `ocd task accept <id>`. Nothing is merged automatically.
+
+Crashes, restarts, lost event streams and sleep are reconciled conservatively:
+uncertain launches become `needs_attention` instead of being retried, and
+interrupted workers are resumed only with `ocd task resume <id> --mode
+reattach|relaunch`.
+
+## Memory
+
+`ocd_remember` / `ocd memory add` store scoped (`global`, `repo`, `task`) notes
+with FTS5 search. Human statements are confirmed immediately; inferred lessons
+are proposals until `ocd memory confirm`. Workers see confirmed memory for
+their own repository only; the manager briefing includes confirmed global
+preferences, open tasks, pending attention and recent decisions. Secrets are
+refused.
+
+## Maintenance
+
+```sh
+ocd db backup                 # SQLite online backup into ~/.ocd/backups
+ocd db restore <file>         # daemon stopped; the old DB is kept, not deleted
+ocd db migrate                # applies reviewed migrations after a backup
+ocd outbox --status dead      # notifications that gave up (also listed in `ocd attention`)
+```
+
+Migrations are generated with `pnpm run db:generate` and checked in under
+`packages/supervisor/drizzle/`; review the SQL before committing.
+
+## Real smoke test (opt-in, spends tokens)
+
+```sh
+scripts/smoke-opencode.sh --yes-spend-tokens provider/model
+```
+
+It uses a throwaway `OCD_HOME` and git repo, dispatches one tiny task to the
+running OpenCode service and prints the result.
 
 ## Neovim
 
-`.nvim-tools.lua` configures the existing `project-tools` plugin:
-
-- `tsc` uses the repo-local TypeScript 7 compiler's built-in language server.
-- `oxlint` runs as an LSP, without duplicate nvim-lint diagnostics.
-- `oxfmt` formats JS/TS, JSON/JSONC, YAML, and Markdown on save.
-- Language server and formatter versions are locked in `package.json` and
-  `pnpm-lock.yaml`; Oxc versions match the pinned Vite+ toolchain.
-- Other tools such as Lua/TOML support remain inherited from the global config.
-
-Open a TypeScript file and use `:ProjectTools show` or `:ProjectTools health`.
-The configuration is declarations-only, as required by `project-tools`.
+`.nvim-tools.lua` configures the `project-tools` plugin with the repo-local
+TypeScript 7 `tsc` language server, oxlint as an LSP, and oxfmt formatting.
