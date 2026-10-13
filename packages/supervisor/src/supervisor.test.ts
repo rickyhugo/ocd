@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { join } from "node:path";
 
 import { OcdApiError, OcdClient } from "@ocd/core";
@@ -287,30 +288,53 @@ describe("cancellation and shutdown", () => {
   });
 });
 
+/** A raw request with exactly these headers, bypassing OcdClient. */
+function rawStatus(socketPath: string, headers: Record<string, string>): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const req = request({ socketPath, path: "/v1/status", headers }, (r) => {
+      r.resume();
+      resolve(r.statusCode ?? 0);
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 describe("API boundaries", () => {
   it("rejects incompatible API versions", async () => {
     h = await startHarness();
     const raw = new OcdClient({ socketPath: h.paths.socket, actor: "human" });
-    // Monkeypatch the version header by calling with a custom header set.
-    const res = await new Promise<number>((resolve, reject) => {
-      import("node:http").then(({ request }) => {
-        const req = request(
-          {
-            socketPath: h.paths.socket,
-            path: "/v1/status",
-            headers: { "x-ocd-api-version": "999", "x-ocd-actor": "human" },
-          },
-          (r) => {
-            r.resume();
-            resolve(r.statusCode ?? 0);
-          },
-        );
-        req.on("error", reject);
-        req.end();
-      }, reject);
-    });
-    expect(res).toBe(400);
+    const token = readFileSync(h.paths.token, "utf8").trim();
+    expect(
+      await rawStatus(h.paths.socket, {
+        authorization: `Bearer ${token}`,
+        "x-ocd-api-version": "999",
+        "x-ocd-actor": "human",
+      }),
+    ).toBe(400);
     expect((await raw.status()).apiVersion).toBe(1);
+  });
+
+  it("only serves clients that present the API token; claiming to be the human is not enough", async () => {
+    h = await startHarness();
+    const claimHuman = { "x-ocd-api-version": "1", "x-ocd-actor": "human" };
+    expect(await rawStatus(h.paths.socket, claimHuman)).toBe(401);
+    expect(await rawStatus(h.paths.socket, { ...claimHuman, authorization: "Bearer wrong" })).toBe(
+      401,
+    );
+    const forged = new OcdClient({
+      socketPath: h.paths.socket,
+      actor: "human",
+      token: "x".repeat(64),
+    });
+    await expect(forged.status()).rejects.toMatchObject({ status: 401, code: "unauthenticated" });
+    // The token file is private to the user and survives restarts.
+    expect(statSync(h.paths.token).mode & 0o777).toBe(0o600);
+    const before = readFileSync(h.paths.token, "utf8");
+    await h.daemon.stop();
+    await h.restart();
+    expect(readFileSync(h.paths.token, "utf8")).toBe(before);
+    expect((await h.human.status()).apiVersion).toBe(1);
   });
 
   it("restricts control tools to sessions in the manager directory and blocks worker sessions", async () => {

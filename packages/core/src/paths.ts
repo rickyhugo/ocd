@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export interface OcdPaths {
   home: string;
@@ -11,6 +11,26 @@ export interface OcdPaths {
   logs: string;
   workspaces: string;
   backups: string;
+  /** API token that authenticates OCD's own clients; lives next to the socket. */
+  token: string;
+}
+
+/**
+ * The OCD environment every worker shell gets: a per-task sandbox home, so
+ * `ocd` run by a worker (say, while developing OCD itself) never reaches the
+ * live supervisor or its API token. `ocd daemon` there starts an isolated one.
+ */
+export function workerOcdEnv(sandboxHome: string): Record<string, string> {
+  return {
+    OCD_HOME: sandboxHome,
+    OCD_SOCKET: join(sandboxHome, "run", "ocd.sock"),
+    OCD_CONFIG: join(sandboxHome, "ocd.jsonc"),
+  };
+}
+
+/** The API token of the supervisor listening on `socketPath`. */
+export function apiTokenPath(socketPath: string): string {
+  return join(dirname(socketPath), "api.token");
 }
 
 // sockaddr_un.sun_path is 104 bytes on macOS, including the terminator.
@@ -37,5 +57,6 @@ export function resolveOcdPaths(env: NodeJS.ProcessEnv = process.env): OcdPaths 
     logs: join(home, "logs"),
     workspaces: join(home, "workspaces"),
     backups: join(home, "backups"),
+    token: apiTokenPath(socket),
   };
 }

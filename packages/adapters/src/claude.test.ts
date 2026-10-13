@@ -31,6 +31,7 @@ function setup(env: Record<string, string> = {}) {
     model: "sonnet#high",
     agent: null,
     permissionPolicy: "ask",
+    isolationEnv: { OCD_HOME: "/sandbox/t_1" },
     env: { PATH: process.env["PATH"]!, HOME: process.env["HOME"]!, ...env },
   };
   return { adapter, events, spec };

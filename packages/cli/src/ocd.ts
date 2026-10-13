@@ -24,6 +24,7 @@ import {
   startDaemon,
 } from "@ocd/supervisor";
 
+import { insideWorktree } from "./guard.ts";
 import { buildAdapters, buildManagerChannel, probeHarnesses } from "./harnesses.ts";
 import {
   FallbackNotifier,
@@ -35,6 +36,7 @@ import {
   locateBinary,
   type Platform,
 } from "./platform/index.ts";
+import { addRepo, removeRepo } from "./repo-config.ts";
 
 const HELP = `ocd — local agent control plane
 
@@ -54,6 +56,9 @@ Supervisor
 
 Configuration (human only)
   ocd repo list                     Repositories declared in ocd.jsonc
+  ocd repo add <name> <path> [--profile P]
+                                    Declare a repository in ocd.jsonc (comments are kept; applies live)
+  ocd repo remove <name>            Remove it from ocd.jsonc (its tasks and worktrees are kept)
   ocd profile list                  Profiles declared in ocd.jsonc
   ocd manager                       Configured manager directory and active session
 
@@ -184,6 +189,17 @@ async function main(argv: string[]): Promise<void> {
   if (!command || flags.help) {
     console.log(HELP);
     return;
+  }
+
+  if (insideWorktree(process.cwd(), paths.workspaces)) {
+    fail(
+      [
+        `refusing to use the live OCD from inside one of its worktrees (${process.cwd()}).`,
+        "Workers get a sandbox OCD_HOME; to try OCD here, use a scratch home:",
+        '  OCD_HOME="$(mktemp -d)" ocd daemon',
+        `To act on the live OCD from here anyway, say so: OCD_HOME=${paths.home} ocd …`,
+      ].join("\n"),
+    );
   }
 
   switch (command) {
@@ -447,10 +463,35 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "repo": {
-      if (sub !== "list" && sub !== undefined)
-        fail(
-          `repositories are declared under repos in ${paths.config}; saved changes apply automatically`,
+      if (sub === "add" || sub === "remove") {
+        const [name, path] = rest;
+        if (!name || (sub === "add" && !path))
+          fail("usage: ocd repo add <name> <path> [--profile P] | ocd repo remove <name>");
+        try {
+          if (sub === "add") addRepo(paths.config, name, path!, flags.profile);
+          else removeRepo(paths.config, name);
+        } catch (error) {
+          fail((error as Error).message);
+        }
+        // The supervisor hot-reloads ocd.jsonc; confirm it took effect.
+        const want = sub === "add";
+        let applied: boolean | null = null;
+        for (let i = 0; i < 20 && applied !== true; i++) {
+          const repos = await client.listRepos().catch(() => null);
+          if (!repos) break;
+          applied = repos.some((r) => r.name === name) === want;
+          if (!applied) await new Promise((r) => setTimeout(r, 250));
+        }
+        print({ name, applied }, json, () =>
+          applied === null
+            ? `${want ? "added" : "removed"} ${name} in ${paths.config}; the supervisor is not running and loads it on start`
+            : applied
+              ? `${want ? "added" : "removed"} ${name}${want ? "" : " (its tasks and worktrees are kept)"}`
+              : `${want ? "added" : "removed"} ${name} in ${paths.config}, but the supervisor has not applied it yet; check \`ocd status\` and ${paths.logs}`,
         );
+        return;
+      }
+      if (sub !== "list" && sub !== undefined) fail("usage: ocd repo list|add|remove");
       const repos = await client.listRepos();
       print(
         repos,
@@ -592,7 +633,7 @@ async function main(argv: string[]): Promise<void> {
           [
             `${id} is in manual mode: OCD stopped driving it and the manager was told to leave it alone.`,
             "Drive the session yourself (in tmux it keeps running after you close the terminal):",
-            `  cd ${shellQuote([r.cwd])} && ${shellQuote(r.command)}`,
+            `  cd ${shellQuote([r.cwd])} && env ${shellQuote(Object.entries(r.env).map(([k, v]) => `${k}=${v}`))} ${shellQuote(r.command)}`,
             `Hand it back with: ocd task giveback ${id} --mode continue|review [--message NOTE]`,
           ].join("\n"),
         );

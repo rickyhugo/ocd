@@ -1,5 +1,5 @@
-import { chmodSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import type { HarnessAdapter } from "@ocd/adapters";
 import { resolveOcdPaths, type OcdPaths, type ShutdownReport } from "@ocd/core";
@@ -25,7 +25,7 @@ import {
   type Db,
 } from "./db/index.ts";
 import type { SimulatedCrash } from "./errors.ts";
-import { ensurePrivateDir, removeStaleSocket } from "./fsutil.ts";
+import { ensureApiToken, ensurePrivateDir, removeStaleSocket } from "./fsutil.ts";
 import { newId, systemClock, type Clock } from "./ids.ts";
 import { SupervisorLock } from "./lock.ts";
 import { createLogger, type Logger } from "./logger.ts";
@@ -149,6 +149,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   ensurePrivateDir(paths.logs);
   ensurePrivateDir(paths.workspaces);
   ensurePrivateDir(paths.backups);
+  // The token lives next to the socket, which OCD_SOCKET may move out of runDir.
+  if (!existsSync(dirname(paths.token))) ensurePrivateDir(dirname(paths.token));
+  const apiToken = ensureApiToken(paths.token);
 
   const config = loadConfig(paths.config, options.config);
   const live = new LiveConfig(config);
@@ -262,6 +265,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     };
 
     const supervisor = new Supervisor({
+      sandboxRoot: join(paths.home, "sandbox"),
       store,
       config,
       adapters,
@@ -293,6 +297,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     };
 
     app = buildApi({
+      apiToken,
       store,
       supervisor,
       memory,

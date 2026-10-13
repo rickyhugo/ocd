@@ -46,6 +46,7 @@ export function testPaths(home: string): OcdPaths {
     logs: join(home, "logs"),
     workspaces: join(home, "workspaces"),
     backups: join(home, "backups"),
+    token: join(runDir, "api.token"),
   };
 }
 

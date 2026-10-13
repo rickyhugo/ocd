@@ -32,7 +32,7 @@ export interface OpenCodeApi {
   server: Pick<OpenCodeClient["server"], "info">;
   session: Pick<
     OpenCodeClient["session"],
-    "create" | "list" | "get" | "active" | "prompt" | "synthetic" | "interrupt"
+    "create" | "list" | "get" | "active" | "prompt" | "synthetic" | "interrupt" | "environment"
   > & {
     form: Pick<OpenCodeClient["session"]["form"], "list" | "reply" | "cancel">;
     inbox: Pick<OpenCodeClient["session"]["inbox"], "list">;
@@ -355,7 +355,14 @@ export class OpenCodeAdapter implements HarnessAdapter {
       }),
     );
     this.tracked.add(info.id);
+    // Fail closed: a worker must never run with the live OCD environment.
+    await this.isolate(api, info.id, spec);
     return { sessionId: info.id };
+  }
+
+  /** Points the session's shells at the task's OCD sandbox (see SessionSpec.isolationEnv). */
+  private async isolate(api: OpenCodeApi, sessionID: string, spec: SessionSpec): Promise<void> {
+    await api.session.environment({ sessionID, variables: spec.isolationEnv } as never);
   }
 
   async findSession(spec: SessionSpec): Promise<SessionRef | null> {
@@ -372,6 +379,8 @@ export class OpenCodeAdapter implements HarnessAdapter {
     );
     if (!match) return null;
     this.tracked.add(match.id);
+    // A crash may have come between creating the session and isolating it.
+    await this.isolate(api, match.id, spec);
     return { sessionId: match.id };
   }
 

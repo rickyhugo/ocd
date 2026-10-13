@@ -53,6 +53,9 @@ release. Add a tool name to select part of the graph. For example, run
 - Use `vite-plus/test` imports and fake adapters for routine tests. Real harness
   runs and LaunchAgent/global plugin installation require explicit
   authorization.
+- Never drive the live supervisor (`~/.ocd`) while developing OCD. Worker
+  shells get a sandbox `OCD_HOME`; to try a change end to end, run
+  `OCD_HOME="$(mktemp -d)" ocd daemon`. Tests start their own temp supervisors.
 - Preserve workspaces and user changes. No autonomous merges or blind retries of
   uncertain coding runs. Permission auto-approval exists only as the explicit
   per-profile `"permissionPolicy": "allow"` / `"yolo"` opt-ins; never make

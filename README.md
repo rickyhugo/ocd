@@ -276,15 +276,33 @@ reattach|relaunch`.
 ## Security model and limits
 
 The socket is `0600` in a `0700` directory, so other users cannot reach it.
-Within your user account, the caller's role (`human` or `manager`) is a
-request header: the human-only checks stop the manager _model_ from approving
-permissions, accepting work, or reconfiguring OCD through its tools, but they
-are not authentication. A worker or any process running as you with shell
-access could call the socket (or run `ocd`) directly. Keep worker profiles on
-`ask` or `deny` unless you opted into `allow` or `yolo`, rely on the harness's own sandbox and permission
-rules for shell access, and treat OCD as a coordination layer, not a security
-boundary. Approving a permission from the CLI additionally requires typing
-`approve` in an interactive terminal.
+Within your account, three layers keep workers away from the live OCD:
+
+1. **Authenticated API.** Every request must carry the API token in
+   `~/.ocd/run/api.token` (`0600`, created once, kept across restarts). The
+   `ocd` CLI, the TUI and the manager plugin read it; anything else gets `401`.
+   The `human`/`manager` actor header only distinguishes trusted clients; it no
+   longer grants anything by itself.
+2. **Sandboxed worker environment.** Every worker's shells get `OCD_HOME`,
+   `OCD_SOCKET` and `OCD_CONFIG` pointing at a per-task sandbox
+   (`~/.ocd/sandbox/<task>`): through the process environment for Claude Code
+   and Codex, and through OpenCode's per-session environment for OpenCode
+   (a session is never started without it). A worker running `ocd` therefore
+   finds no supervisor and no token; `ocd daemon` there starts an isolated one,
+   which is how a worker developing OCD can try its changes. Sessions you take
+   over in manual mode open with the same environment.
+3. **Worktree guard.** `ocd` refuses to talk to the live supervisor from inside
+   `~/.ocd/workspaces` unless `OCD_HOME` is set explicitly.
+
+The remaining limit is the OS user: a process running as you can still read
+`~/.ocd/run/api.token` on purpose. The layers stop accidents and casual misuse
+(a worker testing OCD, a confused or prompt-injected model running `ocd`),
+not a deliberately malicious process; only a separate OS user or a harness
+sandbox that denies reading `~/.ocd` does that. Keep worker profiles on `ask`
+or `deny` unless you opted into `allow` or `yolo`. The human-only checks still
+stop the manager _model_ from approving permissions, accepting work or
+reconfiguring OCD through its tools, and approving a permission from the CLI
+requires typing `approve` in an interactive terminal.
 
 ## Memory
 

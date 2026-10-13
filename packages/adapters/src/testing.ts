@@ -191,6 +191,10 @@ export class FakeOpenCodeService {
         queueMicrotask(() => this.emit("session.status", { sessionID, status: { type: "busy" } }));
         return {} as never;
       },
+      environment: async (input) => {
+        this.record("session.environment", input);
+        return undefined as never;
+      },
       synthetic: async (input) => {
         this.record("session.synthetic", input);
         return {} as never;

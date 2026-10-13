@@ -17,9 +17,14 @@ export function windowName(taskId: string): string {
 }
 
 /** Quotes argv for a shell, for showing the command to the human. */
-export function shellLine(cwd: string, command: readonly string[]): string {
+export function shellLine(
+  cwd: string,
+  command: readonly string[],
+  env: Readonly<Record<string, string>> = {},
+): string {
   const q = (a: string) => (/^[\w./:@%+=-]+$/.test(a) ? a : `'${a.replaceAll("'", `'\\''`)}'`);
-  return `cd ${q(cwd)} && ${command.map(q).join(" ")}`;
+  const vars = Object.entries(env).map(([k, v]) => `${k}=${q(v)} `);
+  return `cd ${q(cwd)} && ${vars.join("")}${command.map(q).join(" ")}`;
 }
 
 /**
@@ -30,6 +35,8 @@ export async function openSessionWindow(options: {
   taskId: string;
   cwd: string;
   command: readonly string[];
+  /** Set in the window: the worker sandbox, so the session never reaches the live OCD. */
+  sessionEnv?: Readonly<Record<string, string>>;
   env?: NodeJS.ProcessEnv;
   exec?: Exec;
 }): Promise<string | null> {
@@ -47,12 +54,14 @@ export async function openSessionWindow(options: {
     await exec("tmux", ["select-window", "-t", existing]);
     return name;
   }
+  const vars = Object.entries(options.sessionEnv ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
   const created = await exec("tmux", [
     "new-window",
     "-n",
     name,
     "-c",
     options.cwd,
+    ...vars,
     ...options.command,
   ]);
   if (created.code !== 0) throw new Error(`tmux new-window failed for ${name}`);
