@@ -32,6 +32,8 @@ export const repositories = sqliteTable("repositories", {
   path: text("path").notNull().unique(),
   defaultProfile: text("default_profile"),
   baseRef: text("base_ref"),
+  /** Set when the repo is no longer declared in ocd.jsonc; kept for task history. */
+  retiredAt: text("retired_at"),
   createdAt: text("created_at").notNull().default(now),
   updatedAt: text("updated_at").notNull().default(now),
 });

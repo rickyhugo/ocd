@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -152,10 +160,36 @@ export async function startHarness(options: Partial<HarnessOptions> = {}): Promi
   return harness;
 }
 
+/**
+ * Creates a git repo and declares it under `repos` in the harness's ocd.jsonc,
+ * then reloads. Rejects with the config error if the declaration is invalid.
+ */
 export async function setupRepo(h: Harness, name = "app", profile = "fake"): Promise<string> {
   const path = makeRepo(h.root, name);
-  await h.human.addRepo({ name, path, defaultProfile: profile });
+  await declareRepos(h, { [name]: { path, profile } });
   return path;
+}
+
+export async function declareRepos(
+  h: Harness,
+  repos: Record<string, { path: string; profile?: string; baseRef?: string }>,
+): Promise<void> {
+  const current: { repos?: Record<string, unknown> } = existsSync(h.paths.config)
+    ? JSON.parse(readFileSync(h.paths.config, "utf8"))
+    : {};
+  writeFileSync(
+    h.paths.config,
+    JSON.stringify({ ...current, repos: { ...current.repos, ...repos } }, null, 2),
+  );
+  await h.daemon.reload();
+  const declared = new Set((await h.human.listRepos()).map((r) => r.name));
+  const missing = Object.keys(repos).filter((name) => !declared.has(name));
+  if (missing.length > 0) {
+    const errors = (await h.human.listAttention({ status: "open" })).filter((a) =>
+      a.reason.startsWith("ocd.jsonc is invalid"),
+    );
+    throw new Error(errors[0]?.reason ?? `Repos not declared: ${missing.join(", ")}`);
+  }
 }
 
 export async function waitFor<T>(

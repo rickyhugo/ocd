@@ -40,8 +40,7 @@ Supervisor
   ocd doctor                        Check harness binaries, versions and the OpenCode service
 
 Configuration (human only)
-  ocd repo add <name> <path> [--profile P] [--base REF]
-  ocd repo list | ocd repo remove <name>
+  ocd repo list                     Repositories declared in ocd.jsonc
   ocd profile list                  Profiles declared in ocd.jsonc
   ocd manager                       Configured manager directory and active session
 
@@ -220,30 +219,22 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "repo": {
-      if (sub === "add") {
-        const [name, path] = rest;
-        if (!name || !path) fail("usage: ocd repo add <name> <path>");
-        const repo = await client.addRepo({
-          name,
-          path: resolve(path),
-          ...(flags.profile ? { defaultProfile: flags.profile } : {}),
-          ...(flags.base ? { baseRef: flags.base } : {}),
-        });
-        print(repo, json, () => `registered ${repo.name} -> ${repo.path}`);
-      } else if (sub === "list") {
-        const repos = await client.listRepos();
-        print(
-          repos,
-          json,
-          () =>
-            repos
-              .map((r) => `${r.name.padEnd(16)} ${r.path}  profile=${r.defaultProfile ?? "-"}`)
-              .join("\n") || "no repositories",
+      if (sub !== "list" && sub !== undefined)
+        fail(
+          `repositories are declared under repos in ${paths.config}; saved changes apply automatically`,
         );
-      } else if (sub === "remove") {
-        if (!rest[0]) fail("usage: ocd repo remove <name>");
-        print(await client.removeRepo(rest[0]), json, () => `removed ${rest[0]}`);
-      } else fail("usage: ocd repo add|list|remove");
+      const repos = await client.listRepos();
+      print(
+        repos,
+        json,
+        () =>
+          repos
+            .map(
+              (r) =>
+                `${r.name.padEnd(16)} ${r.path}  profile=${r.defaultProfile ?? "-"}${r.baseRef ? ` base=${r.baseRef}` : ""}`,
+            )
+            .join("\n") || `no repositories; declare them under repos in ${paths.config}`,
+      );
       return;
     }
     case "profile": {

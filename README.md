@@ -50,12 +50,17 @@ Put `packages/cli/dist/ocd.mjs` on your PATH (for example
 
 Settings and execution profiles live in one JSONC file, read from `$OCD_CONFIG`
 or `~/.ocd/ocd.jsonc` (a symlink into a git repo works well). A profile is a
-named recipe for running a worker; the manager and repos refer to it by name.
+named recipe for running a worker; repos are the repositories the manager may
+dispatch to. Both are referred to by name.
 
 ```jsonc
 {
   "$schema": "https://raw.githubusercontent.com/rickyhugo/ocd/main/schema/ocd.schema.json",
   "concurrency": 1,
+  "manager": { "directory": "~/ocd-manager" },
+  "repos": {
+    "myapp": { "path": "~/code/myapp", "profile": "oc" },
+  },
   "profiles": {
     "oc": {
       "harness": "opencode",
@@ -73,19 +78,21 @@ named recipe for running a worker; the manager and repos refer to it by name.
 }
 ```
 
-The daemon validates the file at startup and refuses typos and invalid
-profiles. While it runs, saved changes to profiles apply immediately (other
-settings need a restart); if a save leaves the file invalid, the last good
-profiles stay in effect and one item appears in `ocd attention list` until the
+The daemon validates the file at startup and refuses typos, invalid profiles,
+and repo paths that are not git repository roots. While it runs, saved changes
+to profiles, repos and the manager directory apply immediately (other settings
+need a restart); if a save leaves the file invalid, the last good configuration
+stays in effect and one item appears in `ocd attention list` until the
 file is fixed. [`schema/ocd.schema.json`](schema/ocd.schema.json) gives editors
 completion and hover docs; it is generated from the daemon's own validation
 (`pnpm run schema`), and a test fails if it drifts. Tasks keep a snapshot of
-the profile they were dispatched with.
+the profile they were dispatched with; a repo removed from the file stops
+accepting new work but keeps its task history.
 
 ```sh
 ocd daemon                                   # foreground supervisor (Ctrl-C reports worker outcomes)
 ocd profile list                             # profiles from ocd.jsonc
-ocd repo add myapp ~/code/myapp --profile oc
+ocd repo list                                # repos from ocd.jsonc
 ocd status
 ```
 
@@ -133,7 +140,8 @@ plugin config, run `opencode reload` (it reloads every OpenCode location).
 4. When the worker goes idle, OCD collects its `ocd-report` and independently
    checks the worktree with git (changed files, commits, uncommitted changes).
    A valid report makes the task `ready_for_review`.
-5. You accept with `ocd task accept <id>`. Nothing is merged automatically.
+5. You accept with `ocd task accept <id>`, or tell the manager to accept it
+   (`ocd_accept_task`). Nothing is merged automatically.
 
 Crashes, restarts, lost event streams and sleep are reconciled conservatively:
 uncertain launches become `needs_attention` instead of being retried, and

@@ -11,7 +11,6 @@ import {
   HEADER_SESSION,
   RecallInput,
   RememberInput,
-  RepositoryInput,
   ResolveAttentionInput,
   ResumeTaskInput,
   SendToWorkerInput,
@@ -37,7 +36,6 @@ import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
 import type { Store } from "./store.ts";
 import type { Supervisor } from "./supervisor.ts";
-import type { WorkspaceManager } from "./workspace.ts";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -51,7 +49,6 @@ export interface ApiDeps {
   store: Store;
   supervisor: Supervisor;
   memory: MemoryService;
-  workspaces: WorkspaceManager;
   logger: Logger;
   /** Invoked after the shutdown response is sent. */
   requestShutdown: () => Promise<ShutdownReport>;
@@ -59,14 +56,13 @@ export interface ApiDeps {
 }
 
 const IdParams = z.object({ id: z.string().min(1).max(100) });
-const NameParams = z.object({ name: z.string().min(1).max(100) });
 
 const csv = (value: unknown) => (typeof value === "string" && value ? value.split(",") : undefined);
 const bool = (value: unknown) => (value === "true" ? true : value === "false" ? false : undefined);
 const int = (value: unknown) => (typeof value === "string" && value ? Number(value) : undefined);
 
 export function buildApi(deps: ApiDeps): FastifyInstance {
-  const { store, supervisor, memory, workspaces } = deps;
+  const { store, supervisor, memory } = deps;
   const app = Fastify({
     loggerInstance: deps.logger.child({ component: "api" }) as FastifyBaseLogger,
     logController: new LogController({ disableRequestLogging: true }),
@@ -182,28 +178,10 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     return reply.send(report);
   });
 
-  // -- repositories and profiles (human configuration) -------------------------
+  // -- repositories and profiles (declared in ocd.jsonc) ---------------------------
   app.get("/v1/repos", async (req) => {
     requireCaller(req);
     return store.listRepos();
-  });
-  app.post("/v1/repos", async (req) => {
-    if (req.actor !== "human")
-      throw forbidden("human_only", "Repositories are registered by a human");
-    const input = RepositoryInput.parse(req.body);
-    if (input.defaultProfile && !deps.live.getProfile(input.defaultProfile)) {
-      throw new ApiError(
-        404,
-        "not_found",
-        `Profile ${input.defaultProfile} is not declared in ocd.jsonc`,
-      );
-    }
-    const path = await workspaces.canonicalRepoPath(input.path);
-    return store.addRepo({ ...input, path });
-  });
-  app.delete("/v1/repos/:name", async (req) => {
-    if (req.actor !== "human") throw forbidden("human_only", "Repositories are removed by a human");
-    return { removed: store.removeRepo(NameParams.parse(req.params).name) };
   });
   app.get("/v1/profiles", async (req) => {
     requireCaller(req);
@@ -260,9 +238,10 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
       CancelTaskInput.parse(req.body ?? {}).reason,
     );
   });
-  app.post("/v1/tasks/:id/accept", async (req) =>
-    supervisor.accept(IdParams.parse(req.params).id, req.actor),
-  );
+  app.post("/v1/tasks/:id/accept", async (req) => {
+    requireCaller(req);
+    return supervisor.accept(IdParams.parse(req.params).id, req.actor);
+  });
   app.post("/v1/tasks/:id/resume", async (req) => {
     const { mode } = ResumeTaskInput.parse(req.body);
     return supervisor.resume(IdParams.parse(req.params).id, mode, req.actor);
