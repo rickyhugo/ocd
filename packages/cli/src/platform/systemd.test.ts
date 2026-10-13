@@ -78,6 +78,16 @@ describe("systemd user unit", () => {
     );
   });
 
+  it("restarts the unit", async () => {
+    const { exec, calls } = fakeExec();
+    await new SystemdService({
+      exec,
+      unit: join(temp(), SYSTEMD_UNIT),
+      systemctl: "systemctl",
+    }).restart();
+    expect(calls).toEqual([["systemctl", "--user", "restart", SYSTEMD_UNIT]]);
+  });
+
   it("parses systemctl show", async () => {
     const unit = join(temp(), SYSTEMD_UNIT);
     writeFileSync(unit, renderUnit(spec));

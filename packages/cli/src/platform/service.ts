@@ -30,6 +30,8 @@ export interface ServiceManager {
   readonly kind: "launchd" | "systemd";
   install(spec: ServiceSpec): Promise<{ definition: string }>;
   uninstall(): Promise<{ removed: boolean }>;
+  /** Stops the running supervisor (SIGTERM, a graceful shutdown) and starts it again. */
+  restart(): Promise<void>;
   status(): Promise<ServiceStatus>;
 }
 

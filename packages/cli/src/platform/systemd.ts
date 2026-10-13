@@ -101,6 +101,10 @@ export class SystemdService implements ServiceManager {
     return { removed: true };
   }
 
+  async restart(): Promise<void> {
+    await this.ctl("restart", SYSTEMD_UNIT);
+  }
+
   async status(): Promise<ServiceStatus> {
     const result = await this.exec(this.systemctl, [
       "--user",

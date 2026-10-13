@@ -132,6 +132,7 @@ plugin config, run `opencode reload` (it reloads every OpenCode location).
 ocd service install     # starts at login, survives closing the terminal
 ocd service status
 ocd service uninstall
+ocd restart             # restart the service, e.g. after `pnpm run build`
 ```
 
 macOS gets a user LaunchAgent (`~/Library/LaunchAgents/dev.ocd.supervisor.plist`),
@@ -141,7 +142,9 @@ and CLI that installed it (service managers do not use your shell's PATH or
 mise), and restarts it after a crash, not after `ocd stop`. If it cannot
 start (another daemon running, pending migration, invalid config) it sends a
 notification and exits instead of restarting in a loop. Logs: `~/.ocd/logs`.
-A restart never resumes coding runs automatically; OpenCode workers are
+`ocd restart` refuses while Claude Code or Codex workers are running (they
+are processes of the supervisor and would be interrupted) unless you pass
+`--force`; OpenCode workers survive it. A restart never resumes coding runs automatically; OpenCode workers are
 reattached and anything uncertain shows up in `ocd attention list`.
 
 ### Notifications

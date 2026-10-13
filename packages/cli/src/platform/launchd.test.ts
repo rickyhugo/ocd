@@ -71,6 +71,18 @@ describe("LaunchAgent lifecycle", () => {
     expect(readFileSync(plist, "utf8")).toContain("--background");
   });
 
+  it("restarts by kickstarting with -k, and reports failures", async () => {
+    const { exec, calls } = fakeExec();
+    await new LaunchdService({ exec, plist: join(temp(), "x.plist") }).restart();
+    expect(calls).toEqual([
+      ["/bin/launchctl", "kickstart", "-k", `gui/${process.getuid!()}/${LAUNCH_AGENT_LABEL}`],
+    ]);
+    const failing = fakeExec({ kickstart: { code: 113, stderr: "Could not find service" } });
+    await expect(
+      new LaunchdService({ exec: failing.exec, plist: join(temp(), "x.plist") }).restart(),
+    ).rejects.toThrow(/Could not find service/);
+  });
+
   it("reports bootstrap failures", async () => {
     const plist = join(temp(), `${LAUNCH_AGENT_LABEL}.plist`);
     const { exec } = fakeExec({ bootstrap: { code: 5, stderr: "Input/output error" } });
