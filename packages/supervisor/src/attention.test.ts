@@ -27,7 +27,7 @@ describe("notifications and the outbox (AT9)", () => {
     );
     await delay(100);
     expect(h.notifier.sent).toHaveLength(1);
-    expect(h.notifier.sent[0]?.title).toContain("review");
+    expect(h.notifier.sent[0]?.title).toBe("OCD: Review ready");
   });
 
   it("keeps undelivered notifications across a restart", async () => {

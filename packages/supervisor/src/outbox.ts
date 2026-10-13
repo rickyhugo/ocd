@@ -24,11 +24,12 @@ export function digest(payloads: readonly NotifyPayload[]): NotifyPayload {
     latest.set(key, payload);
   });
   const items = [...latest.values()];
-  if (items.length === 1) return { title: items[0]!.title, body: items[0]!.body };
+  if (items.length === 1) return items[0]!;
 
   const review = items.filter((p) => p.kind === "review");
   const needs = items.filter((p) => p.kind !== "review");
-  const label = (p: NotifyPayload) => p.title.replace(/^OCD: /, "");
+  const headline = (p: NotifyPayload) => p.title.replace(/^OCD: /, "");
+  const label = (p: NotifyPayload) => (p.subject ? `${p.subject} (${headline(p)})` : headline(p));
   const summary: string[] = [];
   const lines: string[] = [];
   if (review.length > 0) summary.push(`${review.length} ready for review`);
@@ -37,7 +38,9 @@ export function digest(payloads: readonly NotifyPayload[]): NotifyPayload {
     lines.push(`Needs you: ${needs.map(label).join(", ")}`);
   }
   if (review.length > 0)
-    lines.push(`Ready for review: ${review.map((p) => p.taskId ?? label(p)).join(", ")}`);
+    lines.push(
+      `Ready for review: ${review.map((p) => p.subject ?? p.taskId ?? label(p)).join(", ")}`,
+    );
   return { title: `OCD: ${summary.join(", ")}`, body: truncate(lines.join("\n"), 1000) };
 }
 

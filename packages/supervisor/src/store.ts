@@ -34,6 +34,7 @@ import {
 } from "./db/schema.ts";
 import { ApiError, conflict, notFound } from "./errors.ts";
 import { iso, newId, type Clock } from "./ids.ts";
+import { attentionNotification, type Notice } from "./notification.ts";
 
 type TaskRow = typeof tasks.$inferSelect;
 type RepoRow = typeof repositories.$inferSelect;
@@ -50,6 +51,8 @@ export interface OutboxInput {
 export interface NotifyPayload {
   title: string;
   body: string;
+  /** The task's display title as used in the body, for grouping notifications. */
+  subject?: string;
   /** Lets a digest count each task once. */
   taskId?: string;
   /** The attention kind; "review" counts as ready for review, anything else as needing you. */
@@ -91,7 +94,7 @@ export interface TransitionOptions {
   patch?: Partial<Omit<TaskRow, "id" | "state">>;
   event?: { type: string; data?: unknown };
   outbox?: OutboxInput[];
-  attention?: { input: AttentionInput; notify: boolean; wake: boolean }[];
+  attention?: { input: AttentionInput; notify: boolean; wake: boolean; notice?: Notice }[];
 }
 
 export class Store {
@@ -489,7 +492,7 @@ export class Store {
    */
   raiseAttention(
     input: AttentionInput,
-    delivery: { notify: boolean; wake: boolean },
+    delivery: { notify: boolean; wake: boolean; notice?: Notice },
   ): { attention: Attention; created: boolean } {
     return this.tx(() => {
       // Requests tied to one harness request or window dedupe for good; per-turn
@@ -535,12 +538,12 @@ export class Store {
       const label = attention.taskId ? `${attention.kind} · ${attention.taskId}` : attention.kind;
       const entries: OutboxInput[] = [];
       if (delivery.notify) {
+        const task = attention.taskId ? this.getTask(attention.taskId) : null;
         entries.push({
           kind: "notify",
           dedupeKey: `notify:${id}`,
           payload: {
-            title: `OCD: ${label}`,
-            body: attention.reason,
+            ...attentionNotification(attention, task, delivery.notice),
             ...(attention.taskId ? { taskId: attention.taskId } : {}),
             kind: attention.kind,
           },

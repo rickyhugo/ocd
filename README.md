@@ -197,8 +197,18 @@ notification runs `ocd focus`, which switches tmux to the pane running OpenCode
 in the manager directory and raises the terminal window. `ocd doctor` shows
 which backend is in use.
 
+The title says what happened or what is needed; the body names the task by its
+title, then the repo and one short fact. Clicking only opens the manager:
+permissions are still approved there, never by the notification.
+
+```text
+OCD: Review ready              OCD: Permission needed
+Fix login redirect loop        Fix login redirect loop
+app · 3 files changed          app · Bash: git push origin main
+```
+
 Notifications raised within a few seconds of each other arrive as one digest,
-such as "OCD: 4 ready for review, 1 needs you", listing the task ids; a lone
+such as "OCD: 4 ready for review, 1 needs you", naming each task; a lone
 notification is sent as is. Each task counts once, as its latest notification.
 The window opens with the first notification and lasts
 `notifications.digestWindowMs` (3000 by default; 0 sends on the next outbox

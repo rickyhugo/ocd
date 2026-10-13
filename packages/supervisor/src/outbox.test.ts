@@ -32,10 +32,7 @@ const alert = (taskId: string | null, kind: AttentionKind) => ({
 
 describe("digest", () => {
   it("sends a lone notification unchanged", () => {
-    expect(digest([alert("t_1", "review")])).toEqual({
-      title: "OCD: review · t_1",
-      body: "review reason",
-    });
+    expect(digest([alert("t_1", "review")])).toEqual(alert("t_1", "review"));
   });
 
   it("summarises review-ready tasks and tasks that need you", () => {
@@ -50,6 +47,23 @@ describe("digest", () => {
     expect(message.body).toBe("Needs you: question · t_3\nReady for review: t_1, t_2, t_4, t_5");
     expect(digest([alert("t_1", "permission"), alert(null, "failure")]).title).toBe(
       "OCD: 2 need you",
+    );
+  });
+
+  it("names tasks by their title when the notification has one", () => {
+    const titled = (taskId: string, kind: AttentionKind, title: string, subject: string) => ({
+      title: `OCD: ${title}`,
+      body: subject,
+      taskId,
+      kind,
+      subject,
+    });
+    const message = digest([
+      titled("t_1", "permission", "Permission needed", "Fix login loop"),
+      titled("t_2", "review", "Review ready", "Add dark mode"),
+    ]);
+    expect(message.body).toBe(
+      "Needs you: Fix login loop (Permission needed)\nReady for review: Add dark mode",
     );
   });
 
@@ -120,7 +134,7 @@ describe("notification digests in the outbox worker", () => {
     await vi.advanceTimersByTimeAsync(WINDOW - 1);
     expect(notifier.sent).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1);
-    expect(notifier.sent).toEqual([{ title: "OCD: review · t_1", body: "review reason" }]);
+    expect(notifier.sent).toEqual([alert("t_1", "review")]);
     expect(store.listOutbox("pending")).toHaveLength(0);
   });
 
@@ -265,6 +279,6 @@ describe("notification digests end to end", () => {
     );
     expect(h.notifier.sent).toHaveLength(1);
     expect(h.notifier.sent[0]?.title).toBe("OCD: 2 ready for review");
-    for (const task of tasks) expect(h.notifier.sent[0]?.body).toContain(task.id);
+    expect(h.notifier.sent[0]?.body).toBe("Ready for review: a, b");
   });
 });

@@ -39,6 +39,7 @@ import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } f
 import { iso, type Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
+import { changedFilesText, notification, type Notice } from "./notification.ts";
 import type { OutboxWorker } from "./outbox.ts";
 import type { AttentionInput, Store } from "./store.ts";
 import { WorkspaceError, filteredEnv, type WorkspaceManager } from "./workspace.ts";
@@ -220,6 +221,7 @@ export class Supervisor {
             `shutdown:${run?.id ?? "none"}`,
             `The supervisor stopped and interrupted this worker (session ${row.sessionId ?? "none"}). The workspace is preserved; resume explicitly.`,
             "human",
+            { headline: "Task interrupted", detail: "OCD stopped mid-run; resume explicitly" },
           ),
         ],
       });
@@ -409,6 +411,7 @@ export class Supervisor {
             "no-adapter",
             `Harness ${task.harness} is not configured in this supervisor; the task cannot start.`,
             "human",
+            { headline: "Task can't start", detail: `Harness ${task.harness} is not configured` },
           ),
         ],
       });
@@ -596,6 +599,7 @@ export class Supervisor {
             `workspace:${run.id}`,
             `Workspace problem: ${message}`,
             "human",
+            { headline: "Workspace problem", detail: message },
           ),
         ],
       });
@@ -618,7 +622,14 @@ export class Supervisor {
             reason: `The ${task.harness} harness is unreachable (${message}). Queued work waits until it is back.`,
             resolvableBy: "human",
           },
-          { notify: true, wake: false },
+          {
+            notify: true,
+            wake: false,
+            notice: {
+              headline: "Harness unreachable",
+              detail: `${task.harness}: queued work waits until it is back`,
+            },
+          },
         );
       });
       return;
@@ -660,6 +671,7 @@ export class Supervisor {
             `launch:${run.id}`,
             `Launch failed before the worker started: ${message}`,
             "human",
+            { headline: "Task failed to start", detail: message },
           ),
         ],
       });
@@ -673,6 +685,7 @@ export class Supervisor {
             `ambiguous:${run.id}`,
             `Launch outcome is uncertain (${message}). Inspect the workspace before resuming; OCD will not retry automatically.`,
             "human",
+            { detail: "Inspect the workspace before resuming" },
           ),
         ],
       });
@@ -685,8 +698,8 @@ export class Supervisor {
     key: string,
     reason: string,
     resolvableBy: Actor,
-    extra: Partial<AttentionInput> = {},
-  ): { input: AttentionInput; notify: boolean; wake: boolean } {
+    notice?: Notice,
+  ): { input: AttentionInput; notify: boolean; wake: boolean; notice?: Notice } {
     return {
       input: {
         taskId: task.id,
@@ -696,10 +709,10 @@ export class Supervisor {
         harness: task.harness,
         sessionId: task.sessionId,
         resolvableBy,
-        ...extra,
       },
       notify: true,
       wake: true,
+      ...(notice ? { notice } : {}),
     };
   }
 
@@ -793,7 +806,14 @@ export class Supervisor {
           resolvableBy: "human",
           ...binding,
         },
-        { notify: true, wake: true },
+        {
+          notify: true,
+          wake: true,
+          notice: {
+            headline: "Permission denied",
+            detail: `Profile policy: ${interaction.summary}`,
+          },
+        },
       );
       return;
     }
@@ -857,6 +877,8 @@ export class Supervisor {
       },
       notify: true,
       wake: true,
+      // The headline comes from the kind; the click only opens the manager session.
+      notice: { detail: interaction.summary },
     };
     if (task.state === "running") {
       this.store.transition(taskId, "blocked", {
@@ -929,6 +951,10 @@ export class Supervisor {
                   `quota:${task.attempts}`,
                   `Harness usage limit reached: ${snap.error ?? "unknown"}. Resume after the limit resets.`,
                   "human",
+                  {
+                    headline: "Usage limit reached",
+                    detail: snap.error ?? "Resume after the limit resets",
+                  },
                 ),
               ],
             });
@@ -945,6 +971,7 @@ export class Supervisor {
               `error:${task.attempts}`,
               `Worker failed: ${snap.error ?? "unknown error"}. The workspace is preserved.`,
               "human",
+              { headline: "Task failed", detail: snap.error ?? "Unknown error" },
             ),
           ],
         });
@@ -960,6 +987,7 @@ export class Supervisor {
               `missing:${task.sessionId}`,
               "The worker session is gone. The workspace is preserved; resume explicitly if needed.",
               "human",
+              { headline: "Worker session lost", detail: "Workspace preserved; resume if needed" },
             ),
           ],
         });
@@ -1032,7 +1060,10 @@ export class Supervisor {
       this.store.transition(task.id, "ready_for_review", {
         patch: { result, finishedAt: this.store.now() },
         attention: [
-          this.attentionFor(fresh, "review", `review:${fresh.attempts}`, summary, "human"),
+          this.attentionFor(fresh, "review", `review:${fresh.attempts}`, summary, "human", {
+            // Verified facts only; the worker's own summary stays in the inbox.
+            detail: changedFilesText(verification?.changedFiles.length) ?? "",
+          }),
         ],
       });
     } else {
@@ -1045,6 +1076,7 @@ export class Supervisor {
             `noreport:${fresh.attempts}`,
             `Worker went idle without a valid report (${result.reportError}). Not treated as success.`,
             "manager",
+            { headline: "Report missing", detail: "Worker stopped without a valid report" },
           ),
         ],
       });
@@ -1102,6 +1134,7 @@ export class Supervisor {
             `noadapter:${run?.id ?? "none"}`,
             `Cannot reconcile: harness ${task.harness} is not available.`,
             "human",
+            { headline: "Harness unavailable", detail: `Harness ${task.harness} is not available` },
           ),
         ],
       });
@@ -1132,6 +1165,10 @@ export class Supervisor {
             `lost:${run.id}`,
             `The worker did not survive a supervisor restart (session ${task.sessionId}). The workspace is preserved; resume explicitly.`,
             "human",
+            {
+              headline: "Task interrupted",
+              detail: "Worker lost in an OCD restart; resume explicitly",
+            },
           ),
         ],
       });
@@ -1201,6 +1238,7 @@ export class Supervisor {
           `ambiguous:${run.id}`,
           `A crash interrupted the launch of ${task.id} after its prompt may have been sent, and session ${sessionId} is gone. Inspect ${task.workspacePath} before resuming; OCD will not retry automatically.`,
           "human",
+          { detail: "Inspect the workspace before resuming" },
         ),
       ],
     });
@@ -1226,7 +1264,11 @@ export class Supervisor {
         sessionId: task.sessionId,
         resolvableBy: "manager",
       },
-      { notify: true, wake: false },
+      {
+        notify: true,
+        wake: false,
+        notice: { detail: `No worker activity for ${Math.round(idleMs / 60_000)} min` },
+      },
     );
   }
 
@@ -1259,15 +1301,16 @@ export class Supervisor {
     this.store.tx(() => {
       this.store.settleAttention(a.id, { status: "expired" });
       if (a.taskId) this.store.appendEvent(a.taskId, "attention.expired", { id: a.id });
+      const copy = notification({
+        headline: "Request expired",
+        task,
+        detail: `${a.kind === "question" ? "Question" : "Permission request"} went unanswered and was denied`,
+      });
       this.store.enqueue([
         {
           kind: "notify",
           dedupeKey: `notify:expired:${a.id}`,
-          payload: {
-            title: "OCD: request expired",
-            body: `${a.kind} ${a.id} expired and was denied.`,
-            ...(a.taskId ? { taskId: a.taskId } : {}),
-          },
+          payload: { ...copy, ...(a.taskId ? { taskId: a.taskId } : {}) },
         },
       ]);
     });
