@@ -66,7 +66,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
           "Profiles:",
           ...profiles.map(
             (p) =>
-              `- ${p.name}: ${p.harness} ${p.model}${p.agent ? ` agent=${p.agent}` : ""}, permissions=${p.permissionPolicy}`,
+              `- ${p.name}: ${p.harness} ${p.model}${p.agent ? ` agent=${p.agent}` : ""}, permissions=${p.permissionPolicy}${p.description ? ` — ${p.description}` : ""}`,
           ),
         ].join("\n");
       },

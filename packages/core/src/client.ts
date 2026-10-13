@@ -12,7 +12,6 @@ import type {
   Memory,
   OutboxEntry,
   Profile,
-  ProfileInput,
   RecallHit,
   RecallInput,
   RegisterManagerInput,
@@ -167,7 +166,8 @@ export class OcdClient {
   removeRepo = (name: string) =>
     this.call<{ removed: boolean }>("DELETE", `/v1/repos/${encodeURIComponent(name)}`);
   listProfiles = () => this.call<Profile[]>("GET", "/v1/profiles");
-  addProfile = (input: ProfileInput) => this.call<Profile>("POST", "/v1/profiles", input);
+  /** Re-reads ocd.jsonc; profiles change, other settings need a restart. */
+  reload = () => this.call<{ profiles: Profile[] }>("POST", "/v1/reload");
 
   dispatch = (input: DispatchTaskInput) =>
     this.call<{ task: Task; created: boolean }>("POST", "/v1/tasks", input);

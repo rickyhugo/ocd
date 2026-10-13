@@ -25,7 +25,6 @@ import {
   managers,
   memories,
   outbox,
-  profiles,
   repositories,
   settings,
   taskDependencies,
@@ -117,11 +116,7 @@ export class Store {
     path: string;
     defaultProfile?: string | undefined;
     baseRef?: string | undefined;
-    verifyCommand?: string[] | undefined;
   }): Repository {
-    if (input.defaultProfile && !this.getProfile(input.defaultProfile)) {
-      throw notFound(`Profile ${input.defaultProfile}`);
-    }
     const existing = this.db
       .select()
       .from(repositories)
@@ -131,7 +126,6 @@ export class Store {
       path: input.path,
       defaultProfile: input.defaultProfile ?? null,
       baseRef: input.baseRef ?? null,
-      verifyCommand: input.verifyCommand ?? null,
       updatedAt: this.now(),
     };
     try {
@@ -181,30 +175,6 @@ export class Store {
       );
     this.db.delete(repositories).where(eq(repositories.id, repo.id)).run();
     return true;
-  }
-
-  upsertProfile(profile: Omit<Profile, "createdAt" | "updatedAt">): Profile {
-    const now = this.now();
-    this.db
-      .insert(profiles)
-      .values({ ...profile, createdAt: now, updatedAt: now })
-      .onConflictDoUpdate({ target: profiles.name, set: { ...profile, updatedAt: now } })
-      .run();
-    return this.requireProfile(profile.name);
-  }
-
-  listProfiles(): Profile[] {
-    return this.db.select().from(profiles).orderBy(asc(profiles.name)).all();
-  }
-
-  getProfile(name: string): Profile | null {
-    return this.db.select().from(profiles).where(eq(profiles.name, name)).get() ?? null;
-  }
-
-  requireProfile(name: string): Profile {
-    const profile = this.getProfile(name);
-    if (!profile) throw notFound(`Profile ${name}`);
-    return profile;
   }
 
   // -------------------------------------------------------------------------
@@ -1064,7 +1034,6 @@ function toRepo(row: RepoRow): Repository {
     path: row.path,
     defaultProfile: row.defaultProfile,
     baseRef: row.baseRef,
-    verifyCommand: row.verifyCommand ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

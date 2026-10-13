@@ -15,6 +15,7 @@ import {
   type Task,
 } from "@ocd/core";
 import {
+  ConfigError,
   LockHeldError,
   PendingMigrationsError,
   SupervisorLock,
@@ -39,11 +40,10 @@ Supervisor
   ocd doctor                        Check harness binaries, versions and the OpenCode service
 
 Configuration (human only)
-  ocd repo add <name> <path> [--profile P] [--base REF] [--verify "cmd arg..."]
+  ocd reload                        Re-read ocd.jsonc (profiles; other settings need a restart)
+  ocd repo add <name> <path> [--profile P] [--base REF]
   ocd repo list | ocd repo remove <name>
-  ocd profile add <name> --harness opencode|fake --model provider/model
-                  [--agent A] [--permission deny|ask] [--instructions TEXT] [--env VAR,VAR]
-  ocd profile list
+  ocd profile list                  Profiles declared in ocd.jsonc
   ocd manager register <session-id> [--directory DIR] [--replace]
   ocd manager show
 
@@ -119,13 +119,7 @@ async function main(argv: string[]): Promise<void> {
       migrate: { type: "boolean" },
       profile: { type: "string" },
       base: { type: "string" },
-      verify: { type: "string" },
-      harness: { type: "string" },
-      model: { type: "string" },
-      agent: { type: "string" },
-      permission: { type: "string" },
       instructions: { type: "string" },
-      env: { type: "string" },
       criteria: { type: "string", multiple: true },
       key: { type: "string" },
       all: { type: "boolean" },
@@ -238,7 +232,6 @@ async function main(argv: string[]): Promise<void> {
           path: resolve(path),
           ...(flags.profile ? { defaultProfile: flags.profile } : {}),
           ...(flags.base ? { baseRef: flags.base } : {}),
-          ...(flags.verify ? { verifyCommand: flags.verify.split(" ").filter(Boolean) } : {}),
         });
         print(repo, json, () => `registered ${repo.name} -> ${repo.path}`);
       } else if (sub === "list") {
@@ -258,39 +251,30 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "profile": {
-      if (sub === "add") {
-        const name = rest[0];
-        if (!name || !flags.harness || !flags.model)
-          fail("usage: ocd profile add <name> --harness H --model M");
-        const profile = await client.addProfile({
-          name,
-          harness: flags.harness as "opencode",
-          model: flags.model,
-          ...(flags.agent ? { agent: flags.agent } : {}),
-          ...(flags.instructions ? { instructions: flags.instructions } : {}),
-          permissionPolicy: (flags.permission ?? "deny") as "deny" | "ask",
-          envAllowlist: flags.env ? flags.env.split(",").filter(Boolean) : [],
-        });
-        print(
-          profile,
-          json,
-          () =>
-            `profile ${profile.name}: ${profile.harness} ${profile.model} permissions=${profile.permissionPolicy}`,
-        );
-      } else if (sub === "list") {
-        const profiles = await client.listProfiles();
-        print(
-          profiles,
-          json,
-          () =>
-            profiles
-              .map(
-                (p) =>
-                  `${p.name.padEnd(16)} ${p.harness.padEnd(9)} ${p.model}  agent=${p.agent ?? "-"} permissions=${p.permissionPolicy}`,
-              )
-              .join("\n") || "no profiles",
-        );
-      } else fail("usage: ocd profile add|list");
+      if (sub !== "list" && sub !== undefined)
+        fail(`profiles are declared in ${paths.config}; edit it and run \`ocd reload\``);
+      const profiles = await client.listProfiles();
+      print(
+        profiles,
+        json,
+        () =>
+          profiles
+            .map(
+              (p) =>
+                `${p.name.padEnd(16)} ${p.harness.padEnd(9)} ${p.model}  agent=${p.agent ?? "-"} permissions=${p.permissionPolicy}${p.description ? `\n${" ".repeat(18)}${p.description}` : ""}`,
+            )
+            .join("\n") || `no profiles; declare them in ${paths.config}`,
+      );
+      return;
+    }
+    case "reload": {
+      const { profiles } = await client.reload();
+      print(
+        profiles,
+        json,
+        () =>
+          `reloaded ${paths.config}: ${profiles.map((p) => p.name).join(", ") || "no profiles"}`,
+      );
       return;
     }
     case "manager": {
@@ -573,7 +557,8 @@ main(process.argv.slice(2)).catch((error: unknown) => {
   if (
     error instanceof SupervisorUnavailableError ||
     error instanceof LockHeldError ||
-    error instanceof PendingMigrationsError
+    error instanceof PendingMigrationsError ||
+    error instanceof ConfigError
   ) {
     fail(error.message);
   }

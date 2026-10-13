@@ -23,15 +23,13 @@ export const TaskStateSchema = z.enum(TASK_STATES);
 const EnvVarName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/, "Environment variable names only");
 
 // ---------------------------------------------------------------------------
-// Repositories and profiles (human-configured allowlists)
+// Repositories (registered with the CLI) and profiles (declared in ocd.jsonc)
 
 export const RepositoryInput = z.object({
   name: Slug,
   path: z.string().min(1),
   defaultProfile: Slug.optional(),
   baseRef: z.string().min(1).max(200).optional(),
-  /** argv of an independent verification command run in the workspace. */
-  verifyCommand: z.array(z.string().min(1)).min(1).max(32).optional(),
 });
 export type RepositoryInput = z.infer<typeof RepositoryInput>;
 
@@ -41,33 +39,68 @@ export interface Repository {
   path: string;
   defaultProfile: string | null;
   baseRef: string | null;
-  verifyCommand: string[] | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export const ProfileInput = z.object({
-  name: Slug,
-  harness: HarnessName,
-  /** Harness model id, for OpenCode `provider/model`. */
-  model: z.string().min(1).max(200),
-  agent: z.string().min(1).max(100).optional(),
-  instructions: z.string().max(8000).optional(),
-  permissionPolicy: PermissionPolicy.default("deny"),
-  envAllowlist: z.array(EnvVarName).max(50).default([]),
-});
-export type ProfileInput = z.input<typeof ProfileInput>;
+/** One entry under `profiles` in ocd.jsonc; the key is the profile name. */
+export const ProfileConfig = z
+  .object({
+    harness: HarnessName.describe(
+      "Harness that runs the worker. Only opencode (and fake, for tests) are implemented.",
+    ),
+    model: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe(
+        "Model id. For OpenCode: provider/model, optionally #variant (see `opencode models`).",
+      ),
+    description: z
+      .string()
+      .max(500)
+      .optional()
+      .describe("When to use this profile. Shown to the manager, which picks profiles by name."),
+    agent: z
+      .string()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Harness agent preset, e.g. OpenCode's build agent."),
+    instructions: z
+      .string()
+      .max(8000)
+      .optional()
+      .describe("Standing guidance added to every worker prompt using this profile."),
+    permissionPolicy: PermissionPolicy.default("deny").describe(
+      "ask: permission requests go to the human. deny: they are rejected and surfaced as a blocked request.",
+    ),
+    envAllowlist: z
+      .array(EnvVarName)
+      .max(50)
+      .default([])
+      .describe(
+        "Environment variables passed to the worker in addition to a minimal base set (PATH, HOME, ...).",
+      ),
+  })
+  .strict()
+  .refine((p) => p.harness !== "opencode" || /^[^/\s]+\/\S+$/.test(p.model), {
+    message: "OpenCode models are written provider/model",
+    path: ["model"],
+  });
+export type ProfileConfig = z.input<typeof ProfileConfig>;
+
+export const ProfilesConfig = z.record(Slug, ProfileConfig);
 
 export interface Profile {
   name: string;
   harness: HarnessName;
   model: string;
+  description: string | null;
   agent: string | null;
   instructions: string | null;
   permissionPolicy: PermissionPolicy;
   envAllowlist: string[];
-  createdAt: string;
-  updatedAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,12 +148,6 @@ export interface Verification {
   changedFiles: string[];
   dirty: boolean;
   commitsAhead: number;
-  command: {
-    argv: string[];
-    exitCode: number | null;
-    timedOut: boolean;
-    outputTail: string;
-  } | null;
 }
 
 export interface TaskResult {

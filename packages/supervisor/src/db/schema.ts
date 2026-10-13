@@ -16,7 +16,6 @@ import type {
   HarnessName,
   MemoryScope,
   MemorySource,
-  PermissionPolicy,
   Profile,
   TaskResult,
   TaskState,
@@ -33,19 +32,6 @@ export const repositories = sqliteTable("repositories", {
   path: text("path").notNull().unique(),
   defaultProfile: text("default_profile"),
   baseRef: text("base_ref"),
-  verifyCommand: text("verify_command", { mode: "json" }).$type<string[]>(),
-  createdAt: text("created_at").notNull().default(now),
-  updatedAt: text("updated_at").notNull().default(now),
-});
-
-export const profiles = sqliteTable("profiles", {
-  name: text("name").primaryKey(),
-  harness: text("harness").$type<HarnessName>().notNull(),
-  model: text("model").notNull(),
-  agent: text("agent"),
-  instructions: text("instructions"),
-  permissionPolicy: text("permission_policy").$type<PermissionPolicy>().notNull(),
-  envAllowlist: text("env_allowlist", { mode: "json" }).$type<string[]>().notNull(),
   createdAt: text("created_at").notNull().default(now),
   updatedAt: text("updated_at").notNull().default(now),
 });

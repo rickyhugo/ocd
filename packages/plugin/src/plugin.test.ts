@@ -25,6 +25,15 @@ async function boot(service: FakeOpenCodeService, paths: ReturnType<typeof testP
       schedulerIntervalMs: 20,
       reconcileIntervalMs: 60_000,
       outbox: { intervalMs: 20, maxAttempts: 3, baseDelayMs: 10 },
+      profiles: {
+        oc: {
+          harness: "opencode",
+          model: "anthropic/claude-x",
+          agent: "build",
+          permissionPolicy: "ask",
+          description: "Default worker",
+        },
+      },
     },
     adapters: () => [
       new OpenCodeAdapter({
@@ -48,13 +57,6 @@ describe("OpenCode vertical slice through the plugin tools", () => {
     const service = new FakeOpenCodeService();
     daemon = await boot(service, paths);
     const human = new OcdClient({ socketPath: paths.socket, actor: "human" });
-    await human.addProfile({
-      name: "oc",
-      harness: "opencode",
-      model: "anthropic/claude-x",
-      agent: "build",
-      permissionPolicy: "ask",
-    });
     await human.addRepo({ name: "app", path: makeRepo(root, "app"), defaultProfile: "oc" });
 
     const tools = new Map<string, OcdTool>(
@@ -73,6 +75,9 @@ describe("OpenCode vertical slice through the plugin tools", () => {
     expect(await call("register_manager", {})).toMatch(/Registered ses_mgr/);
     expect(await call("register_manager", {}, "ses_intruder")).toMatch(/manager_exists/);
     expect(await call("list_repos", {})).toMatch(/app \(default profile: oc\)/);
+    expect(await call("list_repos", {})).toMatch(
+      /oc: opencode anthropic\/claude-x agent=build, permissions=ask — Default worker/,
+    );
 
     const dispatchInput = {
       repo: "app",
