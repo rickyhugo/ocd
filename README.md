@@ -112,8 +112,12 @@ project-level OpenCode config:
 
 ```jsonc
 // ~/ocd-manager/.opencode/opencode.jsonc
-{ "plugins": ["/absolute/path/to/ocd/packages/plugin/dist/index.mjs"] }
+{ "plugins": ["/absolute/path/to/ocd/packages/plugin"] }
 ```
+
+OpenCode requires a plugin directory (not a file) and loads its `server.js`,
+which re-exports the build, so run `pnpm run build` first. After changing the
+plugin config, run `opencode reload` (it reloads every OpenCode location).
 
 ## How work flows
 
