@@ -143,7 +143,7 @@ describe("hot reload of ocd.jsonc", () => {
 
   it("refuses repositories whose default profile is not declared", async () => {
     h = await startHarness();
-    await expect(setupRepo(h, "app", "nope")).rejects.toMatchObject({ code: "not_found" });
+    await expect(setupRepo(h, "app", "nope")).rejects.toThrow(/Profile "nope" is not declared/);
   });
 
   it("keeps the dispatched profile snapshot when profiles change later", async () => {
@@ -165,5 +165,22 @@ describe("hot reload of ocd.jsonc", () => {
       (names) => names.includes("extra"),
     );
     expect((await harness.human.inspectTask(task.id)).task.profile.model).toBe("fake/model");
+  });
+});
+
+describe("invalid config reporting", () => {
+  it("keeps one inbox item that always shows the current error", async () => {
+    h = await startHarness();
+    const harness = h;
+    writeFileSync(harness.paths.config, `{ "concurrancy": 1 }`);
+    await harness.daemon.reload();
+    writeFileSync(harness.paths.config, `{ "profiles": { "x": { "harness": "nope" } } }`);
+    await harness.daemon.reload();
+    const items = (await harness.human.listAttention({ status: "open" })).filter((a) =>
+      a.reason.startsWith("ocd.jsonc is invalid"),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]?.reason).toMatch(/profiles\.x/);
+    expect(items[0]?.reason).not.toMatch(/concurrancy/);
   });
 });

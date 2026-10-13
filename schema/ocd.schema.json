@@ -134,6 +134,38 @@
       "required": ["directory"],
       "additionalProperties": false
     },
+    "repos": {
+      "default": {},
+      "description": "Repositories the manager may dispatch to. The key is the repository name. Saved changes apply automatically.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository root. `~` is expanded; symlinks are resolved."
+          },
+          "profile": {
+            "description": "Default profile for tasks in this repository; must be declared under profiles.",
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"
+          },
+          "baseRef": {
+            "description": "Ref new task branches start from. Defaults to the repository's current HEAD.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false
+      }
+    },
     "profiles": {
       "default": {},
       "description": "Named execution profiles. The key is the name used in dispatches and repo defaults. Saved changes apply automatically.",

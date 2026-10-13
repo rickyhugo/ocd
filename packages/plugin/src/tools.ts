@@ -181,6 +181,16 @@ export function buildTools(
       },
     },
     {
+      name: "accept_task",
+      description:
+        "Mark a task that is ready for review as completed. Only do this when the human has approved the result in this conversation. Nothing is merged; the work stays on the task's branch.",
+      input: obj({ id: str("Task ID") }, ["id"]),
+      run: async (input, ctx) => {
+        const { id } = z.object({ id: z.string() }).parse(input);
+        return `Accepted. ${taskLine(await clientFor(ctx.sessionID, ctx.directory).acceptTask(id))}`;
+      },
+    },
+    {
       name: "list_attention",
       description:
         "List requests that need a decision. Requests marked [human] can only be resolved by the human with the ocd CLI.",

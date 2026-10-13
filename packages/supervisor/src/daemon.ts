@@ -7,9 +7,11 @@ import type { FastifyInstance } from "fastify";
 
 import { buildApi } from "./api.ts";
 import {
+  ConfigError,
   ConfigWatcher,
   LiveConfig,
   loadConfig,
+  normalizeDirectory,
   type SupervisorConfig,
   type SupervisorConfigInput,
 } from "./config.ts";
@@ -47,6 +49,30 @@ export interface DaemonOptions {
 
 const CONFIG_INVALID_KEY = "config-invalid";
 
+/** Validates declared repository paths: `~` expanded, symlinks resolved, a git root, no duplicates. */
+export async function resolveRepos(
+  config: SupervisorConfig,
+  workspaces: WorkspaceManager,
+): Promise<
+  { name: string; path: string; defaultProfile: string | null; baseRef: string | null }[]
+> {
+  const repos = [];
+  const seen = new Map<string, string>();
+  for (const [name, repo] of Object.entries(config.repos)) {
+    let path: string;
+    try {
+      path = await workspaces.canonicalRepoPath(normalizeDirectory(repo.path));
+    } catch (error) {
+      throw new ConfigError(`repos.${name}.path: ${(error as Error).message}`);
+    }
+    const other = seen.get(path);
+    if (other) throw new ConfigError(`repos.${name}.path: ${path} is already declared as ${other}`);
+    seen.set(path, name);
+    repos.push({ name, path, defaultProfile: repo.profile ?? null, baseRef: repo.baseRef ?? null });
+  }
+  return repos;
+}
+
 export class PendingMigrationsError extends Error {
   constructor(pending: number) {
     super(
@@ -66,6 +92,8 @@ export interface Daemon {
   stop(): Promise<ShutdownReport>;
   /** Tear down abruptly, as after a crash: no state changes, locks released by closing handles. */
   kill(): Promise<void>;
+  /** Re-reads ocd.jsonc now (the file watcher does this on save). */
+  reload(): Promise<void>;
 }
 
 /** Opens the database, creating it on first use and refusing silent upgrades. */
@@ -124,6 +152,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const store = new Store(db, clock);
     const adapters = await options.adapters({ config, logger });
     const workspaces = new WorkspaceManager(paths.workspaces);
+    store.syncRepos(await resolveRepos(config, workspaces));
     const memory = new MemoryService(store);
     const managerChannel = options.managerChannel?.(adapters) ?? null;
     const outbox = new OutboxWorker(
@@ -144,9 +173,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
     // Saved changes to ocd.jsonc apply to profiles immediately. An invalid file
     // keeps the last good profiles and raises one inbox item until it is fixed.
-    const reloadProfiles = () => {
+    // Saved changes to ocd.jsonc apply immediately. An invalid file keeps the
+    // last good configuration and raises one inbox item until it is fixed.
+    const reloadConfig = async () => {
       try {
-        live.apply(loadConfig(paths.config, options.config));
+        const next = loadConfig(paths.config, options.config);
+        const repos = await resolveRepos(next, workspaces);
+        live.apply(next);
+        store.syncRepos(repos);
         // A manager session outside a changed manager directory stops receiving updates.
         const active = store.activeManager();
         if (active && active.directory !== live.managerDirectory) store.retireManager();
@@ -154,26 +188,31 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         logger.info(
           {
             profiles: live.listProfiles().map((p) => p.name),
+            repos: repos.map((r) => r.name),
             managerDirectory: live.managerDirectory,
           },
           "reloaded ocd.jsonc",
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        logger.error({ err: error }, "ocd.jsonc is invalid; keeping the previous profiles");
-        store.raiseAttention(
+        logger.error({ err: error }, "ocd.jsonc is invalid; keeping the previous configuration");
+        const reason = `ocd.jsonc is invalid, so the previous configuration stays in effect. ${message}`;
+        const { attention, created } = store.raiseAttention(
           {
             taskId: null,
             kind: "failure",
             dedupeKey: CONFIG_INVALID_KEY,
-            reason: `ocd.jsonc is invalid, so the previous profiles stay in effect. ${message}`,
+            reason,
             resolvableBy: "human",
           },
           { notify: true, wake: false },
         );
+        // One open item per broken file, always describing the current error.
+        if (!created && attention.reason !== reason)
+          store.updateAttentionReason(attention.id, reason);
       }
     };
-    const configWatcher = new ConfigWatcher(paths.config, reloadProfiles);
+    const configWatcher = new ConfigWatcher(paths.config, () => void reloadConfig());
     // The config just loaded cleanly, so any earlier "invalid config" item is stale.
     store.settleOpenAttention(CONFIG_INVALID_KEY, "resolved");
 
@@ -234,7 +273,6 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       store,
       supervisor,
       memory,
-      workspaces,
       logger,
       live,
 
@@ -253,7 +291,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     configWatcher.start();
     logger.info({ socket: paths.socket, instanceId, pid: process.pid }, "supervisor started");
 
-    return { paths, store, supervisor, instanceId, closed, stop, kill };
+    return { paths, store, supervisor, instanceId, closed, stop, kill, reload: reloadConfig };
   } catch (error) {
     await app?.close().catch(() => undefined);
     if (db?.$client.open) db.$client.close();

@@ -414,7 +414,7 @@ export class Supervisor {
   }
 
   private buildPrompt(task: Task, relaunch: boolean): string {
-    const repo = this.store.requireRepo(task.repo);
+    const repo = this.store.requireRepo(task.repo, { includeRetired: true });
     const notes = this.o.memory.workerMemory(repo.id);
     const parts = [
       `You are an OCD worker for repository "${task.repo}". Work only inside ${task.workspacePath} (branch ${task.branch}).`,
@@ -465,7 +465,9 @@ export class Supervisor {
 
     try {
       // 2. Workspace (created or reused, never replaced).
-      const repo = this.store.requireRepo(this.store.requireTask(taskId).repo);
+      const repo = this.store.requireRepo(this.store.requireTask(taskId).repo, {
+        includeRetired: true,
+      });
       const ws = await this.o.workspaces.ensure(repo, taskId, row.baseRef);
       this.store.patchTask(
         taskId,
@@ -1270,10 +1272,11 @@ export class Supervisor {
     });
   }
 
-  /** Completion is a human decision; an agent's claim of success is not enough. */
+  /**
+   * Marks a reviewed task completed. The human (CLI) or the manager (after the
+   * human approves in conversation) may accept; nothing is merged either way.
+   */
   async accept(taskId: string, actor: Actor): Promise<Task> {
-    if (actor !== "human")
-      throw forbidden("human_only", "Only a human can accept a task as completed");
     const done = await this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
       if (task.state !== "ready_for_review")
@@ -1283,13 +1286,13 @@ export class Supervisor {
           this.store.settleAttention(a.id, {
             status: "resolved",
             response: { type: "approve" },
-            resolvedBy: "human",
+            resolvedBy: actor,
           });
         }
         return this.store.transition(taskId, "completed", {
           from: ["ready_for_review"],
           patch: { finishedAt: this.store.now() },
-          event: { type: "task.accepted" },
+          event: { type: "task.accepted", data: { actor } },
         });
       });
     });

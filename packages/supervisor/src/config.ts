@@ -2,7 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync, watch, type FSWatcher
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { ProfilesConfig, type Profile } from "@ocd/core";
+import { ProfilesConfig, ReposConfig, type Profile } from "@ocd/core";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { z } from "zod";
 
@@ -96,11 +96,25 @@ export const SupervisorConfig = z
       .describe(
         "The manager: sessions in this directory act as manager, and the most recently used one receives updates.",
       ),
+    repos: ReposConfig.default({}).describe(
+      "Repositories the manager may dispatch to. The key is the repository name. Saved changes apply automatically.",
+    ),
     profiles: ProfilesConfig.default({}).describe(
       "Named execution profiles. The key is the name used in dispatches and repo defaults. Saved changes apply automatically.",
     ),
   })
-  .strict();
+  .strict()
+  .superRefine((config, ctx) => {
+    for (const [name, repo] of Object.entries(config.repos)) {
+      if (repo.profile && !(repo.profile in config.profiles)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["repos", name, "profile"],
+          message: `Profile "${repo.profile}" is not declared under profiles`,
+        });
+      }
+    }
+  });
 
 export type SupervisorConfig = z.infer<typeof SupervisorConfig>;
 export type SupervisorConfigInput = z.input<typeof SupervisorConfig>;
@@ -140,6 +154,7 @@ export function loadConfig(
     ...overrides,
     // Override profiles are added to the file's, never a replacement for them.
     profiles: { ...fileProfiles, ...overrides.profiles },
+    repos: { ...(fromFile as { repos?: Record<string, unknown> }).repos, ...overrides.repos },
   });
   if (!parsed.success) {
     const issues = parsed.error.issues

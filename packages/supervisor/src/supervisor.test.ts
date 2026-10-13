@@ -1,10 +1,18 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { OcdApiError, OcdClient } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { startHarness, setupRepo, waitFor, waitForState, type Harness } from "./testkit.ts";
+import {
+  declareRepos,
+  makeRepo,
+  startHarness,
+  setupRepo,
+  waitFor,
+  waitForState,
+  type Harness,
+} from "./testkit.ts";
 
 let h: Harness;
 afterEach(async () => {
@@ -26,7 +34,7 @@ const dispatch = (
   });
 
 describe("dispatch and review", () => {
-  it("runs a task to ready_for_review with a report and independent verification; only a human completes it", async () => {
+  it("runs a task to ready_for_review with a report and independent verification; the manager can accept it", async () => {
     h = await startHarness();
     await setupRepo(h, "app");
     const { task } = await dispatch(h.human, "app", "Write the file");
@@ -37,10 +45,19 @@ describe("dispatch and review", () => {
     expect(detail.task.workspacePath).toBe(join(h.paths.workspaces, "app", task.id));
     expect(detail.attention.find((a) => a.kind === "review")?.status).toBe("open");
 
-    const manager = h.manager("mgr-session");
-    await expect(manager.acceptTask(task.id)).rejects.toMatchObject({ code: "human_only" });
-    const done = await h.human.acceptTask(task.id);
+    await expect(h.manager("outsider", h.root).acceptTask(task.id)).rejects.toMatchObject({
+      code: "not_manager",
+    });
+    const done = await h.manager("mgr-session").acceptTask(task.id);
     expect(done.state).toBe("completed");
+    const accepted = await h.human.inspectTask(task.id);
+    expect(accepted.attention.find((a) => a.kind === "review")).toMatchObject({
+      status: "resolved",
+      resolvedBy: "manager",
+    });
+    expect(accepted.events.find((e) => e.type === "task.accepted")?.data).toMatchObject({
+      data: { actor: "manager" },
+    });
   });
 
   it("dispatches to two repositories without changing the supervisor's cwd (AT1)", async () => {
@@ -329,14 +346,35 @@ describe("API boundaries", () => {
     expect(await h.human.getManager()).toEqual({ directory: null, active: null });
   });
 
-  it("only lets a human register repositories, and only repository roots", async () => {
+  it("declares repositories in ocd.jsonc and rejects invalid declarations", async () => {
     h = await startHarness();
-    await expect(h.manager("mgr").addRepo({ name: "x", path: h.root })).rejects.toMatchObject({
-      code: "human_only",
-    });
-    await expect(h.human.addRepo({ name: "x", path: h.root })).rejects.toMatchObject({
-      code: "not_a_repo",
-    });
+    await expect(declareRepos(h, { x: { path: h.root } })).rejects.toThrow(
+      /repos\.x\.path: .* is not a git repository/,
+    );
+    const path = makeRepo(h.root, "real");
+    writeFileSync(h.paths.config, "{}");
+    await expect(declareRepos(h, { real: { path, profile: "missing" } })).rejects.toThrow(
+      /Profile "missing" is not declared/,
+    );
+    writeFileSync(h.paths.config, "{}");
+    await declareRepos(h, { real: { path } });
+    await expect(declareRepos(h, { twin: { path } })).rejects.toThrow(/already declared as real/);
+  });
+
+  it("retires repositories removed from ocd.jsonc but keeps their task history", async () => {
+    h = await startHarness();
+    const path = await setupRepo(h, "app");
+    const { task } = await dispatch(h.human, "app", "x");
+    await waitForState(h, task.id, "ready_for_review");
+    writeFileSync(h.paths.config, JSON.stringify({ repos: {} }));
+    await h.daemon.reload();
+    expect(await h.human.listRepos()).toEqual([]);
+    await expect(dispatch(h.human, "app", "y")).rejects.toMatchObject({ code: "not_found" });
+    expect((await h.human.inspectTask(task.id)).task.repo).toBe("app");
+
+    // Declaring the same path again, even under a new name, reuses the row.
+    await declareRepos(h, { renamed: { path } });
+    expect((await h.human.inspectTask(task.id)).task.repo).toBe("renamed");
   });
 });
 
@@ -355,5 +393,27 @@ describe("allow permission policy", () => {
     expect(record).toMatchObject({ status: "resolved", response: { type: "approve" } });
     expect(record?.reason).toMatch(/auto-approved/);
     expect(h.notifier.sent.some((n) => n.body.includes("auto-approved"))).toBe(false);
+  });
+});
+
+describe("independent verification", () => {
+  it("reports modified, added, renamed, and committed files exactly", async () => {
+    h = await startHarness({
+      fake: {
+        script: () => [
+          { type: "write", file: "README.md", content: "# changed\n" },
+          { type: "write", file: "dir with space/new file.txt", content: "x" },
+          { type: "reply", text: '```ocd-report\n{"summary":"ok"}\n```' },
+        ],
+      },
+    });
+    await setupRepo(h, "app");
+    const { task } = await dispatch(h.human, "app", "edit");
+    const detail = await waitForState(h, task.id, "ready_for_review");
+    expect(detail.task.result?.verification).toEqual({
+      changedFiles: ["README.md", "dir with space/new file.txt"],
+      dirty: true,
+      commitsAhead: 0,
+    });
   });
 });

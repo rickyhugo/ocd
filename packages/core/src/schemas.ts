@@ -23,15 +23,26 @@ export const TaskStateSchema = z.enum(TASK_STATES);
 const EnvVarName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/, "Environment variable names only");
 
 // ---------------------------------------------------------------------------
-// Repositories (registered with the CLI) and profiles (declared in ocd.jsonc)
+// Repositories and profiles (both declared in ocd.jsonc)
 
-export const RepositoryInput = z.object({
-  name: Slug,
-  path: z.string().min(1),
-  defaultProfile: Slug.optional(),
-  baseRef: z.string().min(1).max(200).optional(),
-});
-export type RepositoryInput = z.infer<typeof RepositoryInput>;
+/** One entry under `repos` in ocd.jsonc; the key is the repository name. */
+export const RepoConfig = z
+  .object({
+    path: z.string().min(1).describe("Repository root. `~` is expanded; symlinks are resolved."),
+    profile: Slug.optional().describe(
+      "Default profile for tasks in this repository; must be declared under profiles.",
+    ),
+    baseRef: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Ref new task branches start from. Defaults to the repository's current HEAD."),
+  })
+  .strict();
+export type RepoConfig = z.input<typeof RepoConfig>;
+
+export const ReposConfig = z.record(Slug, RepoConfig);
 
 export interface Repository {
   id: string;

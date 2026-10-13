@@ -19,7 +19,11 @@ afterEach(async () => {
   if (root) rmrf(root);
 });
 
-async function boot(service: FakeOpenCodeService, paths: ReturnType<typeof testPaths>) {
+async function boot(
+  service: FakeOpenCodeService,
+  paths: ReturnType<typeof testPaths>,
+  repoPath: string,
+) {
   return startDaemon({
     paths,
     config: {
@@ -27,6 +31,7 @@ async function boot(service: FakeOpenCodeService, paths: ReturnType<typeof testP
       schedulerIntervalMs: 20,
       reconcileIntervalMs: 60_000,
       outbox: { intervalMs: 20, maxAttempts: 3, baseDelayMs: 10 },
+      repos: { app: { path: repoPath, profile: "oc" } },
       profiles: {
         oc: {
           harness: "opencode",
@@ -59,9 +64,9 @@ describe("OpenCode vertical slice through the plugin tools", () => {
     const managerDir = join(root, "manager");
     mkdirSync(managerDir);
     const service = new FakeOpenCodeService();
-    daemon = await boot(service, paths);
+    const repoPath = makeRepo(root, "app");
+    daemon = await boot(service, paths, repoPath);
     const human = new OcdClient({ socketPath: paths.socket, actor: "human" });
-    await human.addRepo({ name: "app", path: makeRepo(root, "app"), defaultProfile: "oc" });
 
     const tools = new Map<string, OcdTool>(
       buildTools(
@@ -133,7 +138,7 @@ describe("OpenCode vertical slice through the plugin tools", () => {
     // Restart the supervisor while the worker keeps running in the OpenCode service.
     const report = await daemon.stop();
     expect(report.workers[0]?.outcome).toMatch(/left running/);
-    daemon = await boot(service, paths);
+    daemon = await boot(service, paths, repoPath);
     expect((await human.inspectTask(taskId)).task.state).toBe("running");
     expect(service.calls.filter((c) => c.method === "session.create")).toHaveLength(1);
     expect(service.calls.filter((c) => c.method === "session.prompt")).toHaveLength(1);
@@ -163,6 +168,6 @@ describe("OpenCode vertical slice through the plugin tools", () => {
     expect(await briefing.forSession(workerId)).toBeNull();
 
     expect(await call("inspect_task", { id: taskId })).toContain("untrusted");
-    expect(await call("cancel_task", { id: taskId })).toMatch(/Cancelled/);
+    expect(await call("accept_task", { id: taskId })).toMatch(/Accepted\. .* \[completed\]/);
   });
 });

@@ -16,7 +16,6 @@ import type {
   RecallInput,
   RememberInput,
   Repository,
-  RepositoryInput,
   ShutdownReport,
   SupervisorStatus,
   Task,
@@ -171,9 +170,6 @@ export class OcdClient {
   shutdown = () => this.call<ShutdownReport>("POST", "/v1/shutdown");
 
   listRepos = () => this.call<Repository[]>("GET", "/v1/repos");
-  addRepo = (input: RepositoryInput) => this.call<Repository>("POST", "/v1/repos", input);
-  removeRepo = (name: string) =>
-    this.call<{ removed: boolean }>("DELETE", `/v1/repos/${encodeURIComponent(name)}`);
   listProfiles = () => this.call<Profile[]>("GET", "/v1/profiles");
 
   dispatch = (input: DispatchTaskInput) =>

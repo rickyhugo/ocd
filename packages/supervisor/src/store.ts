@@ -16,7 +16,7 @@ import {
   type TaskState,
   type WorkerRun,
 } from "@ocd/core";
-import { and, asc, desc, eq, inArray, lte, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, sql, type SQL } from "drizzle-orm";
 
 import type { Db } from "./db/index.ts";
 import {
@@ -111,70 +111,104 @@ export class Store {
   // -------------------------------------------------------------------------
   // Repositories and profiles
 
-  addRepo(input: {
-    name: string;
-    path: string;
-    defaultProfile?: string | undefined;
-    baseRef?: string | undefined;
-  }): Repository {
-    const existing = this.db
+  /**
+   * Makes the repositories table match the repos declared in ocd.jsonc. Rows
+   * are matched by path (so a rename keeps history), then by name. Repos no
+   * longer declared are retired, never deleted, because tasks reference them.
+   */
+  syncRepos(
+    declared: {
+      name: string;
+      path: string;
+      defaultProfile: string | null;
+      baseRef: string | null;
+    }[],
+  ): void {
+    this.tx(() => {
+      const now = this.now();
+      const keep = new Set<string>();
+      for (const repo of declared) {
+        const byPath = this.db
+          .select()
+          .from(repositories)
+          .where(eq(repositories.path, repo.path))
+          .get();
+        const byName = this.db
+          .select()
+          .from(repositories)
+          .where(eq(repositories.name, repo.name))
+          .get();
+        const target = byPath ?? byName;
+        if (byName && target && byName.id !== target.id) {
+          // Another row holds this name (an old repo at a different path): move it aside.
+          this.db
+            .update(repositories)
+            .set({
+              name: `${byName.name}@${byName.id}`,
+              retiredAt: byName.retiredAt ?? now,
+              updatedAt: now,
+            })
+            .where(eq(repositories.id, byName.id))
+            .run();
+        }
+        const values = {
+          name: repo.name,
+          path: repo.path,
+          defaultProfile: repo.defaultProfile,
+          baseRef: repo.baseRef,
+          retiredAt: null,
+          updatedAt: now,
+        };
+        if (target) {
+          this.db.update(repositories).set(values).where(eq(repositories.id, target.id)).run();
+          keep.add(target.id);
+        } else {
+          const id = newId("r");
+          this.db
+            .insert(repositories)
+            .values({ id, createdAt: now, ...values })
+            .run();
+          keep.add(id);
+        }
+      }
+      for (const row of this.db
+        .select()
+        .from(repositories)
+        .where(isNull(repositories.retiredAt))
+        .all()) {
+        if (!keep.has(row.id)) {
+          this.db
+            .update(repositories)
+            .set({ retiredAt: now, updatedAt: now })
+            .where(eq(repositories.id, row.id))
+            .run();
+        }
+      }
+    });
+  }
+
+  /** Repositories currently declared in ocd.jsonc. */
+  listRepos(): Repository[] {
+    return this.db
       .select()
       .from(repositories)
-      .where(eq(repositories.name, input.name))
-      .get();
-    const values = {
-      path: input.path,
-      defaultProfile: input.defaultProfile ?? null,
-      baseRef: input.baseRef ?? null,
-      updatedAt: this.now(),
-    };
-    try {
-      if (existing) {
-        this.db.update(repositories).set(values).where(eq(repositories.id, existing.id)).run();
-      } else {
-        this.db
-          .insert(repositories)
-          .values({ id: newId("r"), name: input.name, createdAt: this.now(), ...values })
-          .run();
-      }
-    } catch (error) {
-      if (String(error).includes("UNIQUE"))
-        throw conflict("repo_path_taken", `${input.path} is already registered`);
-      throw error;
-    }
-    return this.requireRepo(input.name);
+      .where(isNull(repositories.retiredAt))
+      .orderBy(asc(repositories.name))
+      .all()
+      .map(toRepo);
   }
 
-  listRepos(): Repository[] {
-    return this.db.select().from(repositories).orderBy(asc(repositories.name)).all().map(toRepo);
-  }
-
-  getRepo(name: string): Repository | null {
+  /** A declared repository, or with includeRetired one only kept for task history. */
+  getRepo(name: string, options: { includeRetired?: boolean } = {}): Repository | null {
     const row = this.db.select().from(repositories).where(eq(repositories.name, name)).get();
-    return row ? toRepo(row) : null;
+    if (!row || (row.retiredAt && !options.includeRetired)) return null;
+    return toRepo(row);
   }
 
-  requireRepo(name: string): Repository {
-    const repo = this.getRepo(name);
-    if (!repo) throw notFound(`Repository ${name}`);
+  requireRepo(name: string, options: { includeRetired?: boolean } = {}): Repository {
+    const repo = this.getRepo(name, options);
+    if (!repo) throw notFound(`Repository ${name} (declare it under repos in ocd.jsonc)`);
     return repo;
-  }
-
-  removeRepo(name: string): boolean {
-    const repo = this.requireRepo(name);
-    const used = this.db
-      .select({ id: tasks.id })
-      .from(tasks)
-      .where(eq(tasks.repoId, repo.id))
-      .limit(1)
-      .get();
-    if (used)
-      throw conflict(
-        "repo_has_history",
-        `Repository ${name} has task history and cannot be removed`,
-      );
-    this.db.delete(repositories).where(eq(repositories.id, repo.id)).run();
-    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -257,7 +291,7 @@ export class Store {
     const where: SQL[] = [];
     if (filter.state?.length) where.push(inArray(tasks.state, filter.state));
     if (filter.repo) {
-      const repo = this.getRepo(filter.repo);
+      const repo = this.getRepo(filter.repo, { includeRetired: true });
       if (!repo) return [];
       where.push(eq(tasks.repoId, repo.id));
     }
@@ -585,6 +619,10 @@ export class Store {
         ),
       )
       .run().changes;
+  }
+
+  updateAttentionReason(id: string, reason: string): void {
+    this.db.update(attentionRequests).set({ reason }).where(eq(attentionRequests.id, id)).run();
   }
 
   countOpenAttention(): number {
