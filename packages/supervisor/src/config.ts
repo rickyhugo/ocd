@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, watch, type FSWatcher } from "node:fs";
+import { basename, dirname } from "node:path";
 
 import { ProfilesConfig, type Profile } from "@ocd/core";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
@@ -81,7 +82,7 @@ export const SupervisorConfig = z
       .strict()
       .prefault({}),
     profiles: ProfilesConfig.default({}).describe(
-      "Named execution profiles. The key is the name used in dispatches and repo defaults. Reload with `ocd reload`.",
+      "Named execution profiles. The key is the name used in dispatches and repo defaults. Saved changes apply automatically.",
     ),
   })
   .strict();
@@ -149,7 +150,7 @@ export function toProfiles(config: Pick<SupervisorConfig, "profiles">): Profile[
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** The current profile set. Replaced atomically on reload; tasks keep their own snapshot. */
+/** The current profile set. Replaced atomically when ocd.jsonc changes; tasks keep their own snapshot. */
 export class ProfileRegistry {
   private profiles = new Map<string, Profile>();
 
@@ -167,5 +168,55 @@ export class ProfileRegistry {
 
   list(): Profile[] {
     return [...this.profiles.values()];
+  }
+}
+
+/**
+ * Watches ocd.jsonc for saves. Editors often replace the file (write + rename)
+ * and the path may be a symlink, so the directories of both the link and its
+ * target are watched and changes are debounced.
+ */
+export class ConfigWatcher {
+  private readonly path: string;
+  private readonly onChange: () => void;
+  private readonly debounceMs: number;
+  private watchers: FSWatcher[] = [];
+  private timer: NodeJS.Timeout | null = null;
+
+  constructor(path: string, onChange: () => void, debounceMs = 150) {
+    this.path = path;
+    this.onChange = onChange;
+    this.debounceMs = debounceMs;
+  }
+
+  start(): void {
+    const targets = new Map<string, string>([[dirname(this.path), basename(this.path)]]);
+    try {
+      const real = realpathSync(this.path);
+      targets.set(dirname(real), basename(real));
+    } catch {
+      // The file does not exist yet; its directory is still watched.
+    }
+    for (const [dir, name] of targets) {
+      if (!existsSync(dir)) continue;
+      const watcher = watch(dir, { persistent: false }, (_event, filename) => {
+        if (filename === null || filename.toString() === name) this.schedule();
+      });
+      watcher.on("error", () => undefined);
+      this.watchers.push(watcher);
+    }
+  }
+
+  private schedule(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.onChange();
+    }, this.debounceMs);
+  }
+
+  stop(): void {
+    if (this.timer) clearTimeout(this.timer);
+    for (const watcher of this.watchers.splice(0)) watcher.close();
   }
 }

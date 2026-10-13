@@ -123,7 +123,7 @@
     },
     "profiles": {
       "default": {},
-      "description": "Named execution profiles. The key is the name used in dispatches and repo defaults. Reload with `ocd reload`.",
+      "description": "Named execution profiles. The key is the name used in dispatches and repo defaults. Saved changes apply automatically.",
       "type": "object",
       "propertyNames": {
         "type": "string",
@@ -161,9 +161,9 @@
           },
           "permissionPolicy": {
             "default": "deny",
-            "description": "ask: permission requests go to the human. deny: they are rejected and surfaced as a blocked request.",
+            "description": "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded.",
             "type": "string",
-            "enum": ["deny", "ask"]
+            "enum": ["deny", "ask", "allow"]
           },
           "envAllowlist": {
             "default": [],

@@ -30,7 +30,7 @@ export function testPaths(home: string): OcdPaths {
   return {
     home,
     db: join(home, "ocd.db"),
-    config: join(home, "config.json"),
+    config: join(home, "ocd.jsonc"),
     runDir,
     socket: join(runDir, "s.sock"),
     lock: join(runDir, "supervisor.lock"),

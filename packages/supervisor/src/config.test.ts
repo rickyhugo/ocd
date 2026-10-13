@@ -1,11 +1,11 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { ConfigError, loadConfig, toProfiles } from "./config.ts";
 import { configJsonSchema } from "./config-schema.ts";
-import { rmrf, setupRepo, startHarness, tempDir, type Harness } from "./testkit.ts";
+import { rmrf, setupRepo, startHarness, tempDir, waitFor, type Harness } from "./testkit.ts";
 
 const dirs: string[] = [];
 let h: Harness | null = null;
@@ -77,25 +77,68 @@ describe("ocd.jsonc", () => {
   });
 });
 
-describe("profile reload", () => {
-  it("reloads profiles from the file, keeps the old set when the file is invalid", async () => {
+/** Writes like an editor: a new file renamed over the old one. */
+function saveLikeEditor(path: string, text: string): void {
+  writeFileSync(`${path}.tmp`, text);
+  renameSync(`${path}.tmp`, path);
+}
+
+const profileNames = (h: Harness) => h.human.listProfiles().then((ps) => ps.map((p) => p.name));
+
+describe("hot reload of ocd.jsonc", () => {
+  it("applies saved profile changes, keeps the last good set when invalid, and recovers", async () => {
     h = await startHarness();
-    writeFileSync(
-      h.paths.config,
+    const harness = h;
+    saveLikeEditor(
+      harness.paths.config,
       `{ "allowFakeHarness": true, "profiles": { "cheap": { "harness": "fake", "model": "fake/small", "description": "Chores" } } }`,
     );
-    const { profiles } = await h.human.reload();
-    expect(profiles.map((p) => p.name)).toEqual(["cheap", "fake"]);
-    expect((await h.human.listProfiles()).find((p) => p.name === "cheap")?.description).toBe(
+    await waitFor(
+      () => profileNames(harness),
+      (names) => names.includes("cheap"),
+    );
+    expect((await harness.human.listProfiles()).find((p) => p.name === "cheap")?.description).toBe(
       "Chores",
     );
 
-    writeFileSync(h.paths.config, `{ "profiles": { "cheap": { "harness": "fake" } } }`);
-    await expect(h.human.reload()).rejects.toMatchObject({ code: "invalid_config" });
-    expect((await h.human.listProfiles()).map((p) => p.name)).toEqual(["cheap", "fake"]);
+    writeFileSync(harness.paths.config, `{ "profiles": { "cheap": { "harness": "fake" } } }`);
+    const invalid = await waitFor(
+      () => harness.human.listAttention({ status: "open" }),
+      (items) => items.some((a) => a.reason.startsWith("ocd.jsonc is invalid")),
+    );
+    expect(invalid.filter((a) => a.reason.startsWith("ocd.jsonc is invalid"))).toHaveLength(1);
+    expect(await profileNames(harness)).toEqual(["cheap", "fake"]);
 
-    await h.human.registerManager({ sessionId: "mgr", directory: h.root });
-    await expect(h.manager("mgr").reload()).rejects.toMatchObject({ code: "human_only" });
+    saveLikeEditor(
+      harness.paths.config,
+      `{ "profiles": { "big": { "harness": "fake", "model": "fake/large" } } }`,
+    );
+    await waitFor(
+      () => profileNames(harness),
+      (names) => names.includes("big") && !names.includes("cheap"),
+    );
+    const open = await harness.human.listAttention({ status: "open" });
+    expect(open.some((a) => a.reason.startsWith("ocd.jsonc is invalid"))).toBe(false);
+  });
+
+  it("follows a symlinked ocd.jsonc into another directory", async () => {
+    h = await startHarness();
+    const harness = h;
+    await harness.daemon.stop();
+    const repoDir = tempDir();
+    dirs.push(repoDir);
+    const target = join(repoDir, "ocd.jsonc");
+    writeFileSync(target, `{ "profiles": {} }`);
+    symlinkSync(target, harness.paths.config);
+    await harness.restart();
+    saveLikeEditor(
+      target,
+      `{ "profiles": { "linked": { "harness": "fake", "model": "fake/x" } } }`,
+    );
+    await waitFor(
+      () => profileNames(harness),
+      (names) => names.includes("linked"),
+    );
   });
 
   it("refuses repositories whose default profile is not declared", async () => {
@@ -103,21 +146,24 @@ describe("profile reload", () => {
     await expect(setupRepo(h, "app", "nope")).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("keeps the dispatched profile snapshot when the profile changes later", async () => {
+  it("keeps the dispatched profile snapshot when profiles change later", async () => {
     h = await startHarness({ fake: { script: () => [{ type: "hang" }] } });
-    await setupRepo(h, "app");
-    const { task } = await h.human.dispatch({
+    const harness = h;
+    await setupRepo(harness, "app");
+    const { task } = await harness.human.dispatch({
       repo: "app",
       title: "t",
       instructions: "x",
       idempotencyKey: "snapshot-1",
     });
-    writeFileSync(
-      h.paths.config,
-      `{ "profiles": { "fake": { "harness": "fake", "model": "fake/other", "permissionPolicy": "deny" } } }`,
+    saveLikeEditor(
+      harness.paths.config,
+      `{ "profiles": { "extra": { "harness": "fake", "model": "fake/other" } } }`,
     );
-    await h.human.reload();
-    // Test overrides still win for "fake"; the task's snapshot is unaffected either way.
-    expect((await h.human.inspectTask(task.id)).task.profile.model).toBe("fake/model");
+    await waitFor(
+      () => profileNames(harness),
+      (names) => names.includes("extra"),
+    );
+    expect((await harness.human.inspectTask(task.id)).task.profile.model).toBe("fake/model");
   });
 });

@@ -7,6 +7,7 @@ import type { FastifyInstance } from "fastify";
 
 import { buildApi } from "./api.ts";
 import {
+  ConfigWatcher,
   ProfileRegistry,
   loadConfig,
   toProfiles,
@@ -44,6 +45,8 @@ export interface DaemonOptions {
   clock?: Clock;
   hooks?: SupervisorHooks;
 }
+
+const CONFIG_INVALID_KEY = "config-invalid";
 
 export class PendingMigrationsError extends Error {
   constructor(pending: number) {
@@ -140,7 +143,33 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     let report: ShutdownReport | null = null;
     let crashed = false;
 
+    // Saved changes to ocd.jsonc apply to profiles immediately. An invalid file
+    // keeps the last good profiles and raises one inbox item until it is fixed.
+    const reloadProfiles = () => {
+      try {
+        const next = toProfiles(loadConfig(paths.config, options.config));
+        profiles.replace(next);
+        store.settleOpenAttention(CONFIG_INVALID_KEY, "resolved");
+        logger.info({ profiles: next.map((p) => p.name) }, "profiles reloaded from ocd.jsonc");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error({ err: error }, "ocd.jsonc is invalid; keeping the previous profiles");
+        store.raiseAttention(
+          {
+            taskId: null,
+            kind: "failure",
+            dedupeKey: CONFIG_INVALID_KEY,
+            reason: `ocd.jsonc is invalid, so the previous profiles stay in effect. ${message}`,
+            resolvableBy: "human",
+          },
+          { notify: true, wake: false },
+        );
+      }
+    };
+    const configWatcher = new ConfigWatcher(paths.config, reloadProfiles);
+
     const release = async () => {
+      configWatcher.stop();
       await app?.close().catch(() => undefined);
       try {
         removeStaleSocket(paths.socket);
@@ -199,12 +228,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       workspaces,
       logger,
       profiles,
-      reload: () => {
-        const next = toProfiles(loadConfig(paths.config, options.config));
-        profiles.replace(next);
-        logger.info({ profiles: next.map((p) => p.name) }, "profiles reloaded");
-        return profiles.list();
-      },
+
       requestShutdown: async () => {
         report ??= await supervisor.stop();
         setImmediate(() => void stop());
@@ -217,6 +241,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     await app.listen({ path: paths.socket });
     chmodSync(paths.socket, 0o600);
     await supervisor.start();
+    configWatcher.start();
     logger.info({ socket: paths.socket, instanceId, pid: process.pid }, "supervisor started");
 
     return { paths, store, supervisor, instanceId, closed, stop, kill };

@@ -53,5 +53,6 @@ release. Add a tool name to select part of the graph. For example, run
 - Use `vite-plus/test` imports and fake adapters for routine tests. Real harness
   runs and LaunchAgent/global plugin installation require explicit
   authorization.
-- Preserve workspaces and user changes. No autonomous merges, permission bypass,
-  or blind retries of uncertain coding runs.
+- Preserve workspaces and user changes. No autonomous merges or blind retries of
+  uncertain coding runs. Permission auto-approval exists only as the explicit
+  per-profile `"permissionPolicy": "allow"` opt-in; never make it a default.

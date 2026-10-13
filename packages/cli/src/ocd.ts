@@ -40,7 +40,6 @@ Supervisor
   ocd doctor                        Check harness binaries, versions and the OpenCode service
 
 Configuration (human only)
-  ocd reload                        Re-read ocd.jsonc (profiles; other settings need a restart)
   ocd repo add <name> <path> [--profile P] [--base REF]
   ocd repo list | ocd repo remove <name>
   ocd profile list                  Profiles declared in ocd.jsonc
@@ -252,7 +251,7 @@ async function main(argv: string[]): Promise<void> {
     }
     case "profile": {
       if (sub !== "list" && sub !== undefined)
-        fail(`profiles are declared in ${paths.config}; edit it and run \`ocd reload\``);
+        fail(`profiles are declared in ${paths.config}; saved changes apply automatically`);
       const profiles = await client.listProfiles();
       print(
         profiles,
@@ -264,16 +263,6 @@ async function main(argv: string[]): Promise<void> {
                 `${p.name.padEnd(16)} ${p.harness.padEnd(9)} ${p.model}  agent=${p.agent ?? "-"} permissions=${p.permissionPolicy}${p.description ? `\n${" ".repeat(18)}${p.description}` : ""}`,
             )
             .join("\n") || `no profiles; declare them in ${paths.config}`,
-      );
-      return;
-    }
-    case "reload": {
-      const { profiles } = await client.reload();
-      print(
-        profiles,
-        json,
-        () =>
-          `reloaded ${paths.config}: ${profiles.map((p) => p.name).join(", ") || "no profiles"}`,
       );
       return;
     }
