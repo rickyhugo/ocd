@@ -1,4 +1,6 @@
-import { execFile } from "node:child_process";
+import type { GitHubCliStatus } from "@ocd/core";
+
+import { GhError, probeGh, resolveGh, runGh, safeGhText } from "./github-cli.ts";
 
 export interface PullRequestInput {
   /** Directory inside the repository (a worktree is fine). */
@@ -28,9 +30,12 @@ export interface PullRequestStatus {
  * human request, or the manager acting on one.
  */
 export interface PullRequestHost {
-  create(input: PullRequestInput): Promise<{ url: string }>;
+  /** existing: an open PR for the branch was found and reused instead of creating one. */
+  create(input: PullRequestInput): Promise<{ url: string; existing?: boolean }>;
   status(url: string, cwd: string): Promise<PullRequestStatus>;
   merge(url: string, cwd: string, method: MergeMethod): Promise<void>;
+  /** Read-only, bounded availability and login check, run at startup. Never throws. */
+  probe?(): Promise<GitHubCliStatus>;
 }
 
 const FAILED_CONCLUSIONS = new Set([
@@ -69,35 +74,66 @@ export function classifyChecks(rollup: CheckEntry[]): { failing: string[]; pendi
   return { failing, pending };
 }
 
-function gh(binary: string, args: string[], cwd: string, input?: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      binary,
-      args,
-      { cwd, env: process.env, timeout: 120_000, maxBuffer: 8 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        if (error)
-          reject(
-            new Error(
-              `gh ${args.slice(0, 2).join(" ")} failed: ${(String(stderr) || String(stdout) || error.message).trim()}`,
-            ),
-          );
-        else resolve(String(stdout));
-      },
-    );
-    child.stdin?.end(input ?? "");
-  });
+export interface GhPullRequestsOptions {
+  /** gh.binary from ocd.jsonc, read on every call so saved changes apply live. */
+  binary?: () => string | null | undefined;
+  /** Searched after PATH when no binary is configured. */
+  extraDirs?: readonly string[];
+  /** Per gh call; a stuck network call fails instead of hanging the task lock. */
+  timeoutMs?: number;
 }
 
 /** GitHub via the `gh` CLI, using the user's own `gh auth` login. */
 export class GhPullRequests implements PullRequestHost {
-  private readonly binary: string;
+  private readonly options: GhPullRequestsOptions;
 
-  constructor(binary = "gh") {
-    this.binary = binary;
+  constructor(options: GhPullRequestsOptions = {}) {
+    this.options = options;
   }
 
-  async create(input: PullRequestInput): Promise<{ url: string }> {
+  private resolveOptions() {
+    return {
+      configured: this.options.binary?.(),
+      ...(this.options.extraDirs ? { extraDirs: this.options.extraDirs } : {}),
+    };
+  }
+
+  /** Resolved on every call: a fixed gh.binary or a newly installed gh needs no restart. */
+  private gh(args: string[], cwd: string, input?: string): Promise<string> {
+    return runGh(resolveGh(this.resolveOptions()), args, {
+      cwd,
+      ...(input !== undefined ? { input } : {}),
+      ...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
+    });
+  }
+
+  probe(): Promise<GitHubCliStatus> {
+    return probeGh({ ...this.resolveOptions(), timeoutMs: 10_000 });
+  }
+
+  async create(input: PullRequestInput): Promise<{ url: string; existing?: boolean }> {
+    // An earlier attempt may have opened the PR before failing (a timeout, a
+    // lost response); reuse it rather than opening a second one.
+    const open = JSON.parse(
+      await this.gh(
+        [
+          "pr",
+          "list",
+          "--head",
+          input.head,
+          "--base",
+          input.base,
+          "--state",
+          "open",
+          "--json",
+          "url",
+          "--limit",
+          "1",
+        ],
+        input.cwd,
+      ),
+    ) as { url: string }[];
+    if (open[0]?.url) return { url: open[0].url, existing: true };
     const args = [
       "pr",
       "create",
@@ -111,16 +147,15 @@ export class GhPullRequests implements PullRequestHost {
       "-",
     ];
     if (input.draft) args.push("--draft");
-    const stdout = await gh(this.binary, args, input.cwd, input.body);
+    const stdout = await this.gh(args, input.cwd, input.body);
     const url = /https?:\/\/\S+/.exec(stdout)?.[0];
-    if (!url) throw new Error(`gh pr create printed no URL: ${stdout.trim()}`);
+    if (!url) throw new GhError("failed", `gh pr create printed no URL: ${safeGhText(stdout)}`);
     return { url };
   }
 
   async status(url: string, cwd: string): Promise<PullRequestStatus> {
     const raw = JSON.parse(
-      await gh(
-        this.binary,
+      await this.gh(
         ["pr", "view", url, "--json", "state,isDraft,mergeable,mergeStateStatus,statusCheckRollup"],
         cwd,
       ),
@@ -150,7 +185,7 @@ export class GhPullRequests implements PullRequestHost {
   async merge(url: string, cwd: string, method: MergeMethod): Promise<void> {
     // No --admin (never bypass protection) and no --delete-branch (OCD removes
     // the worktree and branches itself once GitHub reports the merge).
-    await gh(this.binary, ["pr", "merge", url, `--${method}`], cwd);
+    await this.gh(["pr", "merge", url, `--${method}`], cwd);
   }
 }
 
@@ -159,13 +194,23 @@ export class RecordingPullRequests implements PullRequestHost {
   readonly merged: { url: string; method: MergeMethod }[] = [];
   /** Status to report per URL; defaults to an open, clean, green PR. */
   readonly statuses = new Map<string, Partial<PullRequestStatus>>();
+  /** Open PRs on GitHub by head branch, reused by create. */
+  readonly openByHead = new Map<string, string>();
+  /** When set, every gh call fails with it (e.g. a GhError). */
+  failure: Error | null = null;
+  /** What probe reports; a function can hang or throw to test startup. */
+  probeResult: GitHubCliStatus | (() => Promise<GitHubCliStatus>) | null = null;
 
-  async create(input: PullRequestInput): Promise<{ url: string }> {
+  async create(input: PullRequestInput): Promise<{ url: string; existing?: boolean }> {
+    if (this.failure) throw this.failure;
+    const existing = this.openByHead.get(input.head);
+    if (existing) return { url: existing, existing: true };
     this.created.push(input);
     return { url: `https://example.test/pr/${this.created.length}` };
   }
 
   async status(url: string): Promise<PullRequestStatus> {
+    if (this.failure) throw this.failure;
     const merged = this.merged.some((m) => m.url === url);
     return {
       state: merged ? "merged" : "open",
@@ -179,6 +224,23 @@ export class RecordingPullRequests implements PullRequestHost {
   }
 
   async merge(url: string, _cwd: string, method: MergeMethod): Promise<void> {
+    if (this.failure) throw this.failure;
     this.merged.push({ url, method });
+  }
+
+  async probe(): Promise<GitHubCliStatus> {
+    if (typeof this.probeResult === "function") return this.probeResult();
+    return (
+      this.probeResult ?? {
+        available: true,
+        path: "/test/gh",
+        source: "path",
+        version: "0.0.0",
+        auth: "ok",
+        problem: null,
+        problems: [],
+        checkedAt: new Date(0).toISOString(),
+      }
+    );
   }
 }

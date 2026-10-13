@@ -14,6 +14,7 @@ import {
   type AdapterStatus,
   type Attention,
   type AttentionResponse,
+  type GitHubCliStatus,
   type HarnessName,
   type ShutdownReport,
   type SupervisorStatus,
@@ -85,6 +86,8 @@ export class Supervisor {
   private readonly taskLocks = new Map<string, Promise<unknown>>();
   private readonly lastActivityWrite = new Map<string, number>();
   private readonly harnessRetryAt = new Map<HarnessName, number>();
+  private github: GitHubCliStatus | null = null;
+  private githubProbes = 0;
   private schedulerTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
   private lastReconcileTick = 0;
@@ -137,6 +140,34 @@ export class Supervisor {
     );
     this.o.outbox.start();
     void this.tick();
+    // Diagnostics only: startup never waits for gh or the network.
+    void this.probeGithub();
+  }
+
+  /**
+   * Read-only check of the gh CLI behind pull requests (bounded, no prompts).
+   * Logged and shown in status; never fatal, and PR actions resolve gh again.
+   */
+  async probeGithub(): Promise<GitHubCliStatus | null> {
+    const host = this.o.pullRequests;
+    if (!host?.probe) return null;
+    const probe = ++this.githubProbes;
+    try {
+      const status = await host.probe();
+      // A slower, older check (e.g. before gh.binary was saved) must not win.
+      if (this.stopped || probe !== this.githubProbes) return status;
+      this.github = status;
+      if (status.problems.length)
+        this.log.warn(
+          { github: status },
+          "GitHub CLI check found a problem; pull requests may fail",
+        );
+      else this.log.info({ github: status }, "GitHub CLI ready");
+      return status;
+    } catch (error) {
+      this.log.warn({ err: error }, "GitHub CLI check failed");
+      return null;
+    }
   }
 
   private clearTimers(): void {
@@ -261,6 +292,7 @@ export class Supervisor {
       outbox: this.store.outboxCounts(),
       manager: this.store.activeManager(),
       adapters: [...this.versions.values()],
+      github: this.github,
     };
   }
 
@@ -1675,18 +1707,27 @@ export class Supervisor {
       const remote = "origin";
       const base = options.base ?? (await this.o.workspaces.defaultBranch(repo.path, remote));
       await this.o.workspaces.push(task.workspacePath, remote, task.branch);
-      const { url } = await this.o.pullRequests.create({
-        cwd: task.workspacePath,
-        head: task.branch,
-        base,
-        title: task.title,
-        body: this.pullRequestBody(task, facts.changedFiles),
-        draft: options.draft,
-      });
+      const host = this.o.pullRequests;
+      const { url, existing } = await this.recordPullRequestFailure(
+        taskId,
+        { stage: "create", branch: task.branch, base, pushed: true, actor },
+        () =>
+          host.create({
+            cwd: task.workspacePath!,
+            head: task.branch!,
+            base,
+            title: task.title,
+            body: this.pullRequestBody(task, facts.changedFiles),
+            draft: options.draft,
+          }),
+      );
       this.store.patchTask(
         taskId,
         { pullRequestUrl: url },
-        { type: "pull_request.opened", data: { url, base, draft: options.draft, actor } },
+        {
+          type: "pull_request.opened",
+          data: { url, base, draft: options.draft, actor, existing: existing ?? false },
+        },
       );
       return this.store.requireTask(taskId);
     });
@@ -1717,7 +1758,9 @@ export class Supervisor {
         );
       const repo = this.store.requireRepo(task.repo, { includeRetired: true });
       const method = options.method ?? this.o.live.mergeMethod(task.repo);
-      let status = await host.status(url, repo.path);
+      const gh = <T>(stage: string, fn: () => Promise<T>) =>
+        this.recordPullRequestFailure(taskId, { stage, url, actor }, fn);
+      let status = await gh("status", () => host.status(url, repo.path));
       if (status.state === "closed")
         throw conflict("pr_closed", `${url} is closed without merging`);
       if (status.state === "open") {
@@ -1750,8 +1793,8 @@ export class Supervisor {
             `${url} is blocked by branch protection or required reviews; OCD never overrides that`,
           );
         }
-        await host.merge(url, repo.path, method);
-        status = await host.status(url, repo.path);
+        await gh("merge", () => host.merge(url, repo.path, method));
+        status = await gh("status", () => host.status(url, repo.path));
         if (status.state !== "merged") {
           // e.g. a merge queue: GitHub accepted the request but has not merged yet.
           this.store.appendEvent(taskId, "pull_request.merge_requested", { url, method, actor });
@@ -1772,6 +1815,28 @@ export class Supervisor {
       );
       return this.store.requireTask(taskId);
     });
+  }
+
+  /**
+   * Runs one GitHub step; a failure is recorded on the task (redacted) so an
+   * interrupted PR operation is visible later, then rethrown unchanged.
+   */
+  private async recordPullRequestFailure<T>(
+    taskId: string,
+    context: Record<string, unknown>,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      const e = error as Error & { code?: unknown };
+      this.store.appendEvent(taskId, "pull_request.failed", {
+        ...context,
+        code: typeof e.code === "string" ? e.code : "internal",
+        message: truncate(redact(e.message ?? String(error)), 2000),
+      });
+      throw error;
+    }
   }
 
   private pullRequestBody(task: Task, changedFiles: string[]): string {

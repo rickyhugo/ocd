@@ -147,6 +147,48 @@ are processes of the supervisor and would be interrupted) unless you pass
 `--force`; OpenCode workers survive it. A restart never resumes coding runs automatically; OpenCode workers are
 reattached and anything uncertain shows up in `ocd attention list`.
 
+Because the service PATH is fixed when it is installed (the pinned Node's
+directory, `~/.local/bin`, Homebrew's and the system directories), tools that
+your shell finds through mise activation, asdf or a profile script are not on
+it. Re-run `ocd service install` after moving Node or the build; it rewrites
+the definition with the current paths. Like `ocd restart`, it restarts the
+supervisor, so wait until no Claude Code or Codex worker is running.
+
+### GitHub CLI (pull requests)
+
+`ocd task pr` / `ocd task merge` (and the manager's PR tools) run `gh` with
+your own `gh auth` login. The supervisor finds it with:
+
+1. `gh.binary` in `ocd.jsonc`, when set: an absolute path (or `~/…`) to the
+   executable. It is used as written; a wrong path is reported, never silently
+   replaced by a PATH lookup. Saved changes apply without a restart.
+2. Otherwise the first executable `gh` on the supervisor's own PATH, then
+   `~/.local/bin` and Homebrew's directories.
+
+```jsonc
+// e.g. the output of `command -v gh` or `mise which gh` in your shell.
+// With mise, its shim (~/.local/share/mise/shims/gh) keeps working after gh upgrades.
+"gh": { "binary": "/opt/homebrew/bin/gh" }
+```
+
+`ocd doctor` shows where your shell finds gh, whether the background service
+would find it, and whether gh is logged in; it prints the exact `gh.binary`
+line to add when the two differ (`ocd service install` warns about it too).
+At startup the supervisor runs the same read-only check (`gh --version`,
+`gh auth status`, each bounded by a timeout, never a login prompt) in the
+background and logs it; `ocd status` shows the result. Startup never waits for
+it and a failed check is not fatal.
+
+PR actions fail with a code that says what to fix: `gh_not_found` (set
+`gh.binary` or put gh on the service PATH), `gh_invalid_path` (fix
+`gh.binary`), `gh_auth_required` (run `gh auth login` / `gh auth refresh` in a
+terminal), `gh_unreachable` (network, proxy or GitHub outage, or gh timed out;
+the login may be fine, so retry later) and `gh_failed` (anything else, with
+gh's message). gh output is redacted before it reaches errors, events or logs.
+Each failure is recorded on the task as a `pull_request.failed` event (with
+whether the branch was already pushed). Retrying is safe: before creating a
+PR, OCD looks for an open PR from the task branch and reuses it.
+
 ### Notifications
 
 OCD notifies you when a task is ready for review or needs you. Clicking a

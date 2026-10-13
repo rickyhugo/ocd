@@ -139,6 +139,19 @@
       },
       "additionalProperties": false
     },
+    "gh": {
+      "description": "GitHub CLI (gh) used to open, inspect and merge task pull requests.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "binary": {
+          "description": "Absolute path of the GitHub CLI used for pull requests (e.g. the output of `command -v gh` or `mise which gh`). Defaults to a PATH / ~/.local/bin lookup in the supervisor's own environment, which for a background service is not your shell's PATH. Saved changes apply without a restart.",
+          "type": "string",
+          "pattern": "^(?:\\/|~\\/)"
+        }
+      },
+      "additionalProperties": false
+    },
     "allowFakeHarness": {
       "default": false,
       "description": "Allow profiles that use the fake harness (tests and dry runs).",

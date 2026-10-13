@@ -119,6 +119,19 @@ export const SupervisorConfig = z
       })
       .strict()
       .prefault({}),
+    gh: z
+      .object({
+        binary: z
+          .string()
+          .regex(/^(?:\/|~\/)/, "must be an absolute path (or start with ~/)")
+          .optional()
+          .describe(
+            "Absolute path of the GitHub CLI used for pull requests (e.g. the output of `command -v gh` or `mise which gh`). Defaults to a PATH / ~/.local/bin lookup in the supervisor's own environment, which for a background service is not your shell's PATH. Saved changes apply without a restart.",
+          ),
+      })
+      .strict()
+      .prefault({})
+      .describe("GitHub CLI (gh) used to open, inspect and merge task pull requests."),
     allowFakeHarness: z
       .boolean()
       .default(false)
@@ -241,6 +254,10 @@ export function toProfiles(config: Pick<SupervisorConfig, "profiles">): Profile[
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function expandHome(path: string): string {
+  return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+}
+
 /** Expands `~` and resolves symlinks so directory comparisons are exact. */
 export function normalizeDirectory(directory: string): string {
   const expanded =
@@ -255,6 +272,8 @@ export function normalizeDirectory(directory: string): string {
 export class LiveConfig {
   private profiles = new Map<string, Profile>();
   managerDirectory: string | null = null;
+  /** gh.binary with `~` expanded; null means a PATH lookup. */
+  ghBinary: string | null = null;
   private mergeMethods = new Map<string, "squash" | "merge" | "rebase">();
 
   constructor(config: SupervisorConfig) {
@@ -264,6 +283,7 @@ export class LiveConfig {
   apply(config: SupervisorConfig): void {
     this.profiles = new Map(toProfiles(config).map((p) => [p.name, p]));
     this.managerDirectory = config.manager ? normalizeDirectory(config.manager.directory) : null;
+    this.ghBinary = config.gh.binary ? expandHome(config.gh.binary) : null;
     this.mergeMethods = new Map(
       Object.entries(config.repos).flatMap(([name, repo]) =>
         repo.mergeMethod ? [[name, repo.mergeMethod] as const] : [],
