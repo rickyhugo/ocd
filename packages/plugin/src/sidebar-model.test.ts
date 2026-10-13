@@ -68,12 +68,8 @@ describe("sidebar model", () => {
     // A task waiting on the human is listed once, under "Needs you".
     expect(model.sections.find((s) => s.key === "running")?.rows.map((r) => r.key)).toEqual(["a"]);
     expect(model.sections.find((s) => s.key === "review")?.rows[0]?.meta).toBe("3m");
-    expect(model.summary.map((s) => s.text)).toEqual([
-      "1 need you",
-      "1 to review",
-      "1 running",
-      "1 queued",
-    ]);
+    expect(model.counts.map((c) => `${c.glyph}${c.count}`)).toEqual(["!1", "✓1", "●1", "·1"]);
+    expect(model.idle).toBe(false);
   });
 
   it("keeps review items with their task instead of under Needs you", () => {
@@ -99,7 +95,41 @@ describe("sidebar model", () => {
   it("collapses long background sections by default and says idle when empty", () => {
     const many = Array.from({ length: 6 }, (_, i) => task(`r${i}`, "running"));
     expect(buildSidebar(many, [], NOW).sections[0]?.openByDefault).toBe(false);
-    expect(buildSidebar([], [], NOW)).toMatchObject({ sections: [], summary: [{ text: "idle" }] });
+    expect(buildSidebar([], [], NOW)).toMatchObject({ sections: [], counts: [], idle: true });
+  });
+
+  it("shows recently finished work: inline when idle, as a closed section otherwise", () => {
+    const done = [
+      task("f", "completed", { finishedAt: minutesAgo(90), workspacePath: "/ws/f" }),
+      task("g", "cancelled", { finishedAt: minutesAgo(30), workspacePath: null }),
+      task("old", "completed", { finishedAt: minutesAgo(60 * 30) }),
+    ];
+    const idle = buildSidebar([], [], NOW, done);
+    expect(idle.idle).toBe(true);
+    expect(idle.sections).toEqual([]);
+    expect(idle.recent.map((r) => [r.key, r.glyph, r.meta])).toEqual([
+      ["g", "–", "30m"],
+      ["f", "✓", "kept · 1h"],
+    ]);
+    const busy = buildSidebar([task("a", "running")], [], NOW, done);
+    expect(busy.sections.map((s) => [s.key, s.openByDefault])).toEqual([
+      ["running", true],
+      ["recent", false],
+    ]);
+  });
+
+  it("offers accept and clean up for review, and clean up for kept worktrees", () => {
+    const [review] = buildSidebar([task("c", "ready_for_review")], [], NOW).sections[0]!.rows;
+    expect(actionsFor(review!).slice(0, 2)).toEqual([
+      { label: "Accept and clean up", kind: "accept_clean" },
+      { label: "Accept (keep the worktree)", kind: "accept" },
+    ]);
+    const [kept, gone] = buildSidebar([], [], NOW, [
+      task("f", "completed", { finishedAt: minutesAgo(5), workspacePath: "/ws/f" }),
+      task("g", "completed", { finishedAt: minutesAgo(5), workspacePath: null }),
+    ]).recent;
+    expect(actionsFor(kept!).map((a) => a.label)).toContain("Clean up the worktree");
+    expect(actionsFor(gone!).map((a) => a.label)).not.toContain("Clean up the worktree");
   });
 
   it("offers actions that fit the task's state", () => {

@@ -67,11 +67,15 @@ export class TerminalNotifier implements DesktopNotifier {
     this.exec = options.exec ?? execCommand;
   }
 
-  notify(message: { title: string; body: string }): Promise<void> {
+  async notify(message: { title: string; body: string }): Promise<void> {
     const { title, body } = clean(message);
     const args = ["-title", title, "-message", body];
     if (this.onClick) args.push("-execute", shellQuote(this.onClick));
-    return run(this.exec, this.binary, args);
+    const result = await this.exec(this.binary, args);
+    const output = `${result.stderr} ${result.stdout}`.trim();
+    // Without macOS notification permission it prints this (exit 3 in 3.x).
+    if (result.code !== 0 || /not allowed|turned off|could not request/i.test(output))
+      throw new Error(`terminal-notifier: ${output || `exited ${result.code}`}`);
   }
 }
 
@@ -133,6 +137,38 @@ export class NotifySendNotifier implements DesktopNotifier {
       child.unref();
       (child.stdout as unknown as { unref?: () => void }).unref?.();
     });
+  }
+}
+
+/**
+ * Tries the preferred backend and falls back when it fails, so a notification
+ * is never lost to a backend problem (e.g. terminal-notifier without macOS
+ * notification permission). The preferred backend is tried again every time,
+ * so granting the permission takes effect without a restart.
+ */
+export class FallbackNotifier implements DesktopNotifier {
+  readonly backend: string;
+  readonly clickable: boolean;
+  /** The preferred backend's most recent failure; null after it works. */
+  lastError: Error | null = null;
+  private readonly preferred: DesktopNotifier;
+  private readonly fallback: DesktopNotifier;
+
+  constructor(preferred: DesktopNotifier, fallback: DesktopNotifier) {
+    this.preferred = preferred;
+    this.fallback = fallback;
+    this.backend = `${preferred.backend}, falling back to ${fallback.backend}`;
+    this.clickable = preferred.clickable;
+  }
+
+  async notify(message: { title: string; body: string }): Promise<void> {
+    try {
+      await this.preferred.notify(message);
+      this.lastError = null;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error : new Error(String(error));
+      await this.fallback.notify(message);
+    }
   }
 }
 

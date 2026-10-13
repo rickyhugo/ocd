@@ -1,5 +1,6 @@
 import { LaunchdService } from "./launchd.ts";
 import {
+  FallbackNotifier,
   NoDesktopNotifier,
   NotifySendNotifier,
   OsascriptNotifier,
@@ -48,9 +49,13 @@ export class MacPlatform implements Platform {
     options: { onClick?: readonly string[] | undefined } = {},
   ): Promise<DesktopNotifier> {
     const binary = locateBinary("terminal-notifier");
+    const osascript = new OsascriptNotifier({ exec: this.exec });
     return binary
-      ? new TerminalNotifier({ binary, onClick: options.onClick, exec: this.exec })
-      : new OsascriptNotifier({ exec: this.exec });
+      ? new FallbackNotifier(
+          new TerminalNotifier({ binary, onClick: options.onClick, exec: this.exec }),
+          osascript,
+        )
+      : osascript;
   }
 
   async activate(app: TerminalApp): Promise<boolean> {
