@@ -34,6 +34,7 @@ export function buildAdapters({
     adapters.push(
       new ClaudeAdapter({
         command: [findBinary("claude", config.claude.binary)],
+        idleStopMs: config.workerIdleMinutes * 60_000,
         onError: (error, context) => logger.warn({ err: error, context }, "claude adapter error"),
       }),
     );
@@ -42,6 +43,7 @@ export function buildAdapters({
     adapters.push(
       new CodexAdapter({
         command: [findBinary("codex", config.codex.binary), "app-server"],
+        idleStopMs: config.workerIdleMinutes * 60_000,
         onError: (error, context) => logger.warn({ err: error, context }, "codex adapter error"),
       }),
     );

@@ -346,8 +346,12 @@ export class OpenCodeAdapter implements HarnessAdapter {
         model: parseModel(spec.model),
         location: { directory: spec.directory },
         metadata: { ocdTaskId: spec.taskId, ocdRunId: spec.runId, ocdMarker: spec.marker },
-        // Edits outside the task's worktree always surface as permission requests.
-        permissions: [{ action: "external_directory", resource: "*", effect: "ask" }],
+        // yolo: allow everything (last matching rule wins). Otherwise edits outside
+        // the task's worktree always surface as permission requests.
+        permissions:
+          spec.permissionPolicy === "yolo"
+            ? [{ action: "*", resource: "*", effect: "allow" }]
+            : [{ action: "external_directory", resource: "*", effect: "ask" }],
       }),
     );
     this.tracked.add(info.id);

@@ -8,6 +8,7 @@ let threadId = null;
 let nextServerId = 1000;
 let turnSeq = 0;
 let active = null; // { id, waitingFor, text }
+let threadParams = null;
 const notify = (method, params) => send({ method, params });
 const report = '```ocd-report\n{"summary":"codex did it"}\n```';
 
@@ -16,6 +17,7 @@ function startTurn(text) {
   active = turn;
   notify("turn/started", { threadId, turn: { id: turn.id, status: "inProgress", items: [] } });
   if (text.includes("[hang]")) return;
+  if (text.includes("[params]")) return finish(turn, JSON.stringify(threadParams));
   if (text.includes("[limit]")) {
     notify("error", {
       threadId,
@@ -110,10 +112,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       });
     case "thread/start":
       threadId = `thr_${process.pid}`;
+      threadParams = m.params;
       process.stderr.write(`thread/start ${JSON.stringify(m.params)}\n`);
       return reply({ thread: { id: threadId, status: { type: "idle" }, cwd: m.params.cwd } });
     case "thread/resume":
       threadId = m.params.threadId;
+      threadParams = { resumed: true, ...m.params };
       return reply({ thread: { id: threadId, status: { type: "idle" }, cwd: m.params.cwd } });
     case "turn/start":
       reply({ turn: { id: `turn_${turnSeq + 1}`, status: "inProgress", items: [] } });

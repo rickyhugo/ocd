@@ -16,6 +16,21 @@ Profiles:
 
 `#…` is the reasoning effort (`--effort` for Claude Code, `effort` for Codex).
 
+## Worker processes
+
+A worker process stays alive between turns so follow-up instructions reach
+the same session. After `workerIdleMinutes` (10) idle it is stopped; the next
+instruction to that task resumes the session transparently (`--resume` /
+`thread/resume`). Accepting or cancelling a task stops its process at once.
+
+## `yolo`
+
+`"permissionPolicy": "yolo"` starts Claude Code with
+`--dangerously-skip-permissions` (the stdio prompt channel stays open for the
+few prompts it still raises, which OCD approves) and Codex threads with
+`approvalPolicy: "never"`, `sandbox: "danger-full-access"`. Nothing is
+recorded per request; there is no sandbox.
+
 ## Claude Code (recorded against 2.1.296)
 
 - `claude -p --input-format stream-json --output-format stream-json --verbose

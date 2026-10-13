@@ -12,7 +12,7 @@ export const Slug = z
 export const HarnessName = z.enum(["opencode", "claude", "codex", "fake"]);
 export type HarnessName = z.infer<typeof HarnessName>;
 
-export const PermissionPolicy = z.enum(["deny", "ask", "allow"]);
+export const PermissionPolicy = z.enum(["deny", "ask", "allow", "yolo"]);
 export type PermissionPolicy = z.infer<typeof PermissionPolicy>;
 
 export const Actor = z.enum(["human", "manager"]);
@@ -84,7 +84,7 @@ export const ProfileConfig = z
       .optional()
       .describe("Standing guidance added to every worker prompt using this profile."),
     permissionPolicy: PermissionPolicy.default("deny").describe(
-      "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded.",
+      "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded. yolo: the harness skips its permission checks and sandbox entirely (Claude Code --dangerously-skip-permissions, Codex approvalPolicy never + danger-full-access, OpenCode allow-all rule); nothing is asked or recorded.",
     ),
     envAllowlist: z
       .array(EnvVarName)

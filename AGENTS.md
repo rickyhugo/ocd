@@ -55,4 +55,5 @@ release. Add a tool name to select part of the graph. For example, run
   authorization.
 - Preserve workspaces and user changes. No autonomous merges or blind retries of
   uncertain coding runs. Permission auto-approval exists only as the explicit
-  per-profile `"permissionPolicy": "allow"` opt-in; never make it a default.
+  per-profile `"permissionPolicy": "allow"` / `"yolo"` opt-ins; never make
+  either a default.

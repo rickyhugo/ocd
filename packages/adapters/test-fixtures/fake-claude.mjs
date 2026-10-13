@@ -68,6 +68,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     permissionMode: flag("--permission-mode"),
   });
   send({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } });
+  if (text.includes("[args]")) return result(`args: ${args.join(" ")}`);
   if (text.includes("[hang]")) {
     hanging = true;
     return;

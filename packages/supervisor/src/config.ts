@@ -74,6 +74,13 @@ export const SupervisorConfig = z
       })
       .strict()
       .prefault({}),
+    workerIdleMinutes: z
+      .number()
+      .min(1)
+      .default(10)
+      .describe(
+        "Claude Code and Codex worker processes stop after this long idle; their sessions resume on the next instruction.",
+      ),
     claude: z
       .object({
         enabled: z

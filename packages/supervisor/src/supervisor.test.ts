@@ -442,3 +442,19 @@ describe("concurrency", () => {
     for (const id of ids) await waitForState(h, id, "ready_for_review");
   });
 });
+
+describe("yolo permission policy", () => {
+  it("approves anything the harness still asks, without inbox records", async () => {
+    h = await startHarness({
+      config: {
+        profiles: { wild: { harness: "fake", model: "fake/model", permissionPolicy: "yolo" } },
+      },
+    });
+    await setupRepo(h, "app", "wild");
+    const { task } = await dispatch(h.human, "app", "go [fake:permission]");
+    const detail = await waitForState(h, task.id, "ready_for_review");
+    expect(detail.attention.filter((a) => a.kind === "permission")).toEqual([]);
+    expect(detail.events.some((e) => e.type === "permission.yolo_approved")).toBe(true);
+    expect(detail.events.some((e) => e.type === "state.blocked")).toBe(false);
+  });
+});

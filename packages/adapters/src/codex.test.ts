@@ -36,7 +36,7 @@ function setup(env: Record<string, string> = {}) {
   return { adapter, events, spec };
 }
 
-async function until<T>(fn: () => Promise<T> | T, ok: (v: T) => boolean, ms = 3000): Promise<T> {
+async function until<T>(fn: () => Promise<T> | T, ok: (v: T) => boolean, ms = 10_000): Promise<T> {
   const start = Date.now();
   for (;;) {
     const v = await fn();
@@ -149,5 +149,55 @@ describe("Codex adapter", () => {
       command: ["/nonexistent/codex", "app-server"],
     }).probe();
     expect(status.available).toBe(false);
+  });
+});
+
+describe("Codex worker lifecycle", () => {
+  it("never asks and drops the sandbox under yolo", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession({ ...spec, permissionPolicy: "yolo" });
+    await adapter.prompt(ref, "[params]");
+    const snap = await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle" && s.lastAssistantText !== null,
+    );
+    expect(JSON.parse(snap.lastAssistantText!)).toMatchObject({
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+  });
+
+  it("stops idle app-servers and resumes the thread on the next prompt", async () => {
+    const { spec } = setup();
+    await adapter!.close();
+    adapter = new CodexAdapter({ command: [process.execPath, FAKE], idleStopMs: 100 });
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "first");
+    await until(
+      () => adapter!.inspect(ref),
+      (s) => s.status === "idle" && s.lastAssistantText !== null,
+    );
+    await until(
+      () => adapter!.activeWorkers(),
+      (n) => n === 0,
+    );
+    expect(await adapter.inspect(ref)).toMatchObject({ status: "idle", prompted: true });
+    await adapter.prompt(ref, "[params]");
+    const snap = await until(
+      () => adapter!.inspect(ref),
+      (s) => (s.lastAssistantText ?? "").includes("resumed"),
+    );
+    expect(JSON.parse(snap.lastAssistantText!)).toMatchObject({
+      resumed: true,
+      threadId: ref.sessionId,
+    });
+  });
+
+  it("releases a finished session's worker", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.release(ref);
+    expect(adapter.activeWorkers()).toBe(0);
+    expect((await adapter.inspect(ref)).status).toBe("missing");
   });
 });

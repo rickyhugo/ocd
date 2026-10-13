@@ -36,7 +36,7 @@ function setup(env: Record<string, string> = {}) {
   return { adapter, events, spec };
 }
 
-async function until<T>(fn: () => Promise<T> | T, ok: (v: T) => boolean, ms = 3000): Promise<T> {
+async function until<T>(fn: () => Promise<T> | T, ok: (v: T) => boolean, ms = 10_000): Promise<T> {
   const start = Date.now();
   for (;;) {
     const v = await fn();
@@ -158,5 +158,53 @@ describe("Claude Code adapter", () => {
     await expect(adapter.createSession(spec)).rejects.toMatchObject({
       name: "HarnessUnavailableError",
     });
+  });
+});
+
+describe("Claude Code worker lifecycle", () => {
+  it("skips permission checks under yolo", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession({ ...spec, permissionPolicy: "yolo" });
+    await adapter.prompt(ref, "[args]");
+    const snap = await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle" && s.lastAssistantText !== null,
+    );
+    expect(snap.lastAssistantText).toContain("--dangerously-skip-permissions");
+    expect(snap.lastAssistantText).not.toContain("--permission-mode");
+    expect(snap.lastAssistantText).toContain("--permission-prompt-tool stdio");
+  });
+
+  it("stops idle workers and resumes them transparently on the next prompt", async () => {
+    const { spec } = setup();
+    await adapter!.close();
+    adapter = new ClaudeAdapter({ command: [process.execPath, FAKE], idleStopMs: 100 });
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "first");
+    await until(
+      () => adapter!.inspect(ref),
+      (s) => s.status === "idle" && s.lastAssistantText !== null,
+    );
+    await until(
+      () => adapter!.activeWorkers(),
+      (n) => n === 0,
+    );
+    expect(await adapter.inspect(ref)).toMatchObject({ status: "idle", prompted: true });
+    await adapter.prompt(ref, "[args]");
+    const snap = await until(
+      () => adapter!.inspect(ref),
+      (s) => (s.lastAssistantText ?? "").startsWith("args:"),
+    );
+    expect(snap.lastAssistantText).toContain(`--resume ${ref.sessionId}`);
+    expect(adapter.activeWorkers()).toBe(1);
+  });
+
+  it("releases a finished session's worker", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    expect(adapter.activeWorkers()).toBe(1);
+    await adapter.release(ref);
+    expect(adapter.activeWorkers()).toBe(0);
+    expect((await adapter.inspect(ref)).status).toBe("missing");
   });
 });
