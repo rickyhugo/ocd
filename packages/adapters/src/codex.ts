@@ -1,9 +1,17 @@
 import { execFile } from "node:child_process";
 
-import { boundTodos, type AdapterStatus } from "@ocd/core";
+import {
+  boundTodos,
+  textEntry,
+  toolEntry,
+  type AdapterStatus,
+  type ToolStatus,
+  type TranscriptEntry,
+} from "@ocd/core";
 
 import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
+import { TranscriptStore, type TranscriptBufferLimits } from "./transcript-buffer.ts";
 import {
   HarnessUnavailableError,
   type AdapterEvent,
@@ -15,6 +23,8 @@ import {
   type SessionRef,
   type SessionSnapshot,
   type SessionSpec,
+  type TranscriptPage,
+  type TranscriptRequest,
 } from "./types.ts";
 
 // Codex worker adapter over `codex app-server` (JSON-RPC 2.0 without the
@@ -34,6 +44,7 @@ const CAPABILITIES: Capabilities = {
   structuredResults: true,
   usage: false,
   todos: true,
+  transcript: true,
 };
 
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -87,6 +98,7 @@ export interface CodexAdapterOptions {
   onError?: (error: unknown, context: string) => void;
   /** Stop a worker process after this long idle; its thread resumes on demand. */
   idleStopMs?: number;
+  transcriptLimits?: Partial<TranscriptBufferLimits>;
 }
 
 export class CodexAdapter implements HarnessAdapter {
@@ -99,10 +111,12 @@ export class CodexAdapter implements HarnessAdapter {
   private readonly sessions = new Map<string, CodexSession>();
   private readonly byMarker = new Map<string, string>();
   private readonly listeners = new Set<AdapterListener>();
+  private readonly transcripts: TranscriptStore;
 
   constructor(options: CodexAdapterOptions = {}) {
     this.options = options;
     this.command = options.command ?? ["codex", "app-server"];
+    this.transcripts = new TranscriptStore(options.transcriptLimits);
   }
 
   probe(): Promise<AdapterStatus> {
@@ -360,12 +374,14 @@ export class CodexAdapter implements HarnessAdapter {
             item.id,
             (item.changes ?? []).map((c) => c.path),
           );
+        this.record(session, params["item"], params["startedAtMs"]);
         this.emit({ type: "activity", sessionId });
         return;
       }
       case "item/completed": {
         const item = params["item"] as { type?: string; text?: string };
         if (item.type === "agentMessage" && item.text) session.lastAssistantText = item.text;
+        this.record(session, params["item"], params["completedAtMs"]);
         this.emit({ type: "activity", sessionId });
         return;
       }
@@ -543,7 +559,41 @@ export class CodexAdapter implements HarnessAdapter {
     session.parked = true;
     this.sessions.delete(ref.sessionId);
     this.byMarker.delete(session.spec.marker);
+    this.transcripts.release(ref.sessionId);
     await session.proc.stop(2000);
+  }
+
+  /**
+   * What this adapter saw the worker do, from memory only. Codex also offers
+   * `thread/items/list`, but only through a running app-server; peeking must
+   * never start one, so parked, released and unknown threads are read as is.
+   */
+  async transcript(ref: SessionRef, request: TranscriptRequest): Promise<TranscriptPage | null> {
+    return this.transcripts.read(ref.sessionId, request, "supported");
+  }
+
+  /**
+   * Keeps complete thread items (item/started, then item/completed with the
+   * same id): agent messages, plans, tool calls with their output, and the
+   * `summary` of reasoning items. Never a reasoning item's `content` (raw
+   * reasoning), user messages or hook prompts, and no streaming deltas.
+   */
+  private record(session: CodexSession, raw: unknown, atMs: unknown): void {
+    if (!session.threadId || this.sessions.get(session.threadId) !== session) return;
+    if (!raw || typeof raw !== "object") return;
+    try {
+      const entry = codexEntry(
+        raw as CodexItem,
+        typeof atMs === "number" ? new Date(atMs).toISOString() : new Date().toISOString(),
+      );
+      if (!entry) return;
+      const buffer = this.transcripts.live(session.threadId);
+      // A completed item keeps its start time and position.
+      const started = buffer.get(entry.id);
+      buffer.upsert(started ? { ...entry, at: started.at } : entry);
+    } catch (error) {
+      this.options.onError?.(error, "codex transcript");
+    }
   }
 
   interactiveCommand(ref: SessionRef): string[] {
@@ -653,5 +703,115 @@ export class CodexAdapter implements HarnessAdapter {
     this.sessions.clear();
     this.byMarker.clear();
     this.listeners.clear();
+    this.transcripts.clear();
+  }
+}
+
+/** The parts of a v2 `ThreadItem` (0.162.1 generated schema) OCD reads. */
+type CodexItem = {
+  type?: unknown;
+  id?: unknown;
+  text?: unknown;
+  summary?: unknown;
+  command?: unknown;
+  status?: unknown;
+  aggregatedOutput?: unknown;
+  exitCode?: unknown;
+  changes?: unknown;
+  server?: unknown;
+  tool?: unknown;
+  arguments?: unknown;
+  result?: unknown;
+  error?: unknown;
+  contentItems?: unknown;
+  query?: unknown;
+  path?: unknown;
+};
+
+function codexStatus(status: unknown): ToolStatus {
+  switch (status) {
+    case "inProgress":
+      return "running";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "error";
+    case "declined":
+      return "declined";
+    default:
+      return "unknown";
+  }
+}
+
+/** Text parts of MCP / dynamic tool content; other parts (images, audio) by type only. */
+function texts(items: unknown): string | null {
+  if (!Array.isArray(items)) return null;
+  const parts = items.flatMap((c: { type?: unknown; text?: unknown } | null) =>
+    typeof c?.text === "string" ? [c.text] : typeof c?.type === "string" ? [`[${c.type}]`] : [],
+  );
+  return parts.length ? parts.join("\n") : null;
+}
+
+/** One transcript entry for a thread item, or null for items that are not shown. */
+export function codexEntry(item: CodexItem, at: string): TranscriptEntry | null {
+  if (typeof item.id !== "string" || !item.id) return null;
+  const id = item.id;
+  const tool = (name: string, input: unknown, output: string | null, status: unknown) =>
+    toolEntry({ id, at, name, callId: id, status: codexStatus(status), input, output });
+  switch (item.type) {
+    case "agentMessage":
+      return typeof item.text === "string" && item.text.trim()
+        ? textEntry(id, at, item.text)
+        : null;
+    case "plan":
+      return typeof item.text === "string" && item.text.trim()
+        ? textEntry(id, at, `Plan:\n${item.text}`)
+        : null;
+    case "reasoning": {
+      // Only the documented summary; `content` is raw reasoning and is never read.
+      const summary = Array.isArray(item.summary)
+        ? item.summary.filter((s): s is string => typeof s === "string" && s.trim() !== "")
+        : [];
+      return summary.length ? textEntry(id, at, summary.join("\n\n"), "reasoning_summary") : null;
+    }
+    case "commandExecution": {
+      const exit = typeof item.exitCode === "number" ? `\n[exit ${item.exitCode}]` : "";
+      const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : null;
+      return tool(
+        "shell",
+        item.command,
+        output !== null || exit ? `${output ?? ""}${exit}`.trim() : null,
+        item.status,
+      );
+    }
+    case "fileChange": {
+      const changes = Array.isArray(item.changes)
+        ? item.changes.map((c: { path?: unknown; kind?: { type?: unknown } }) => ({
+            path: c?.path,
+            kind: c?.kind?.type,
+          }))
+        : [];
+      return tool("edit", changes, null, item.status);
+    }
+    case "mcpToolCall": {
+      const result = item.result as { content?: unknown } | null | undefined;
+      const error = item.error as { message?: unknown } | null | undefined;
+      const output = typeof error?.message === "string" ? error.message : texts(result?.content);
+      return tool(
+        `mcp:${String(item.server)}/${String(item.tool)}`,
+        item.arguments,
+        output,
+        item.status,
+      );
+    }
+    case "dynamicToolCall":
+      return tool(String(item.tool), item.arguments, texts(item.contentItems), item.status);
+    case "webSearch":
+      return tool("web_search", item.query ?? null, null, item.status);
+    case "imageView":
+      return tool("image_view", item.path ?? null, null, item.status);
+    default:
+      // userMessage / hookPrompt (prompts), contextCompaction, review markers, ...
+      return null;
   }
 }

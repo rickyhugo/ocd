@@ -1,14 +1,23 @@
-import type { AdapterStatus } from "@ocd/core";
+import {
+  TRANSCRIPT_LIMITS,
+  textEntry,
+  toolEntry,
+  type AdapterStatus,
+  type ToolStatus,
+  type TranscriptEntry,
+} from "@ocd/core";
 import {
   OpenCode,
   type OpenCodeClient,
   type OpenCodeEvent,
   type SessionInfo,
+  type SessionMessageInfo,
 } from "@opencode/client";
 import { Service } from "@opencode/client/service";
 
 import {
   HarnessUnavailableError,
+  InvalidCursorError,
   type AdapterEvent,
   type AdapterListener,
   type Capabilities,
@@ -18,6 +27,8 @@ import {
   type SessionRef,
   type SessionSnapshot,
   type SessionSpec,
+  type TranscriptPage,
+  type TranscriptRequest,
 } from "./types.ts";
 
 // OpenCode V2 worker adapter. Workers are sessions in the user's OpenCode
@@ -91,6 +102,7 @@ const CAPABILITIES: Capabilities = {
   usage: false,
   // The V2 client (2.0.27) has no checklist events or typed todo tool to follow.
   todos: false,
+  transcript: true,
 };
 
 const PERMISSION_PREFIX = "perm:";
@@ -140,6 +152,86 @@ function looksLikeQuota(
       `${error.type ?? ""} ${error.message ?? ""}`,
     )
   );
+}
+
+const OPENCODE_MESSAGE_PAGE = 50;
+const OPENCODE_PAGE_HOPS = 5;
+
+function toolStatus(status: string): ToolStatus {
+  return status === "completed"
+    ? "completed"
+    : status === "error"
+      ? "error"
+      : status === "running" || status === "streaming"
+        ? "running"
+        : "unknown";
+}
+
+const iso = (ms: number | undefined) =>
+  typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+
+/**
+ * Visible entries of one OpenCode message: assistant text, tool calls with
+ * their results, assistant errors and shell commands. User, synthetic and
+ * system messages (prompts and OCD's own instructions) and reasoning parts
+ * are skipped.
+ */
+export function openCodeEntries(message: SessionMessageInfo): TranscriptEntry[] {
+  if (message.type === "shell") {
+    return [
+      toolEntry({
+        id: message.id,
+        at: iso(message.time.created),
+        name: "shell",
+        callId: message.shellID,
+        status:
+          message.status === "running"
+            ? "running"
+            : message.status === "exited"
+              ? "completed"
+              : "error",
+        input: message.command,
+        output: message.output
+          ? `${message.output.output}${message.exit !== undefined ? `\n[exit ${String(message.exit)}]` : ""}`
+          : null,
+      }),
+    ];
+  }
+  if (message.type !== "assistant") return [];
+  const at = iso(message.time.created);
+  const entries: TranscriptEntry[] = [];
+  (Array.isArray(message.content) ? message.content : []).forEach((part, index) => {
+    if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) {
+      entries.push(textEntry(`${message.id}:${index}`, at, part.text));
+    } else if (part?.type === "tool" && typeof part.id === "string") {
+      const state = part.state as {
+        status: string;
+        input?: unknown;
+        content?: Array<{ type: string; text?: string; name?: string | null; uri?: string }>;
+        error?: { message?: string };
+      };
+      const content = Array.isArray(state?.content)
+        ? state.content
+            .map((c) => (c.type === "text" ? (c.text ?? "") : `[file ${c.name ?? c.uri ?? ""}]`))
+            .join("\n")
+        : null;
+      entries.push(
+        toolEntry({
+          id: `tool:${part.id}`,
+          at: iso(part.time?.created) ?? at,
+          name: part.name,
+          callId: part.id,
+          status: toolStatus(state?.status ?? ""),
+          input: state?.input ?? null,
+          output: state?.error?.message ?? content,
+        }),
+      );
+    }
+    // "reasoning": private reasoning, never returned.
+  });
+  if (message.error?.message)
+    entries.push(textEntry(`${message.id}:error`, at, `Error: ${message.error.message}`));
+  return entries;
 }
 
 export interface OpenCodeAdapterOptions {
@@ -474,6 +566,97 @@ export class OpenCodeAdapter implements HarnessAdapter {
       lastAssistantText,
       error: status === "error" ? (assistantError?.message ?? "OpenCode execution failed") : null,
       quotaLimited: status === "error" && looksLikeQuota(assistantError),
+    };
+  }
+
+  /**
+   * Reads the session's own history with `message.list` (newest page first,
+   * then `cursor.next` for older pages, as the 2.0.27 client's own store
+   * does). Read-only: no session is created, prompted, resumed or tracked.
+   * OpenCode reasoning parts are raw text with no documented summary field,
+   * so they are never returned.
+   */
+  async transcript(ref: SessionRef, request: TranscriptRequest): Promise<TranscriptPage | null> {
+    const api = await this.api();
+    const sessionID = ref.sessionId;
+    let cursor: { page: string | null; anchor: string | null } = { page: null, anchor: null };
+    if (request.before !== null) {
+      try {
+        const parsed = JSON.parse(request.before) as { page?: unknown; anchor?: unknown };
+        if (
+          (parsed.page !== null && typeof parsed.page !== "string") ||
+          (parsed.anchor !== null && typeof parsed.anchor !== "string")
+        )
+          throw new Error("bad cursor");
+        cursor = { page: parsed.page, anchor: parsed.anchor };
+      } catch {
+        throw new InvalidCursorError();
+      }
+    }
+    const limit = Math.min(request.limit, TRANSCRIPT_LIMITS.maxEntries);
+    let page = cursor.page;
+    // The anchor (oldest entry already shown) is normally on this page; a busy
+    // session may have pushed it onto a later one.
+    for (let hop = 0; hop < OPENCODE_PAGE_HOPS; hop += 1) {
+      const options = request.signal ? { signal: request.signal } : {};
+      let response;
+      try {
+        response = await api.message.list(
+          page === null
+            ? { sessionID, limit: OPENCODE_MESSAGE_PAGE, order: "desc" }
+            : { sessionID, limit: OPENCODE_MESSAGE_PAGE, cursor: page },
+          options,
+        );
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
+      }
+      const entries = [...response.data].reverse().flatMap(openCodeEntries);
+      const next = response.cursor.next ?? null;
+      let end = entries.length;
+      if (cursor.anchor !== null) {
+        const at = entries.findIndex((e) => e.id === cursor.anchor);
+        if (at < 0) {
+          if (!next) throw new InvalidCursorError();
+          page = next;
+          continue;
+        }
+        end = at;
+      }
+      if (end === 0 && next) {
+        // Nothing older on this page: continue on the next one.
+        cursor = { page: next, anchor: null };
+        page = next;
+        continue;
+      }
+      const start = Math.max(0, end - limit);
+      const shown = entries.slice(start, end);
+      const before =
+        start > 0 && shown[0]
+          ? JSON.stringify({ page, anchor: shown[0].id })
+          : next
+            ? JSON.stringify({ page: next, anchor: null })
+            : null;
+      return {
+        source: "native_history",
+        entries: shown,
+        before,
+        truncated: false,
+        reasoningSummaries: "unsupported",
+        notes: [],
+      };
+    }
+    if (cursor.anchor !== null) throw new InvalidCursorError();
+    // Several pages without visible entries (e.g. only prompts): stop here, bounded.
+    return {
+      source: "native_history",
+      entries: [],
+      before: JSON.stringify({ page, anchor: null }),
+      truncated: false,
+      reasoningSummaries: "unsupported",
+      notes: [
+        `No visible entries in the ${OPENCODE_PAGE_HOPS * OPENCODE_MESSAGE_PAGE} messages read; older history may have some.`,
+      ],
     };
   }
 

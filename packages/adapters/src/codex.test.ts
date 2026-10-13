@@ -235,3 +235,77 @@ describe("Codex turn ordering", () => {
     expect((await adapter.inspect(ref)).status).toBe("idle");
   });
 });
+
+describe("Codex transcript", () => {
+  it("keeps completed items and opt-in reasoning summaries, never raw reasoning or prompts", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "secret instructions [transcript]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle" && s.lastAssistantText !== null,
+    );
+    const read = (reasoningSummaries: boolean) =>
+      adapter.transcript(ref, { limit: 50, before: null, reasoningSummaries });
+
+    const plain = (await read(false))!;
+    expect(plain.reasoningSummaries).toBe("excluded");
+    expect(plain.entries.map((e) => e.id)).toEqual(["m_1", "c_1", "f_1", "x_1", "msg_turn_1"]);
+    const [message, command, edit, mcp] = plain.entries;
+    expect(message!.at).toBe(new Date(3000).toISOString());
+    // The completed command keeps its start time, is not duplicated, and is redacted.
+    expect(command).toMatchObject({
+      at: new Date(4000).toISOString(),
+      tool: {
+        name: "shell",
+        status: "completed",
+        input: "npm test",
+        output: "ok [REDACTED]\n[exit 0]",
+      },
+    });
+    expect(edit!.tool).toMatchObject({
+      name: "edit",
+      input: '[{"path":"src/a.ts","kind":"update"}]',
+    });
+    expect(mcp!.tool).toMatchObject({ name: "mcp:docs/search", status: "error", output: "boom" });
+
+    const withSummaries = (await read(true))!;
+    expect(withSummaries.reasoningSummaries).toBe("included");
+    expect(withSummaries.entries[0]).toMatchObject({
+      kind: "reasoning_summary",
+      text: "Checked the failing test",
+    });
+    // Reasoning without a summary produces nothing.
+    expect(withSummaries.entries.filter((e) => e.kind === "reasoning_summary")).toHaveLength(1);
+    const all = JSON.stringify(withSummaries);
+    for (const hidden of ["RAW-", "PARTIAL", "secret instructions", "DIFF-BODY", "AKIA"])
+      expect(all).not.toContain(hidden);
+  });
+
+  it("pages older entries with the adapter cursor", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "[transcript]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle" && s.lastAssistantText !== null,
+    );
+    const latest = (await adapter.transcript(ref, {
+      limit: 2,
+      before: null,
+      reasoningSummaries: false,
+    }))!;
+    expect(latest.entries.map((e) => e.id)).toEqual(["x_1", "msg_turn_1"]);
+    const older = (await adapter.transcript(ref, {
+      limit: 2,
+      before: latest.before,
+      reasoningSummaries: false,
+    }))!;
+    expect(older.entries.map((e) => e.id)).toEqual(["c_1", "f_1"]);
+    await adapter.release(ref);
+    expect(
+      (await adapter.transcript(ref, { limit: 2, before: null, reasoningSummaries: false }))!
+        .source,
+    ).toBe("retained_buffer");
+  });
+});

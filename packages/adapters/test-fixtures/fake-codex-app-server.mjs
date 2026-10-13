@@ -31,6 +31,94 @@ function startTurn(text) {
     });
     return finish(turn, `Planned.\n${report}`);
   }
+  if (text.includes("[transcript]")) {
+    const item = (method, item, ms) =>
+      notify(method, {
+        threadId,
+        turnId: turn.id,
+        item,
+        ...(method === "item/started" ? { startedAtMs: ms } : { completedAtMs: ms }),
+      });
+    const user = {
+      type: "userMessage",
+      id: "u_1",
+      clientId: null,
+      content: [{ type: "text", text }],
+    };
+    item("item/started", user, 1000);
+    item("item/completed", user, 1000);
+    notify("item/reasoning/textDelta", { threadId, itemId: "r_1", delta: "RAW-DELTA" });
+    item(
+      "item/completed",
+      {
+        type: "reasoning",
+        id: "r_1",
+        summary: ["Checked the failing test"],
+        content: ["RAW-REASONING"],
+      },
+      2000,
+    );
+    item(
+      "item/completed",
+      { type: "reasoning", id: "r_2", summary: [], content: ["RAW-ONLY"] },
+      2500,
+    );
+    item(
+      "item/completed",
+      { type: "agentMessage", id: "m_1", text: "Running the tests", phase: null },
+      3000,
+    );
+    const cmd = {
+      type: "commandExecution",
+      id: "c_1",
+      command: "npm test",
+      cwd: "/w",
+      status: "inProgress",
+      aggregatedOutput: null,
+      exitCode: null,
+    };
+    item("item/started", cmd, 4000);
+    notify("item/agentMessage/delta", { threadId, itemId: "m_2", delta: "PARTIAL" });
+    item(
+      "item/completed",
+      { ...cmd, status: "completed", aggregatedOutput: "ok AKIAABCDEFGHIJKLMNOP", exitCode: 0 },
+      5000,
+    );
+    item(
+      "item/completed",
+      { ...cmd, status: "completed", aggregatedOutput: "ok AKIAABCDEFGHIJKLMNOP", exitCode: 0 },
+      5000,
+    );
+    item(
+      "item/completed",
+      {
+        type: "fileChange",
+        id: "f_1",
+        changes: [
+          { path: "src/a.ts", kind: { type: "update", move_path: null }, diff: "DIFF-BODY" },
+        ],
+        status: "completed",
+      },
+      6000,
+    );
+    item(
+      "item/completed",
+      {
+        type: "mcpToolCall",
+        id: "x_1",
+        server: "docs",
+        tool: "search",
+        status: "failed",
+        arguments: { q: "x" },
+        result: null,
+        error: { message: "boom" },
+      },
+      6500,
+    );
+    item("item/completed", { type: "contextCompaction", id: "cc_1" }, 6600);
+    item("item/completed", { type: "agentMessage" }, 6700);
+    return finish(turn, `Tests pass.\n${report}`);
+  }
   if (text.includes("[limit]")) {
     notify("error", {
       threadId,

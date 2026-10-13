@@ -225,3 +225,66 @@ describe("Claude Code worker lifecycle", () => {
     expect((await adapter.inspect(ref)).status).toBe("missing");
   });
 });
+
+describe("Claude Code transcript", () => {
+  const read = (a: ClaudeAdapter, sessionId: string, reasoningSummaries = false) =>
+    a.transcript({ sessionId }, { limit: 50, before: null, reasoningSummaries });
+
+  it("keeps visible text and tool calls with results, never thinking, prompts or partials", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    expect((await read(adapter, ref.sessionId))?.entries ?? []).toEqual([]);
+    await adapter.prompt(ref, "secret instructions [transcript]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle" && s.lastAssistantText !== null,
+    );
+    const page = (await read(adapter, ref.sessionId, true))!;
+    expect(page.source).toBe("live_buffer");
+    expect(page.reasoningSummaries).toBe("unsupported");
+    const visible = page.entries.filter((e) => e.text !== "working");
+    expect(visible.map((e) => [e.kind, e.id])).toEqual([
+      ["message", "u2:0"],
+      ["tool", "tool:toolu_9"],
+      ["message", "u7:0"],
+    ]);
+    expect(visible[1]!.tool).toMatchObject({
+      name: "Bash",
+      callId: "toolu_9",
+      status: "completed",
+      input: '{"command":"[REDACTED] npm test"}',
+      output: "3 passed [REDACTED]",
+    });
+    const all = JSON.stringify(page);
+    for (const hidden of [
+      "PRIVATE-THOUGHT",
+      "ENCRYPTED",
+      "PARTIAL",
+      "secret instructions",
+      "abcdef123456",
+    ])
+      expect(all).not.toContain(hidden);
+  });
+
+  it("retains a released session's snapshot without restarting it, and has nothing after a restart", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "[transcript]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle" && s.lastAssistantText !== null,
+    );
+    await adapter.release(ref);
+    const retained = (await read(adapter, ref.sessionId))!;
+    expect(retained.source).toBe("retained_buffer");
+    expect(retained.entries.some((e) => e.text === "All tests pass")).toBe(true);
+    expect(adapter.activeWorkers()).toBe(0);
+    expect((await adapter.inspect(ref)).status).toBe("missing");
+
+    // Another adapter instance (a supervisor restart) never saw it, and does not resume it to look.
+    const fresh = new ClaudeAdapter({ command: [process.execPath, FAKE] });
+    expect(await read(fresh, ref.sessionId)).toBeNull();
+    expect(fresh.activeWorkers()).toBe(0);
+    await fresh.close();
+  });
+});

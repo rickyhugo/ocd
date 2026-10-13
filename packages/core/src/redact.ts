@@ -85,3 +85,42 @@ export function plainText(text: string, options: { multiline?: boolean } = {}): 
     .filter(Boolean);
   return lines.join(options.multiline ? "\n" : " ");
 }
+
+const CLIP_MARK = "\n…[clipped]…\n";
+
+/** Keeps the start and the end (where command output ends) of a long text. */
+export function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const room = Math.max(0, max - CLIP_MARK.length);
+  const head = Math.ceil(room * 0.6);
+  return `${text.slice(0, head)}${CLIP_MARK}${text.slice(text.length - (room - head))}`;
+}
+
+/**
+ * Redacts and bounds untrusted text for display. Long input is clipped
+ * generously first (bounding regex work), then redacted, then clipped to
+ * `max`, so a clip boundary never exposes part of a secret that redaction
+ * would have caught in the whole text.
+ */
+export function sanitizeText(text: string, max: number): { text: string; truncated: boolean } {
+  const redacted = redact(clip(text, max * 4));
+  return { text: clip(redacted, max), truncated: text.length > max * 4 || redacted.length > max };
+}
+
+const SECRET_KEY =
+  /pass(?:word|wd)?|secret|token|api[_-]?key|access[_-]?key|authori[sz]ation|cookie/i;
+
+/** JSON-renders a structured value, dropping values stored under secret-looking keys. */
+export function sanitizeValue(value: unknown, max: number): { text: string; truncated: boolean } {
+  if (typeof value === "string") return sanitizeText(value, max);
+  let json: string;
+  try {
+    json =
+      JSON.stringify(value, (key, v: unknown) =>
+        key && SECRET_KEY.test(key) && v !== null && typeof v !== "object" ? "[REDACTED]" : v,
+      ) ?? "";
+  } catch {
+    json = String(value);
+  }
+  return sanitizeText(json, max);
+}

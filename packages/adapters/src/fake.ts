@@ -3,8 +3,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { boundTodos, type AdapterStatus, type TodoItem } from "@ocd/core";
+import { boundTodos, textEntry, toolEntry, type AdapterStatus, type TodoItem } from "@ocd/core";
 
+import { TranscriptStore } from "./transcript-buffer.ts";
 import type {
   AdapterEvent,
   AdapterListener,
@@ -16,6 +17,8 @@ import type {
   SessionSnapshot,
   SessionSpec,
   SessionStatus,
+  TranscriptPage,
+  TranscriptRequest,
 } from "./types.ts";
 
 // A scriptable in-process harness for tests and dry runs. It performs real file
@@ -124,6 +127,9 @@ export class FakeHarnessState {
   readonly inUse = new Set<string>();
   /** Prompt texts in order, for assertions. */
   readonly prompts: string[] = [];
+  /** Transcript reads, and a fault to simulate on the next ones. */
+  transcriptReads = 0;
+  transcriptFault: "error" | "hang" | null = null;
 
   emit(event: AdapterEvent): void {
     for (const listener of this.listeners) listener(event);
@@ -150,6 +156,7 @@ const CAPABILITIES: Capabilities = {
   structuredResults: true,
   usage: false,
   todos: true,
+  transcript: true,
 };
 
 export class FakeAdapter implements HarnessAdapter {
@@ -162,6 +169,8 @@ export class FakeAdapter implements HarnessAdapter {
   private readonly faults: Partial<Record<FaultPoint, FaultTiming>>;
   private readonly available: boolean;
   private readonly ownListeners = new Set<AdapterListener>();
+  /** Like Claude Code / Codex: what this instance saw, in memory only. */
+  private readonly transcripts = new TranscriptStore();
 
   constructor(options: FakeAdapterOptions = {}) {
     this.state = options.state ?? new FakeHarnessState();
@@ -258,7 +267,9 @@ export class FakeAdapter implements HarnessAdapter {
 
   private async run(session: FakeSession, steps: FakeStep[], signal: AbortSignal): Promise<void> {
     try {
-      for (const step of steps) {
+      for (const [index, step] of steps.entries()) {
+        // Stable per prompt and step, like a harness item id.
+        const itemId = `${session.prompts.length}:${index}`;
         await delay(this.stepDelayMs, undefined, { signal });
         this.state.emit({ type: "activity", sessionId: session.id });
         switch (step.type) {
@@ -269,6 +280,17 @@ export class FakeAdapter implements HarnessAdapter {
             const target = join(session.spec.directory, step.file);
             await mkdir(dirname(target), { recursive: true });
             await writeFile(target, step.content);
+            this.transcripts.live(session.id).upsert(
+              toolEntry({
+                id: `tool:${itemId}`,
+                at: new Date().toISOString(),
+                name: "write",
+                callId: null,
+                status: "completed",
+                input: { file: step.file },
+                output: `${step.content.length} chars`,
+              }),
+            );
             break;
           }
           case "permission":
@@ -283,6 +305,9 @@ export class FakeAdapter implements HarnessAdapter {
           }
           case "reply":
             session.lastAssistantText = step.text;
+            this.transcripts
+              .live(session.id)
+              .upsert(textEntry(`msg:${itemId}`, new Date().toISOString(), step.text));
             break;
           case "todos":
             this.state.emit({
@@ -392,7 +417,18 @@ export class FakeAdapter implements HarnessAdapter {
     this.state.emit({ type: "stream", state: "connected" });
   }
 
+  async transcript(ref: SessionRef, request: TranscriptRequest): Promise<TranscriptPage | null> {
+    this.state.transcriptReads += 1;
+    if (this.state.transcriptFault === "error") throw new Error("fake transcript failure");
+    if (this.state.transcriptFault === "hang")
+      await new Promise((_, reject) =>
+        request.signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+      );
+    return this.transcripts.read(ref.sessionId, request, "unsupported");
+  }
+
   async close(): Promise<void> {
+    this.transcripts.clear();
     for (const listener of this.ownListeners) this.state.listeners.delete(listener);
     this.ownListeners.clear();
     if (this.sessionsSurviveSupervisor) return;
@@ -418,6 +454,7 @@ export class FakeAdapter implements HarnessAdapter {
     session.status = "idle";
     this.state.onDisk.set(session.id, session);
     this.state.sessions.delete(session.id);
+    this.transcripts.release(session.id);
   }
 
   interactiveCommand(ref: SessionRef): string[] {

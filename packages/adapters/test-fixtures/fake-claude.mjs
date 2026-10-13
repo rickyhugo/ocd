@@ -69,6 +69,46 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   });
   send({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } });
   if (text.includes("[args]")) return result(`args: ${args.join(" ")}`);
+  if (text.includes("[transcript]")) {
+    // Claude Code emits one assistant message per content block, sharing message.id.
+    const block = (uuid, content) =>
+      send({ type: "assistant", uuid, message: { id: "msg_1", role: "assistant", content } });
+    block("u1", [{ type: "thinking", thinking: "PRIVATE-THOUGHT", signature: "sig" }]);
+    block("u2", [{ type: "text", text: "Let me run the tests" }]);
+    const call = [
+      {
+        type: "tool_use",
+        id: "toolu_9",
+        name: "Bash",
+        input: { command: "TOKEN=abcdef123456 npm test" },
+      },
+    ];
+    block("u3", call);
+    block("u3", call); // delivered twice
+    send({
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { text: "PARTIAL" } },
+    });
+    send({
+      type: "user",
+      uuid: "u4",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_9",
+            content: [{ type: "text", text: "3 passed ghp_abcdefghijklmnopqrstuvwxyz0123" }],
+            is_error: false,
+          },
+        ],
+      },
+    });
+    block("u5", "not-an-array");
+    block("u6", [null, { type: 5 }, { type: "redacted_thinking", data: "ENCRYPTED" }]);
+    block("u7", [{ type: "text", text: "All tests pass" }]);
+    return result(`All tests pass\n${report}`);
+  }
   if (text.includes("[hang]")) {
     hanging = true;
     return;

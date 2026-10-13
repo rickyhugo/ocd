@@ -115,6 +115,8 @@ Proposed manager tools (names are OCD's API design, not existing OpenCode tools)
 
 - `dispatch_task(repo, profile, instructions, acceptance_criteria)`
 - `list_tasks(filters)` and `inspect_task(id)`
+- `peek_task(id)`: read-only recent worker messages and tool activity
+  (implemented; see README "Peek at a worker")
 - `send_to_worker(id, instructions)` and `cancel_task(id)`
 - `list_attention()` and `resolve_attention(id, response)`
 - `remember(scope, content, source)`, `recall(query, scope)`, and `forget(id)`
