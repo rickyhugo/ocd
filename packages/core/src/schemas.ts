@@ -346,20 +346,17 @@ export interface Decision {
 // ---------------------------------------------------------------------------
 // Manager, briefing, status
 
-export const RegisterManagerInput = z.object({
-  sessionId: z.string().min(1).max(200),
-  directory: z.string().min(1),
-  /** Replacing an existing manager must be explicit. */
-  replace: z.boolean().default(false),
-});
-export type RegisterManagerInput = z.input<typeof RegisterManagerInput>;
-
+/** The session currently acting as manager: the latest one used from the manager directory. */
 export interface Manager {
-  id: string;
   sessionId: string;
   directory: string;
-  registeredBy: Actor;
-  registeredAt: string;
+  activatedAt: string;
+}
+
+export interface ManagerInfo {
+  /** `manager.directory` from ocd.jsonc, or null when no manager is configured. */
+  directory: string | null;
+  active: Manager | null;
 }
 
 export interface TaskSummary {

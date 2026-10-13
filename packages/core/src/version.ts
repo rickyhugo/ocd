@@ -4,3 +4,5 @@ export const API_VERSION = 1;
 export const HEADER_API_VERSION = "x-ocd-api-version";
 export const HEADER_ACTOR = "x-ocd-actor";
 export const HEADER_SESSION = "x-ocd-session";
+/** Working directory of the OpenCode session making the call (plugin calls). */
+export const HEADER_DIRECTORY = "x-ocd-directory";

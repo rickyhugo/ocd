@@ -8,13 +8,12 @@ import type {
   Decision,
   DecisionInput,
   DispatchTaskInput,
-  Manager,
+  ManagerInfo,
   Memory,
   OutboxEntry,
   Profile,
   RecallHit,
   RecallInput,
-  RegisterManagerInput,
   RememberInput,
   Repository,
   RepositoryInput,
@@ -24,7 +23,13 @@ import type {
   TaskDetail,
   TaskFilter,
 } from "./schemas.ts";
-import { API_VERSION, HEADER_ACTOR, HEADER_API_VERSION, HEADER_SESSION } from "./version.ts";
+import {
+  API_VERSION,
+  HEADER_ACTOR,
+  HEADER_API_VERSION,
+  HEADER_DIRECTORY,
+  HEADER_SESSION,
+} from "./version.ts";
 
 export class OcdApiError extends Error {
   readonly status: number;
@@ -54,6 +59,8 @@ export interface ClientOptions {
   actor: Actor;
   /** OpenCode session the request originates from (plugin calls). */
   sessionId?: string;
+  /** Working directory of that session; decides whether it is the manager. */
+  directory?: string;
   timeoutMs?: number;
 }
 
@@ -90,6 +97,8 @@ export class OcdClient {
       [HEADER_ACTOR]: this.options.actor,
     };
     if (this.options.sessionId) headers[HEADER_SESSION] = this.options.sessionId;
+    if (this.options.directory)
+      headers[HEADER_DIRECTORY] = encodeURIComponent(this.options.directory);
     if (payload !== undefined) {
       headers["content-type"] = "application/json";
       headers["content-length"] = String(Buffer.byteLength(payload));
@@ -208,9 +217,7 @@ export class OcdClient {
   listDecisions = (query: { repo?: string; taskId?: string } = {}) =>
     this.call<Decision[]>("GET", "/v1/decisions", undefined, query);
 
-  registerManager = (input: RegisterManagerInput) =>
-    this.call<Manager>("POST", "/v1/manager", input);
-  getManager = () => this.call<Manager | null>("GET", "/v1/manager");
+  getManager = () => this.call<ManagerInfo>("GET", "/v1/manager");
   briefing = () => this.call<Briefing>("GET", "/v1/briefing");
 
   listOutbox = (query: { status?: string } = {}) =>

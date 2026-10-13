@@ -38,27 +38,16 @@ function json(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool[] {
+export function buildTools(
+  clientFor: (sessionID: string, directory: string) => OcdClient,
+): OcdTool[] {
   return [
-    {
-      name: "register_manager",
-      description:
-        "Register this session as the OCD manager. Only call this when the human explicitly asks to make this session the manager. It cannot replace an existing manager.",
-      input: obj({}),
-      run: async (_input, ctx) => {
-        const manager = await clientFor(ctx.sessionID).registerManager({
-          sessionId: ctx.sessionID,
-          directory: ctx.directory,
-        });
-        return `Registered ${manager.sessionId} as the OCD manager.`;
-      },
-    },
     {
       name: "list_repos",
       description: "List the allowlisted repositories and execution profiles you may dispatch to.",
       input: obj({}),
       run: async (_input, ctx) => {
-        const client = clientFor(ctx.sessionID);
+        const client = clientFor(ctx.sessionID, ctx.directory);
         const [repos, profiles] = await Promise.all([client.listRepos(), client.listProfiles()]);
         return [
           "Repositories:",
@@ -105,7 +94,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
             depends_on: z.array(z.string()).default([]),
           })
           .parse(input);
-        const { task, created } = await clientFor(ctx.sessionID).dispatch({
+        const { task, created } = await clientFor(ctx.sessionID, ctx.directory).dispatch({
           repo: i.repo,
           ...(i.profile ? { profile: i.profile } : {}),
           title: i.title,
@@ -133,7 +122,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
             include_finished: z.boolean().optional(),
           })
           .parse(input ?? {});
-        const tasks = await clientFor(ctx.sessionID).listTasks({
+        const tasks = await clientFor(ctx.sessionID, ctx.directory).listTasks({
           ...(i.repo ? { repo: i.repo } : {}),
           ...(i.state
             ? { state: i.state as Task["state"][] }
@@ -151,7 +140,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
       input: obj({ id: str("Task ID") }, ["id"]),
       run: async (input, ctx) => {
         const { id } = z.object({ id: z.string() }).parse(input);
-        const d = await clientFor(ctx.sessionID).inspectTask(id);
+        const d = await clientFor(ctx.sessionID, ctx.directory).inspectTask(id);
         return `${UNTRUSTED}\n\n${json({
           task: {
             ...d.task,
@@ -179,7 +168,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
       ]),
       run: async (input, ctx) => {
         const i = z.object({ id: z.string(), instructions: z.string() }).parse(input);
-        return `Sent. ${taskLine(await clientFor(ctx.sessionID).sendToWorker(i.id, i.instructions))}`;
+        return `Sent. ${taskLine(await clientFor(ctx.sessionID, ctx.directory).sendToWorker(i.id, i.instructions))}`;
       },
     },
     {
@@ -188,7 +177,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
       input: obj({ id: str("Task ID"), reason: str("Why") }, ["id"]),
       run: async (input, ctx) => {
         const i = z.object({ id: z.string(), reason: z.string().optional() }).parse(input);
-        return `Cancelled. ${taskLine(await clientFor(ctx.sessionID).cancelTask(i.id, i.reason))}`;
+        return `Cancelled. ${taskLine(await clientFor(ctx.sessionID, ctx.directory).cancelTask(i.id, i.reason))}`;
       },
     },
     {
@@ -198,7 +187,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
       input: obj({ include_resolved: { type: "boolean" } }),
       run: async (input, ctx) => {
         const i = z.object({ include_resolved: z.boolean().optional() }).parse(input ?? {});
-        const items = await clientFor(ctx.sessionID).listAttention(
+        const items = await clientFor(ctx.sessionID, ctx.directory).listAttention(
           i.include_resolved ? {} : { status: "open" },
         );
         if (items.length === 0) return "Nothing needs attention.";
@@ -236,7 +225,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
             : i.response === "deny"
               ? { type: "deny" as const, ...(i.text ? { message: i.text } : {}) }
               : { type: "acknowledge" as const, ...(i.text ? { note: i.text } : {}) };
-        const a = await clientFor(ctx.sessionID).resolveAttention(i.id, response);
+        const a = await clientFor(ctx.sessionID, ctx.directory).resolveAttention(i.id, response);
         return `${a.id} is now ${a.status}.`;
       },
     },
@@ -266,7 +255,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
             supersedes: z.string().optional(),
           })
           .parse(input);
-        const m = await clientFor(ctx.sessionID).remember({
+        const m = await clientFor(ctx.sessionID, ctx.directory).remember({
           scope: i.scope,
           content: i.content,
           source: i.source === "human" ? "human" : "manager",
@@ -299,7 +288,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
             include_proposed: z.boolean().optional(),
           })
           .parse(input);
-        const hits = await clientFor(ctx.sessionID).recall({
+        const hits = await clientFor(ctx.sessionID, ctx.directory).recall({
           query: i.query,
           ...(i.repo ? { repo: i.repo } : {}),
           ...(i.task_id ? { taskId: i.task_id } : {}),
@@ -320,7 +309,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
       input: obj({ id: str("Memory ID") }, ["id"]),
       run: async (input, ctx) => {
         const { id } = z.object({ id: z.string() }).parse(input);
-        await clientFor(ctx.sessionID).forget(id);
+        await clientFor(ctx.sessionID, ctx.directory).forget(id);
         return `Forgot ${id}.`;
       },
     },
@@ -345,7 +334,7 @@ export function buildTools(clientFor: (sessionID: string) => OcdClient): OcdTool
             task_id: z.string().optional(),
           })
           .parse(input);
-        const d = await clientFor(ctx.sessionID).recordDecision({
+        const d = await clientFor(ctx.sessionID, ctx.directory).recordDecision({
           summary: i.summary,
           ...(i.rationale ? { rationale: i.rationale } : {}),
           ...(i.repo ? { repo: i.repo } : {}),

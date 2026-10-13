@@ -7,9 +7,9 @@ import {
   DispatchTaskInput,
   HEADER_ACTOR,
   HEADER_API_VERSION,
+  HEADER_DIRECTORY,
   HEADER_SESSION,
   RecallInput,
-  RegisterManagerInput,
   RememberInput,
   RepositoryInput,
   ResolveAttentionInput,
@@ -19,6 +19,7 @@ import {
   TaskStateSchema,
   redact,
   type ApiErrorBody,
+  type ManagerInfo,
   type ShutdownReport,
   type TaskDetail,
 } from "@ocd/core";
@@ -30,7 +31,7 @@ import Fastify, {
 } from "fastify";
 import { z, ZodError } from "zod";
 
-import type { ProfileRegistry } from "./config.ts";
+import { normalizeDirectory, type LiveConfig } from "./config.ts";
 import { ApiError, forbidden } from "./errors.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
@@ -42,6 +43,7 @@ declare module "fastify" {
   interface FastifyRequest {
     actor: Actor;
     sessionId: string | null;
+    directory: string | null;
   }
 }
 
@@ -53,7 +55,7 @@ export interface ApiDeps {
   logger: Logger;
   /** Invoked after the shutdown response is sent. */
   requestShutdown: () => Promise<ShutdownReport>;
-  profiles: ProfileRegistry;
+  live: LiveConfig;
 }
 
 const IdParams = z.object({ id: z.string().min(1).max(100) });
@@ -73,6 +75,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
 
   app.decorateRequest("actor", "human");
   app.decorateRequest("sessionId", null);
+  app.decorateRequest("directory", null);
 
   app.addHook("onRequest", async (req) => {
     const version = req.headers[HEADER_API_VERSION];
@@ -91,6 +94,9 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     req.actor = actor.data;
     const session = req.headers[HEADER_SESSION];
     req.sessionId = typeof session === "string" && session ? session : null;
+    const directory = req.headers[HEADER_DIRECTORY];
+    req.directory =
+      typeof directory === "string" && directory ? decodeURIComponent(directory) : null;
     if (req.sessionId && store.isWorkerSession(req.sessionId)) {
       // Plugins load in worker sessions too; workers never get control-plane tools.
       throw forbidden("worker_session", "Worker sessions cannot use OCD control tools");
@@ -98,20 +104,30 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   });
 
   /** Manager calls must come from the registered manager session. */
+  /**
+   * Manager calls must come from a session in the configured manager
+   * directory. The latest such session becomes the one that receives updates.
+   */
   function requireCaller(req: FastifyRequest): void {
     if (req.actor !== "manager") return;
-    const manager = store.activeManager();
-    if (!manager)
+    const managerDirectory = deps.live.managerDirectory;
+    if (!managerDirectory) {
       throw forbidden(
         "no_manager",
-        "No manager session is registered. Register this session first (ocd_register_manager).",
-      );
-    if (req.sessionId !== manager.sessionId) {
-      throw forbidden(
-        "not_manager",
-        "Only the registered manager session may use OCD control tools",
+        "No manager is configured. Set manager.directory in ocd.jsonc.",
       );
     }
+    if (
+      !req.sessionId ||
+      !req.directory ||
+      normalizeDirectory(req.directory) !== managerDirectory
+    ) {
+      throw forbidden(
+        "not_manager",
+        `Only OpenCode sessions started in ${managerDirectory} may use OCD control tools`,
+      );
+    }
+    store.activateManager(req.sessionId, managerDirectory);
   }
 
   app.setErrorHandler((error, req, reply) => {
@@ -175,7 +191,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     if (req.actor !== "human")
       throw forbidden("human_only", "Repositories are registered by a human");
     const input = RepositoryInput.parse(req.body);
-    if (input.defaultProfile && !deps.profiles.get(input.defaultProfile)) {
+    if (input.defaultProfile && !deps.live.getProfile(input.defaultProfile)) {
       throw new ApiError(
         404,
         "not_found",
@@ -191,7 +207,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   });
   app.get("/v1/profiles", async (req) => {
     requireCaller(req);
-    return deps.profiles.list();
+    return deps.live.listProfiles();
   });
 
   // -- tasks -------------------------------------------------------------------
@@ -316,21 +332,10 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   });
 
   // -- manager -----------------------------------------------------------------
-  app.get("/v1/manager", async () => store.activeManager());
-  app.post("/v1/manager", async (req) => {
-    const input = RegisterManagerInput.parse(req.body);
-    if (req.actor === "manager") {
-      // A session may register itself only as the first manager, never replace one.
-      if (input.replace)
-        throw forbidden(
-          "human_only",
-          "Replacing the manager requires a human (ocd manager register --replace)",
-        );
-      if (req.sessionId !== input.sessionId)
-        throw forbidden("session_mismatch", "A session can only register itself");
-    }
-    return store.registerManager({ ...input, registeredBy: req.actor });
-  });
+  app.get("/v1/manager", async (): Promise<ManagerInfo> => ({
+    directory: deps.live.managerDirectory,
+    active: store.activeManager(),
+  }));
   app.get("/v1/briefing", async (req) => {
     requireCaller(req);
     return memory.briefing();

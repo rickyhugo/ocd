@@ -38,7 +38,6 @@ describe("dispatch and review", () => {
     expect(detail.attention.find((a) => a.kind === "review")?.status).toBe("open");
 
     const manager = h.manager("mgr-session");
-    await h.human.registerManager({ sessionId: "mgr-session", directory: h.root });
     await expect(manager.acceptTask(task.id)).rejects.toMatchObject({ code: "human_only" });
     const done = await h.human.acceptTask(task.id);
     expect(done.state).toBe("completed");
@@ -166,7 +165,6 @@ describe("permissions and interactions", () => {
   it("blocks on a permission, refuses manager self-approval, and continues after a human approves (AT7, AT8)", async () => {
     h = await startHarness();
     await setupRepo(h, "app");
-    await h.human.registerManager({ sessionId: "mgr", directory: h.root });
     const { task } = await dispatch(h.manager("mgr"), "app", "go [fake:permission]");
     const blocked = await waitForState(h, task.id, "blocked");
     const request = blocked.attention.find((a) => a.kind === "permission")!;
@@ -200,7 +198,6 @@ describe("permissions and interactions", () => {
   it("lets the manager answer worker questions", async () => {
     h = await startHarness();
     await setupRepo(h, "app");
-    await h.human.registerManager({ sessionId: "mgr", directory: h.root });
     const { task } = await dispatch(h.human, "app", "go [fake:question]");
     const blocked = await waitForState(h, task.id, "blocked");
     const q = blocked.attention.find((a) => a.kind === "question")!;
@@ -299,24 +296,25 @@ describe("API boundaries", () => {
     expect((await raw.status()).apiVersion).toBe(1);
   });
 
-  it("restricts control tools to the registered manager and blocks worker sessions", async () => {
+  it("restricts control tools to sessions in the manager directory and blocks worker sessions", async () => {
     h = await startHarness({ fake: { script: () => [{ type: "hang" }] } });
     await setupRepo(h, "app");
-    await expect(h.manager("someone").listTasks()).rejects.toMatchObject({ code: "no_manager" });
-    await h.manager("mgr").registerManager({ sessionId: "mgr", directory: h.root });
-    await expect(
-      h.manager("other").registerManager({ sessionId: "other", directory: h.root }),
-    ).rejects.toMatchObject({
-      code: "manager_exists",
+    await expect(h.manager("elsewhere", h.root).listTasks()).rejects.toMatchObject({
+      code: "not_manager",
     });
     await expect(
-      h.manager("other").registerManager({ sessionId: "other", directory: h.root, replace: true }),
+      new OcdClient({ socketPath: h.paths.socket, actor: "manager", sessionId: "s" }).listTasks(),
     ).rejects.toMatchObject({
-      code: "human_only",
+      code: "not_manager",
     });
-    await expect(h.manager("other").listTasks()).rejects.toMatchObject({ code: "not_manager" });
+    expect((await h.human.getManager()).active).toBeNull();
 
-    const { task } = await dispatch(h.manager("mgr"), "app", "work");
+    // Any session in the manager directory may act; the latest one receives updates.
+    const { task } = await dispatch(h.manager("mgr-1"), "app", "work");
+    expect((await h.human.getManager()).active?.sessionId).toBe("mgr-1");
+    await h.manager("mgr-2").listTasks();
+    expect((await h.human.getManager()).active?.sessionId).toBe("mgr-2");
+
     const running = await waitForState(h, task.id, "running");
     const worker = h.manager(running.task.sessionId!);
     await expect(worker.listTasks()).rejects.toMatchObject({ code: "worker_session" });
@@ -325,9 +323,14 @@ describe("API boundaries", () => {
     ).rejects.toBeInstanceOf(OcdApiError);
   });
 
+  it("refuses manager calls when no manager directory is configured", async () => {
+    h = await startHarness({ config: { manager: undefined } });
+    await expect(h.manager("mgr").listTasks()).rejects.toMatchObject({ code: "no_manager" });
+    expect(await h.human.getManager()).toEqual({ directory: null, active: null });
+  });
+
   it("only lets a human register repositories, and only repository roots", async () => {
     h = await startHarness();
-    await h.human.registerManager({ sessionId: "mgr", directory: h.root });
     await expect(h.manager("mgr").addRepo({ name: "x", path: h.root })).rejects.toMatchObject({
       code: "human_only",
     });

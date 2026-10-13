@@ -43,8 +43,7 @@ Configuration (human only)
   ocd repo add <name> <path> [--profile P] [--base REF]
   ocd repo list | ocd repo remove <name>
   ocd profile list                  Profiles declared in ocd.jsonc
-  ocd manager register <session-id> [--directory DIR] [--replace]
-  ocd manager show
+  ocd manager                       Configured manager directory and active session
 
 Tasks
   ocd dispatch <repo> <title> --instructions TEXT [--profile P] [--criteria TEXT]... [--key KEY]
@@ -135,8 +134,6 @@ async function main(argv: string[]): Promise<void> {
       supersedes: { type: "string" },
       status: { type: "string" },
       rationale: { type: "string" },
-      directory: { type: "string" },
-      replace: { type: "boolean" },
     },
   });
   const json = flags.json ?? false;
@@ -195,7 +192,7 @@ async function main(argv: string[]): Promise<void> {
               .join(" ") || "none"
           }`,
           `attention: ${s.openAttention} open; outbox: ${s.outbox.pending} pending (${s.outbox.failed} retrying), ${s.outbox.dead} dead`,
-          `manager: ${s.manager ? `${s.manager.sessionId} (${s.manager.directory})` : "not registered"}`,
+          `manager: ${s.manager ? `${s.manager.sessionId} (${s.manager.directory})` : "no active session"}`,
           ...s.adapters.map(
             (a) =>
               `harness ${a.harness}: ${a.available ? `ok ${a.version ?? ""}` : `UNAVAILABLE ${a.problems.join("; ")}`}`,
@@ -267,22 +264,13 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "manager": {
-      if (sub === "register") {
-        if (!rest[0]) fail("usage: ocd manager register <session-id>");
-        const m = await client.registerManager({
-          sessionId: rest[0],
-          directory: resolve(flags.directory ?? process.cwd()),
-          replace: flags.replace ?? false,
-        });
-        print(m, json, () => `manager ${m.sessionId} registered`);
-      } else {
-        const m = await client.getManager();
-        print(m, json, () =>
-          m
-            ? `${m.sessionId} (${m.directory}) registered ${m.registeredAt} by ${m.registeredBy}`
-            : "no manager registered",
-        );
-      }
+      const m = await client.getManager();
+      print(m, json, () =>
+        [
+          `directory: ${m.directory ?? `not configured (set manager.directory in ${paths.config})`}`,
+          `active session: ${m.active ? `${m.active.sessionId} since ${m.active.activatedAt}` : "none yet (start OpenCode in the manager directory)"}`,
+        ].join("\n"),
+      );
       return;
     }
     case "dispatch": {
