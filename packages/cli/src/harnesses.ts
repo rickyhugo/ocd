@@ -1,6 +1,15 @@
-import { execFile } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 
-import { FakeAdapter, OpenCodeAdapter, discoverOpenCode, type HarnessAdapter } from "@ocd/adapters";
+import {
+  ClaudeAdapter,
+  CodexAdapter,
+  FakeAdapter,
+  OpenCodeAdapter,
+  discoverOpenCode,
+  type HarnessAdapter,
+} from "@ocd/adapters";
 import type { AdapterStatus } from "@ocd/core";
 import type { Logger, ManagerChannel, SupervisorConfig } from "@ocd/supervisor";
 
@@ -21,8 +30,45 @@ export function buildAdapters({
       }),
     );
   }
+  if (config.claude.enabled) {
+    adapters.push(
+      new ClaudeAdapter({
+        command: [findBinary("claude", config.claude.binary)],
+        onError: (error, context) => logger.warn({ err: error, context }, "claude adapter error"),
+      }),
+    );
+  }
+  if (config.codex.enabled) {
+    adapters.push(
+      new CodexAdapter({
+        command: [findBinary("codex", config.codex.binary), "app-server"],
+        onError: (error, context) => logger.warn({ err: error, context }, "codex adapter error"),
+      }),
+    );
+  }
   if (config.allowFakeHarness) adapters.push(new FakeAdapter());
   return adapters;
+}
+
+/**
+ * Absolute path of a harness binary: the configured one, else PATH plus
+ * ~/.local/bin (where the Claude Code and Codex installers put them, and which
+ * launchd's minimal PATH lacks). Falls back to the bare name.
+ */
+export function findBinary(name: string, configured?: string): string {
+  if (configured) return configured;
+  const dirs = [...(process.env["PATH"] ?? "").split(delimiter), join(homedir(), ".local", "bin")];
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const candidate = join(dir, name);
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // keep looking
+    }
+  }
+  return name;
 }
 
 /** The registered manager is an OpenCode session, so wake-ups go through the OpenCode adapter. */
@@ -31,31 +77,18 @@ export function buildManagerChannel(adapters: HarnessAdapter[]): ManagerChannel 
   return opencode ? { wake: (sessionId, text) => opencode.wakeManager(sessionId, text) } : null;
 }
 
-function version(binary: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(binary, ["--version"], { timeout: 10_000 }, (error, stdout) =>
-      resolve(error ? null : (String(stdout).trim().split("\n")[0] ?? null)),
-    );
-  });
-}
-
-/** Read-only checks: binary versions and the OpenCode service. Never creates sessions or spends tokens. */
+/** Read-only checks: binary versions, logins, and the OpenCode service. Never starts workers or spends tokens. */
 export async function probeHarnesses(): Promise<AdapterStatus[]> {
-  const results: AdapterStatus[] = [];
-  for (const harness of ["opencode", "claude", "codex"] as const) {
-    const v = await version(harness);
-    const problems =
-      v === null
-        ? [`${harness} not found on PATH`]
-        : harness === "opencode"
-          ? []
-          : ["adapter not implemented yet (milestone 4)"];
-    results.push({ harness, available: v !== null, version: v, problems });
-  }
-  const service = await new OpenCodeAdapter({ connect: () => discoverOpenCode() }).probe();
-  results.push({
-    ...service,
-    problems: [`service ${service.available ? "reachable" : "not reachable"}`, ...service.problems],
-  });
-  return results;
+  const opencode = await new OpenCodeAdapter({ connect: () => discoverOpenCode() }).probe();
+  return [
+    {
+      ...opencode,
+      problems: [
+        `service ${opencode.available ? "reachable" : "not reachable"}`,
+        ...opencode.problems,
+      ],
+    },
+    await new ClaudeAdapter({ command: [findBinary("claude")] }).probe(),
+    await new CodexAdapter({ command: [findBinary("codex"), "app-server"] }).probe(),
+  ];
 }

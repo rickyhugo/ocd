@@ -1341,7 +1341,22 @@ export class Supervisor {
       requireCapability(adapter, "resume");
       if (!task.sessionId)
         throw conflict("no_session", "No recorded session to reattach; use relaunch");
-      const snap = await adapter.inspect({ sessionId: task.sessionId });
+      let snap = await adapter.inspect({ sessionId: task.sessionId });
+      if (snap.status === "missing" && adapter.revive) {
+        // A process-owned worker died with the supervisor; continue its session from disk.
+        const run = this.store.latestRun(taskId);
+        if (run) {
+          try {
+            await adapter.revive({ sessionId: task.sessionId }, this.specFor(task, run));
+          } catch (error) {
+            throw conflict(
+              "session_missing",
+              `The recorded session cannot be resumed (${(error as Error).message}); use relaunch`,
+            );
+          }
+        }
+        snap = await adapter.inspect({ sessionId: task.sessionId });
+      }
       if (snap.status === "missing")
         throw conflict("session_missing", "The recorded session no longer exists; use relaunch");
       const needsPrompt = snap.status === "idle" || snap.status === "error";

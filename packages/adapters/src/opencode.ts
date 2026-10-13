@@ -25,7 +25,7 @@ import {
 // so every reconnect is followed by reconciliation in the supervisor.
 
 /** Versions this adapter's request/response mapping was written and typed against. */
-export const OPENCODE_TESTED_VERSIONS = ["2.0.27"] as const;
+export const OPENCODE_TESTED_VERSIONS = ["2.0.27", "2.0.28"] as const;
 
 /** The subset of the V2 client OCD uses; tests provide a fake with the same shape. */
 export interface OpenCodeApi {

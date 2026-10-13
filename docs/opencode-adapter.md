@@ -1,19 +1,19 @@
 # OpenCode V2 adapter notes
 
-Recorded against **opencode 2.0.27** with `@opencode/client` / `@opencode/plugin`
+Recorded against **opencode 2.0.27** (and run for real on 2.0.28) with `@opencode/client` / `@opencode/plugin`
 2.0.27 pinned. Other versions are reported by `ocd status` / `ocd doctor` as
 untested, but are not refused.
 
 ## Verification status
 
-| Check                                                       | How                                         | Status      |
-| ----------------------------------------------------------- | ------------------------------------------- | ----------- |
-| Request/response shapes compile against the 2.0.27 client   | `vp check` (types)                          | Done        |
-| Service discovery and Basic auth                            | `ocd doctor` (`GET /api/info` only)         | Done (real) |
-| Session create, prompt, inspect, interrupt, reply, wake-ups | `FakeOpenCodeService` tests                 | Fakes only  |
-| Event stream mapping and reconnect + reconciliation         | `FakeOpenCodeService` tests                 | Fakes only  |
-| One real worker task end to end                             | `scripts/smoke-opencode.sh` (spends tokens) | Not yet run |
-| Plugin loading in a real OpenCode host                      | Manual, see README                          | Not yet run |
+| Check                                                       | How                                 | Status      |
+| ----------------------------------------------------------- | ----------------------------------- | ----------- |
+| Request/response shapes compile against the 2.0.27 client   | `vp check` (types)                  | Done        |
+| Service discovery and Basic auth                            | `ocd doctor` (`GET /api/info` only) | Done (real) |
+| Session create, prompt, inspect, interrupt, reply, wake-ups | `FakeOpenCodeService` tests         | Fakes only  |
+| Event stream mapping and reconnect + reconciliation         | `FakeOpenCodeService` tests         | Fakes only  |
+| One real worker task end to end                             | Real manager dispatch on 2.0.28     | Done        |
+| Plugin loading in a real OpenCode host                      | Package directory with `server.js`  | Done        |
 
 ## Mapping
 

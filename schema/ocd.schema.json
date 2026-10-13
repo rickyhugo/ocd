@@ -97,6 +97,38 @@
       },
       "additionalProperties": false
     },
+    "claude": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Offer Claude Code workers (profiles with harness claude).",
+          "type": "boolean"
+        },
+        "binary": {
+          "description": "Absolute path of the claude binary; defaults to a PATH / ~/.local/bin lookup.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "codex": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Offer Codex workers (profiles with harness codex).",
+          "type": "boolean"
+        },
+        "binary": {
+          "description": "Absolute path of the codex binary; defaults to a PATH / ~/.local/bin lookup.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "allowFakeHarness": {
       "default": false,
       "description": "Allow profiles that use the fake harness (tests and dry runs).",
@@ -200,7 +232,7 @@
           "harness": {
             "type": "string",
             "enum": ["opencode", "claude", "codex", "fake"],
-            "description": "Harness that runs the worker. Only opencode (and fake, for tests) are implemented."
+            "description": "Harness that runs the worker: opencode (sessions in the OpenCode service), claude (Claude Code CLI), codex (codex app-server), or fake (tests)."
           },
           "model": {
             "type": "string",

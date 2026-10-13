@@ -48,8 +48,10 @@ function xml(value: string): string {
 }
 
 export function renderPlist(spec: LaunchAgentSpec): string {
+  // launchd's PATH is minimal; harness CLIs (claude, codex) live in ~/.local/bin.
   const path = [
     dirname(spec.nodePath),
+    join(homedir(), ".local", "bin"),
     "/opt/homebrew/bin",
     "/usr/local/bin",
     "/usr/bin",

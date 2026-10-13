@@ -8,13 +8,13 @@ See [PLAN.md](PLAN.md) for the architecture, safety boundaries and milestones.
 
 ## Status
 
-| Milestone                       | State                                                                |
-| ------------------------------- | -------------------------------------------------------------------- |
-| 1. Durable core and daemon      | Implemented and tested with fake harnesses                           |
-| 2. OpenCode vertical slice      | Implemented against `@opencode/*` 2.0.27; tested with a fake service |
-| 3. Memory and attention         | Implemented and tested                                               |
-| 4. Claude Code / Codex adapters | Not started (profiles using them are refused)                        |
-| 5. LaunchAgent background mode  | Not started (run `ocd daemon` in the foreground)                     |
+| Milestone                       | State                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------- |
+| 1. Durable core and daemon      | Implemented and tested with fake harnesses                                      |
+| 2. OpenCode vertical slice      | Implemented; first real task completed end to end (OpenCode 2.0.28)             |
+| 3. Memory and attention         | Implemented and tested                                                          |
+| 4. Claude Code / Codex adapters | Implemented; tested with fake binaries ([notes](docs/claude-codex-adapters.md)) |
+| 5. LaunchAgent background mode  | Implemented: `ocd launchagent install`, automatic backups                       |
 
 No real model call has been made by the test suite. The only checks against the
 real OpenCode service are read-only (`ocd doctor`). See
@@ -26,7 +26,7 @@ real OpenCode service are read-only (`ocd doctor`). See
 packages/
   core/        Zod contracts, task states, redaction, report protocol, socket API client
   supervisor/  Fastify API on a Unix socket, Drizzle schema + migrations, scheduler, recovery, outbox
-  adapters/    Fake harness and the OpenCode V2 adapter (+ in-memory OpenCode service for tests)
+  adapters/    OpenCode, Claude Code, Codex and fake adapters (+ test doubles)
   plugin/      OpenCode V2 plugin: ocd_* manager tools and the manager briefing (no database)
   cli/         The `ocd` command
 ```
@@ -204,7 +204,9 @@ Migrations are generated with `pnpm run db:generate` and checked in under
 ## Real smoke test (opt-in, spends tokens)
 
 ```sh
-scripts/smoke-opencode.sh --yes-spend-tokens provider/model
+scripts/smoke.sh --yes-spend-tokens opencode provider/model
+scripts/smoke.sh --yes-spend-tokens claude sonnet
+scripts/smoke.sh --yes-spend-tokens codex gpt-5-codex#low
 ```
 
 It uses a throwaway `OCD_HOME` and git repo, dispatches one tiny task to the

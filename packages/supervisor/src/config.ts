@@ -74,6 +74,34 @@ export const SupervisorConfig = z
       })
       .strict()
       .prefault({}),
+    claude: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(true)
+          .describe("Offer Claude Code workers (profiles with harness claude)."),
+        binary: z
+          .string()
+          .optional()
+          .describe(
+            "Absolute path of the claude binary; defaults to a PATH / ~/.local/bin lookup.",
+          ),
+      })
+      .strict()
+      .prefault({}),
+    codex: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(true)
+          .describe("Offer Codex workers (profiles with harness codex)."),
+        binary: z
+          .string()
+          .optional()
+          .describe("Absolute path of the codex binary; defaults to a PATH / ~/.local/bin lookup."),
+      })
+      .strict()
+      .prefault({}),
     allowFakeHarness: z
       .boolean()
       .default(false)
