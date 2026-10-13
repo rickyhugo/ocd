@@ -66,6 +66,26 @@ describe("Codex adapter", () => {
     expect(snap.lastAssistantText).toContain("ocd-report");
   });
 
+  it("reports plan updates as the checklist, without the explanation", async () => {
+    const { adapter, events, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "[plan] do it");
+    const todos = await until(
+      () => events.find((e) => e.type === "todos"),
+      (e) => e !== undefined,
+    );
+    expect(todos).toEqual({
+      type: "todos",
+      sessionId: ref.sessionId,
+      todos: [
+        { text: "Inspect the adapter", status: "completed" },
+        { text: "Add the handler", status: "in_progress" },
+        { text: "Write tests", status: "pending" },
+      ],
+    });
+    expect(JSON.stringify(events)).not.toContain("narration");
+  });
+
   it("forwards command and file approvals and answers them once", async () => {
     const { adapter, events, spec } = setup();
     const ref = await adapter.createSession(spec);

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import type { AdapterStatus } from "@ocd/core";
 
+import { ClaudeTodoTracker, type ClaudeStreamMessage } from "./claude-todos.ts";
 import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
 import {
@@ -36,6 +37,7 @@ const CAPABILITIES: Capabilities = {
   pendingInteractions: true,
   structuredResults: true,
   usage: false,
+  todos: true,
 };
 
 const LIMIT_PATTERN = /usage limit|rate.?limit|hit your .*limit|limit resets/i;
@@ -46,7 +48,7 @@ export function parseClaudeModel(model: string): { model: string; effort: string
   return { model: name!, effort: effort ?? null };
 }
 
-type ClaudeMessage = {
+type ClaudeMessage = ClaudeStreamMessage & {
   type?: string;
   subtype?: string;
   request_id?: string;
@@ -84,6 +86,7 @@ interface ClaudeSession {
   /** The process was stopped while idle; the session resumes on the next prompt. */
   parked: boolean;
   idleTimer: NodeJS.Timeout | null;
+  todos: ClaudeTodoTracker;
 }
 
 function summarize(tool: string, input: Record<string, unknown>): string {
@@ -169,6 +172,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       limitSeen: false,
       parked: false,
       idleTimer: null,
+      todos: new ClaudeTodoTracker(),
     } as unknown as ClaudeSession;
     this.startProcess(state, session.resume);
     this.sessions.set(session.id, state);
@@ -239,6 +243,8 @@ export class ClaudeAdapter implements HarnessAdapter {
 
   private onMessage(session: ClaudeSession, message: ClaudeMessage): void {
     const sessionId = session.sessionId;
+    const todos = session.todos.observe(message);
+    if (todos) this.emit({ type: "todos", sessionId, todos });
     switch (message.type) {
       case "control_request": {
         if (message.request?.subtype !== "can_use_tool" || !message.request_id) return;

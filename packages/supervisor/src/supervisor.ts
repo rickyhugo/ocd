@@ -20,7 +20,9 @@ import {
   type SupervisorStatus,
   type TakeOverResult,
   type Task,
+  type TaskProgress,
   type TaskResult,
+  type TodoItem,
   type WorkerRun,
 } from "@ocd/core";
 import {
@@ -79,6 +81,9 @@ export interface SupervisorOptions {
 const INTERACTION_KINDS = ["permission", "question"] as const;
 const ACTIVITY_WRITE_INTERVAL_MS = 10_000;
 const HARNESS_RETRY_MS = 30_000;
+/** Checklists kept in memory (most recently updated tasks), and events per progress view. */
+const TODO_TASKS_MAX = 100;
+const PROGRESS_EVENTS = 40;
 
 export class Supervisor {
   private readonly adapters = new Map<HarnessName, HarnessAdapter>();
@@ -89,6 +94,8 @@ export class Supervisor {
   private readonly harnessRetryAt = new Map<HarnessName, number>();
   private github: GitHubCliStatus | null = null;
   private githubProbes = 0;
+  /** Latest checklist per task. Progress display only: not persisted, not orchestration state. */
+  private readonly todos = new Map<string, { items: TodoItem[]; at: string }>();
   private schedulerTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
   private lastReconcileTick = 0;
@@ -742,6 +749,10 @@ export class Supervisor {
           case "interaction_resolved":
             this.onInteractionResolved(row.id, event.interactionId);
             return;
+          case "todos":
+            this.recordActivity(row.id);
+            this.recordTodos(row.id, event.todos);
+            return;
           case "status":
             this.recordActivity(row.id);
             await this.applySnapshot(
@@ -763,6 +774,28 @@ export class Supervisor {
     if (now - (this.lastActivityWrite.get(taskId) ?? 0) < ACTIVITY_WRITE_INTERVAL_MS) return;
     this.lastActivityWrite.set(taskId, now);
     this.store.touchActivity(taskId, iso(now));
+  }
+
+  private recordTodos(taskId: string, items: TodoItem[]): void {
+    this.todos.delete(taskId);
+    this.todos.set(taskId, { items, at: iso(this.o.clock()) });
+    for (const oldest of this.todos.keys()) {
+      if (this.todos.size <= TODO_TASKS_MAX) break;
+      this.todos.delete(oldest);
+    }
+  }
+
+  /** A task's latest checklist and recent events, for the sidebar. Read-only. */
+  taskProgress(taskId: string): TaskProgress {
+    const task = this.store.requireTask(taskId);
+    const todos = this.todos.get(taskId);
+    return {
+      taskId,
+      todosSupported: this.adapters.get(task.harness)?.capabilities.todos ?? false,
+      todos: todos?.items ?? null,
+      todosUpdatedAt: todos?.at ?? null,
+      events: this.store.events(taskId, PROGRESS_EVENTS),
+    };
   }
 
   private async onInteraction(

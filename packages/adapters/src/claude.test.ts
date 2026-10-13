@@ -85,6 +85,22 @@ describe("Claude Code adapter", () => {
     );
   });
 
+  it("reports the worker's task list from the stream as todos", async () => {
+    const { adapter, events, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "[todos]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+    const reported = events.flatMap((e) => (e.type === "todos" ? [e.todos] : []));
+    expect(reported.at(-1)).toEqual([
+      { text: "Read the code", status: "completed" },
+      { text: "Fix the bug", status: "in_progress" },
+    ]);
+    expect(JSON.stringify(reported)).not.toContain("Subagent");
+  });
+
   it("forwards can_use_tool requests and answers them", async () => {
     const { adapter, events, spec } = setup();
     const ref = await adapter.createSession(spec);

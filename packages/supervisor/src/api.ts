@@ -26,6 +26,7 @@ import {
   type ManagerInfo,
   type ShutdownReport,
   type TaskDetail,
+  type TaskProgress,
 } from "@ocd/core";
 import { timingSafeEqual } from "node:crypto";
 
@@ -243,6 +244,10 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
       events: store.events(id),
       attention: store.listAttention({ taskId: id }),
     };
+  });
+  app.get("/v1/tasks/:id/progress", async (req): Promise<TaskProgress> => {
+    requireCaller(req);
+    return supervisor.taskProgress(IdParams.parse(req.params).id);
   });
   app.post("/v1/tasks/:id/send", async (req) => {
     requireCaller(req);

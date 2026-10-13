@@ -24,6 +24,7 @@ import type {
   Task,
   TaskDetail,
   TaskFilter,
+  TaskProgress,
 } from "./schemas.ts";
 import { apiTokenPath } from "./paths.ts";
 import {
@@ -205,6 +206,9 @@ export class OcdClient {
       limit: filter.limit,
     });
   inspectTask = (id: string) => this.call<TaskDetail>("GET", `/v1/tasks/${encodeURIComponent(id)}`);
+  /** Latest checklist and recent events of one task; read-only. */
+  taskProgress = (id: string) =>
+    this.call<TaskProgress>("GET", `/v1/tasks/${encodeURIComponent(id)}/progress`);
   sendToWorker = (id: string, instructions: string) =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/send`, { instructions });
   cancelTask = (id: string, reason?: string) =>

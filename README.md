@@ -257,6 +257,14 @@ plugin directory) adds:
   `kept` marks a finished task whose worktree is still on disk. When the
   supervisor is down it says `offline`. Rows show ages, and running tasks with no
   activity for 10 minutes show as quiet (`○`).
+- **Progress panels:** click a running row's `▸ ●` (or use the palette's
+  "OCD: show or hide a running task's progress") to open a small panel under
+  it, scrolling on its own past 8 lines: a recorded PR, the worker's own
+  checklist with each item's status (Claude Code task tools, Codex plan
+  updates; OpenCode exposes none), and recent milestones from OCD's task
+  events. It is read-only, only open panels are fetched (on the 4-second
+  refresh), and checklists live in supervisor memory, so after a restart one
+  reappears with the worker's next update. No transcripts or reasoning.
 - **Row actions** (click a row) fit the task's state:
   - Ready for review: **Accept and clean up**, **Accept (keep the worktree)**,
     Summarize the result, Accept and open a PR.
