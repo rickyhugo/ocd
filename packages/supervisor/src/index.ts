@@ -5,6 +5,7 @@ export * from "./daemon.ts";
 export * from "./db/index.ts";
 export * from "./errors.ts";
 export * from "./fsutil.ts";
+export * from "./github-cli.ts";
 export * from "./ids.ts";
 export * from "./lock.ts";
 export * from "./logger.ts";

@@ -18,19 +18,22 @@ import {
   ConfigError,
   DatabaseTooNewError,
   GhPullRequests,
+  LiveConfig,
   LockHeldError,
   loadConfig,
   normalizeDirectory,
   startDaemon,
 } from "@ocd/supervisor";
 
+import { checkGh, describeGh, ghServiceHints, miseShim, serviceGh } from "./github.ts";
 import { insideWorktree } from "./guard.ts";
 import { buildAdapters, buildManagerChannel, probeHarnesses } from "./harnesses.ts";
 import {
   FallbackNotifier,
   currentPlatform,
   execCommand,
-  findBinary,
+  extraBinDirs,
+  servicePath,
   shellQuote,
   focusManager,
   locateBinary,
@@ -50,7 +53,8 @@ Supervisor
                                     Claude Code / Codex workers are running unless --force
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
-  ocd doctor [--notify]             Check harnesses, the OpenCode service, notifications and the service manager;
+  ocd doctor [--notify]             Check harnesses, the OpenCode service, notifications, the service manager and
+                                    the GitHub CLI (gh) as both this shell and the background service would find it;
                                     --notify sends a test notification (click it to try \`ocd focus\`)
   ocd focus                         Switch to the manager session (tmux pane + terminal window); what a notification click runs
 
@@ -118,6 +122,15 @@ function focusCommand(): string[] {
     process.env[k] ? [`${k}=${process.env[k]}`] : [],
   );
   return [...(env.length ? ["/usr/bin/env", ...env] : []), process.execPath, cliPath(), "focus"];
+}
+
+/** gh.binary from ocd.jsonc, `~` expanded; null when unset or the file is invalid. */
+function configuredGh(): string | null {
+  try {
+    return new LiveConfig(loadConfig(paths.config)).ghBinary;
+  } catch {
+    return null;
+  }
 }
 
 function print(value: unknown, json: boolean, render?: () => string): void {
@@ -212,7 +225,9 @@ async function main(argv: string[]): Promise<void> {
           foreground: !background,
           adapters: buildAdapters,
           managerChannel: buildManagerChannel,
-          pullRequests: new GhPullRequests(findBinary("gh")),
+          // gh is resolved per call: gh.binary from ocd.jsonc (live), else PATH.
+          pullRequests: ({ live }) =>
+            new GhPullRequests({ binary: () => live.ghBinary, extraDirs: extraBinDirs() }),
           notifier: await platform.notifier({ onClick: focusCommand() }),
         });
       } catch (error) {
@@ -270,11 +285,21 @@ async function main(argv: string[]): Promise<void> {
           logsDir: paths.logs,
           env: { OCD_HOME: process.env["OCD_HOME"], OCD_CONFIG: process.env["OCD_CONFIG"] },
         });
-        print(
-          { definition, manager: service.kind },
-          json,
-          () =>
+        // The service does not get this shell's PATH; say so if gh would go missing.
+        const ghHints = ghServiceHints({
+          configured: configuredGh(),
+          shellPath: locateBinary("gh"),
+          service: serviceGh({
+            configured: configuredGh(),
+            servicePath: servicePath(process.execPath),
+          }),
+          shim: miseShim("gh"),
+        });
+        print({ definition, manager: service.kind, warnings: ghHints }, json, () =>
+          [
             `installed ${definition}; the supervisor now runs in the background (${service.kind}) and starts at login`,
+            ...(ghHints.length ? ["warning: pull requests will fail:", ...ghHints] : []),
+          ].join("\n"),
         );
       } else if (sub === "uninstall") {
         const r = await service.uninstall();
@@ -400,6 +425,7 @@ async function main(argv: string[]): Promise<void> {
             (a) =>
               `harness ${a.harness}: ${a.available ? `ok ${a.version ?? ""}` : `UNAVAILABLE ${a.problems.join("; ")}`}`,
           ),
+          ...(s.github ? [`github (gh): ${describeGh(s.github)}`] : []),
         ].join("\n"),
       );
       return;
@@ -412,6 +438,11 @@ async function main(argv: string[]): Promise<void> {
     }
     case "doctor": {
       const harnesses = await probeHarnesses();
+      const gh = await checkGh({
+        configured: configuredGh(),
+        extraDirs: extraBinDirs(),
+        servicePath: platform.service ? servicePath(process.execPath) : null,
+      });
       const notifier = await platform.notifier({ onClick: focusCommand() });
       const tmux = locateBinary("tmux");
       let delivery: string | null = null;
@@ -431,6 +462,7 @@ async function main(argv: string[]): Promise<void> {
       }
       const report = {
         harnesses,
+        github: gh,
         platform: {
           name: platform.name,
           notifications: { backend: notifier.backend, clickable: notifier.clickable, delivery },
@@ -457,6 +489,13 @@ async function main(argv: string[]): Promise<void> {
           ...(delivery ? [`${"".padEnd(9)} test notification ${delivery}`] : []),
           `${"tmux".padEnd(9)} ${tmux ?? "not found (ocd focus can only raise the terminal)"}`,
           `${"service".padEnd(9)} ${platform.service?.kind ?? "none"} (${platform.name})`,
+          `${"gh".padEnd(9)} ${describeGh(gh.shell)}`,
+          ...(gh.service
+            ? [
+                `${"".padEnd(9)} background service: ${gh.service.path ?? `not found (${gh.service.problem})`}`,
+              ]
+            : []),
+          ...gh.hints.map((h) => `  ${h}`),
           ...hints,
         ].join("\n");
       });

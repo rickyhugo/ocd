@@ -48,8 +48,11 @@ export interface DaemonOptions {
   /** The channel that wakes the manager, usually provided by the OpenCode adapter. */
   managerChannel?: (adapters: HarnessAdapter[]) => ManagerChannel | null;
   notifier?: Notifier;
-  /** Opens pull requests when a human or the manager asks; omit to disable. */
-  pullRequests?: PullRequestHost;
+  /**
+   * Opens pull requests when a human or the manager asks; omit to disable. A
+   * function receives the live config (e.g. gh.binary, applied on save).
+   */
+  pullRequests?: PullRequestHost | ((ctx: { live: LiveConfig; logger: Logger }) => PullRequestHost);
   logger?: Logger;
   foreground?: boolean;
   clock?: Clock;
@@ -178,6 +181,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     store.syncRepos(await resolveRepos(config, workspaces));
     const memory = new MemoryService(store);
     const managerChannel = options.managerChannel?.(adapters) ?? null;
+    const pullRequests =
+      typeof options.pullRequests === "function"
+        ? options.pullRequests({ live, logger })
+        : options.pullRequests;
     const outbox = new OutboxWorker(
       store,
       config,
@@ -202,7 +209,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       try {
         const next = loadConfig(paths.config, options.config);
         const repos = await resolveRepos(next, workspaces);
+        const ghBefore = live.ghBinary;
         live.apply(next);
+        if (live.ghBinary !== ghBefore) void supervisor.probeGithub();
         store.syncRepos(repos);
         // A manager session outside a changed manager directory stops receiving updates.
         const active = store.activeManager();
@@ -217,6 +226,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           "reloaded ocd.jsonc",
         );
       } catch (error) {
+        // A reload that was in flight when the daemon stopped has nowhere to report.
+        if (!db?.$client.open) return;
         const message = error instanceof Error ? error.message : String(error);
         logger.error({ err: error }, "ocd.jsonc is invalid; keeping the previous configuration");
         const reason = `ocd.jsonc is invalid, so the previous configuration stays in effect. ${message}`;
@@ -276,7 +287,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       clock,
       instanceId,
       live,
-      ...(options.pullRequests ? { pullRequests: options.pullRequests } : {}),
+      ...(pullRequests ? { pullRequests } : {}),
       ...(options.hooks ? { hooks: options.hooks } : {}),
       onCrash: (error: SimulatedCrash) => {
         logger.warn({ point: error.point }, "simulated crash");

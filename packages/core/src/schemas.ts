@@ -431,6 +431,35 @@ export interface AdapterStatus {
   problems: string[];
 }
 
+/**
+ * Why the GitHub CLI cannot be used: not_found (not on PATH), invalid_path
+ * (gh.binary is wrong), auth_missing / auth_invalid (log in again),
+ * unreachable (network or timeout; the login may be fine), failed (other).
+ */
+export type GitHubCliProblem =
+  | "not_found"
+  | "invalid_path"
+  | "auth_missing"
+  | "auth_invalid"
+  | "unreachable"
+  | "failed";
+
+/** The supervisor's own read-only check of the gh CLI that pull requests use. */
+export interface GitHubCliStatus {
+  /** gh was found and `gh --version` ran. */
+  available: boolean;
+  path: string | null;
+  /** config: gh.binary in ocd.jsonc; path: found on the supervisor's PATH. */
+  source: "config" | "path" | null;
+  version: string | null;
+  /** unknown when the check could not tell (e.g. GitHub unreachable), never a guess. */
+  auth: "ok" | "missing" | "invalid" | "unknown";
+  problem: GitHubCliProblem | null;
+  /** Actionable, secret-free descriptions. */
+  problems: string[];
+  checkedAt: string;
+}
+
 export interface SupervisorStatus {
   apiVersion: number;
   pid: number;
@@ -443,6 +472,8 @@ export interface SupervisorStatus {
   outbox: { pending: number; failed: number; dead: number };
   manager: Manager | null;
   adapters: AdapterStatus[];
+  /** null while the startup check runs, or when pull requests are not configured. */
+  github?: GitHubCliStatus | null;
 }
 
 export interface OutboxEntry {
