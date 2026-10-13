@@ -18,7 +18,7 @@ import {
   type FakeAdapterOptions,
   type HarnessAdapter,
 } from "@ocd/adapters";
-import { OcdClient, type OcdPaths, type Actor } from "@ocd/core";
+import { OcdClient, type OcdPaths, type Actor, type RepoConfig } from "@ocd/core";
 
 import type { SupervisorConfigInput } from "./config.ts";
 import { startDaemon, type Daemon, type DaemonOptions } from "./daemon.ts";
@@ -174,10 +174,7 @@ export async function setupRepo(h: Harness, name = "app", profile = "fake"): Pro
   return path;
 }
 
-export async function declareRepos(
-  h: Harness,
-  repos: Record<string, { path: string; profile?: string; baseRef?: string }>,
-): Promise<void> {
+export async function declareRepos(h: Harness, repos: Record<string, RepoConfig>): Promise<void> {
   const current: { repos?: Record<string, unknown> } = existsSync(h.paths.config)
     ? JSON.parse(readFileSync(h.paths.config, "utf8"))
     : {};
