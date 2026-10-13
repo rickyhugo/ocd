@@ -162,3 +162,97 @@ describe("workspace cleanup", () => {
     writeFileSync(join(h.root, "unused"), "");
   });
 });
+
+describe("merging pull requests", () => {
+  async function openedAndAccepted(harness: Harness, key: string) {
+    const done = await finishedTask(harness, key);
+    const opened = await harness.human.openPullRequest(done.task.id, { commit: true });
+    await harness.human.acceptTask(done.task.id);
+    return { ...done.task, pullRequestUrl: opened.pullRequestUrl! };
+  }
+
+  it("refuses until GitHub says the PR is safe to merge, and never overrides", async () => {
+    const prs = new RecordingPullRequests();
+    h = await startHarness({ pullRequests: prs });
+    await repoWithOrigin(h);
+    const unopened = await finishedTask(h, "merge-none");
+    await expect(h.human.mergePullRequest(unopened.task.id)).rejects.toMatchObject({
+      code: "no_pull_request",
+    });
+    await h.human.openPullRequest(unopened.task.id, { commit: true });
+    await expect(h.human.mergePullRequest(unopened.task.id)).rejects.toMatchObject({
+      code: "not_accepted",
+    });
+
+    const task = await openedAndAccepted(h, "merge-refuse");
+    const cases: [Partial<import("./pull-requests.ts").PullRequestStatus>, string][] = [
+      [{ failingChecks: ["ci/test"] }, "pr_checks_failed"],
+      [{ pendingChecks: ["ci/build"] }, "pr_checks_pending"],
+      [{ mergeable: "conflicting" }, "pr_conflicts"],
+      [{ draft: true }, "pr_draft"],
+      [{ mergeState: "BLOCKED" }, "pr_blocked"],
+      [{ mergeable: "unknown" }, "pr_not_ready"],
+      [{ state: "closed" }, "pr_closed"],
+    ];
+    for (const [status, code] of cases) {
+      prs.statuses.set(task.pullRequestUrl, status);
+      await expect(h.manager("mgr").mergePullRequest(task.id)).rejects.toMatchObject({ code });
+    }
+    expect(prs.merged).toEqual([]);
+  });
+
+  it("merges with the repo's method, then removes the worktree and both branches", async () => {
+    const prs = new RecordingPullRequests();
+    h = await startHarness({ pullRequests: prs });
+    const { path, origin } = await repoWithOrigin(h);
+    await declareRepos(h, { app: { path, profile: "fake", mergeMethod: "rebase" } });
+    const task = await openedAndAccepted(h, "merge-ok");
+    expect(git(origin, "show-ref", "--verify", `refs/heads/${task.branch}`)).toBeTruthy();
+
+    const merged = await h.manager("mgr").mergePullRequest(task.id);
+    expect(prs.merged).toEqual([{ url: task.pullRequestUrl, method: "rebase" }]);
+    expect(merged.workspacePath).toBeNull();
+    expect(existsSync(task.workspacePath!)).toBe(false);
+    expect(() => git(path, "show-ref", "--verify", `refs/heads/${task.branch}`)).toThrow();
+    expect(() => git(origin, "show-ref", "--verify", `refs/heads/${task.branch}`)).toThrow();
+    const event = (await h.human.inspectTask(task.id)).events.find(
+      (e) => e.type === "pull_request.merged",
+    );
+    expect(event?.data).toMatchObject({
+      method: "rebase",
+      actor: "manager",
+      remoteBranchDeleted: true,
+    });
+
+    // Asking again is harmless.
+    await h.human.mergePullRequest(task.id, "squash");
+    expect(prs.merged).toHaveLength(1);
+  });
+
+  it("finishes cleanup when the PR was already merged on GitHub", async () => {
+    const prs = new RecordingPullRequests();
+    h = await startHarness({ pullRequests: prs });
+    await repoWithOrigin(h);
+    const task = await openedAndAccepted(h, "merge-external");
+    prs.statuses.set(task.pullRequestUrl, { state: "merged" });
+    const done = await h.human.mergePullRequest(task.id, "merge");
+    expect(prs.merged).toEqual([]);
+    expect(done.workspacePath).toBeNull();
+  });
+});
+
+describe("check classification", () => {
+  it("separates failing and pending checks from GitHub's rollup", async () => {
+    const { classifyChecks } = await import("./pull-requests.ts");
+    expect(
+      classifyChecks([
+        { name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
+        { name: "lint", status: "COMPLETED", conclusion: "FAILURE" },
+        { name: "build", status: "IN_PROGRESS", conclusion: null },
+        { name: "skipped", status: "COMPLETED", conclusion: "SKIPPED" },
+        { context: "ci/legacy", state: "PENDING" },
+        { context: "ci/old", state: "ERROR" },
+      ]),
+    ).toEqual({ failing: ["lint", "ci/old"], pending: ["build", "ci/legacy"] });
+  });
+});

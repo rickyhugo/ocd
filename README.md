@@ -167,7 +167,12 @@ The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
    Nothing is merged automatically.
 6. Optionally, `ocd task pr <id> [--draft] [--commit]` (or `ocd_open_pull_request`)
    pushes the branch and opens a GitHub pull request with `gh`; you merge it.
-7. `ocd task cleanup <id>` (or `ocd_cleanup_task`) removes a finished task's
+7. `ocd task merge <id> [--method squash|merge|rebase]` (or
+   `ocd_merge_pull_request`) merges an accepted task's PR once GitHub reports it
+   open, not a draft, conflict-free, unblocked, and with all checks passed; it
+   never uses admin overrides. The method defaults to `squash` (per repo:
+   `"mergeMethod"`). Afterwards the worktree and both branches are removed.
+8. `ocd task cleanup <id>` (or `ocd_cleanup_task`) removes a finished task's
    worktree and branch. It refuses while that would lose work (uncommitted
    changes, or commits on no other branch or remote) unless you pass `--force`.
 

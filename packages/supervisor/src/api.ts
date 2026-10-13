@@ -4,6 +4,7 @@ import {
   AttentionFilter,
   CancelTaskInput,
   CleanupTaskInput,
+  MergePullRequestInput,
   OpenPullRequestInput,
   DecisionInput,
   DispatchTaskInput,
@@ -249,6 +250,11 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     requireCaller(req);
     const input = OpenPullRequestInput.parse(req.body ?? {});
     return supervisor.openPullRequest(IdParams.parse(req.params).id, input, req.actor);
+  });
+  app.post("/v1/tasks/:id/merge", async (req) => {
+    requireCaller(req);
+    const { method } = MergePullRequestInput.parse(req.body ?? {});
+    return supervisor.mergePullRequest(IdParams.parse(req.params).id, { method }, req.actor);
   });
   app.post("/v1/tasks/:id/accept", async (req) => {
     requireCaller(req);

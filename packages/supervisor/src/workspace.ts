@@ -326,6 +326,16 @@ export class WorkspaceManager {
       throw new Error(`git push failed: ${(result.stderr || result.stdout).trim()}`);
   }
 
+  /** Deletes a pushed task branch from the remote; false if it was already gone. */
+  async deleteRemoteBranch(repoPath: string, remote: string, branch: string): Promise<boolean> {
+    const result = await run("git", ["push", remote, "--delete", branch], {
+      cwd: repoPath,
+      env: process.env as Record<string, string>,
+      timeoutMs: 120_000,
+    });
+    return result.code === 0;
+  }
+
   /** The remote's default branch (e.g. main), falling back to "main". */
   async defaultBranch(repoPath: string, remote: string): Promise<string> {
     const result = await run("git", ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], {

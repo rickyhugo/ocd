@@ -38,6 +38,10 @@ export const RepoConfig = z
       .max(200)
       .optional()
       .describe("Ref new task branches start from. Defaults to the repository's current HEAD."),
+    mergeMethod: z
+      .enum(["squash", "merge", "rebase"])
+      .optional()
+      .describe("How OCD merges this repository's pull requests when asked (default squash)."),
   })
   .strict();
 export type RepoConfig = z.input<typeof RepoConfig>;
@@ -227,6 +231,9 @@ export interface TaskDetail {
 export const SendToWorkerInput = z.object({ instructions: z.string().min(1).max(20_000) });
 export const CancelTaskInput = z.object({ reason: z.string().max(1000).optional() });
 export const CleanupTaskInput = z.object({ force: z.boolean().default(false) });
+export const MergePullRequestInput = z.object({
+  method: z.enum(["squash", "merge", "rebase"]).optional(),
+});
 export const OpenPullRequestInput = z.object({
   draft: z.boolean().default(false),
   base: z.string().min(1).max(200).optional(),

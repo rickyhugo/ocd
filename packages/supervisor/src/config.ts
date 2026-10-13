@@ -245,6 +245,7 @@ export function normalizeDirectory(directory: string): string {
 export class LiveConfig {
   private profiles = new Map<string, Profile>();
   managerDirectory: string | null = null;
+  private mergeMethods = new Map<string, "squash" | "merge" | "rebase">();
 
   constructor(config: SupervisorConfig) {
     this.apply(config);
@@ -253,6 +254,15 @@ export class LiveConfig {
   apply(config: SupervisorConfig): void {
     this.profiles = new Map(toProfiles(config).map((p) => [p.name, p]));
     this.managerDirectory = config.manager ? normalizeDirectory(config.manager.directory) : null;
+    this.mergeMethods = new Map(
+      Object.entries(config.repos).flatMap(([name, repo]) =>
+        repo.mergeMethod ? [[name, repo.mergeMethod] as const] : [],
+      ),
+    );
+  }
+
+  mergeMethod(repo: string): "squash" | "merge" | "rebase" {
+    return this.mergeMethods.get(repo) ?? "squash";
   }
 
   getProfile(name: string): Profile | null {

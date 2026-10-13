@@ -33,7 +33,7 @@ import { MemoryService } from "./memory.ts";
 import { MacNotifier, type ManagerChannel, type Notifier } from "./notify.ts";
 import { OutboxWorker } from "./outbox.ts";
 import { Store } from "./store.ts";
-import type { PullRequestCreator } from "./pull-requests.ts";
+import type { PullRequestHost } from "./pull-requests.ts";
 import { Supervisor, type SupervisorHooks } from "./supervisor.ts";
 import { WorkspaceManager } from "./workspace.ts";
 
@@ -49,7 +49,7 @@ export interface DaemonOptions {
   managerChannel?: (adapters: HarnessAdapter[]) => ManagerChannel | null;
   notifier?: Notifier;
   /** Opens pull requests when a human or the manager asks; omit to disable. */
-  pullRequests?: PullRequestCreator;
+  pullRequests?: PullRequestHost;
   logger?: Logger;
   foreground?: boolean;
   clock?: Clock;
