@@ -57,6 +57,8 @@ export const tasks = sqliteTable(
     branch: text("branch"),
     baseRef: text("base_ref"),
     sessionId: text("session_id"),
+    /** Pull request opened for the task branch, if any (optional, human/manager initiated). */
+    pullRequestUrl: text("pull_request_url"),
     attempts: integer("attempts").notNull().default(0),
     result: text("result", { mode: "json" }).$type<TaskResult>(),
     error: text("error"),

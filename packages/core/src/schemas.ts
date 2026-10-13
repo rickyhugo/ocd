@@ -183,6 +183,7 @@ export interface Task {
   branch: string | null;
   baseRef: string | null;
   sessionId: string | null;
+  pullRequestUrl: string | null;
   attempts: number;
   result: TaskResult | null;
   error: string | null;
@@ -225,6 +226,13 @@ export interface TaskDetail {
 
 export const SendToWorkerInput = z.object({ instructions: z.string().min(1).max(20_000) });
 export const CancelTaskInput = z.object({ reason: z.string().max(1000).optional() });
+export const CleanupTaskInput = z.object({ force: z.boolean().default(false) });
+export const OpenPullRequestInput = z.object({
+  draft: z.boolean().default(false),
+  base: z.string().min(1).max(200).optional(),
+  /** Commit uncommitted worker changes before pushing. */
+  commit: z.boolean().default(false),
+});
 export const ResumeTaskInput = z.object({
   /** reattach: continue the recorded session; relaunch: new session in the same workspace. */
   mode: z.enum(["reattach", "relaunch"]),

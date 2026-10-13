@@ -11,6 +11,7 @@ export * from "./logger.ts";
 export * from "./memory.ts";
 export * from "./notify.ts";
 export * from "./outbox.ts";
+export * from "./pull-requests.ts";
 export * from "./store.ts";
 export * from "./supervisor.ts";
 export * from "./workspace.ts";
