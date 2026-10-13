@@ -9,6 +9,7 @@ local linters = new Mapping {
   ["vp_check"] = Builtins.vp_check
   ["shellcheck"] = Builtins.shellcheck
   ["shfmt"] = Builtins.shfmt
+  ["pkl"] = Builtins.pkl
 }
 
 steps = linters

@@ -9,8 +9,8 @@
 set -euo pipefail
 
 if [[ "${1:-}" != "--yes-spend-tokens" || -z "${2:-}" || -z "${3:-}" ]]; then
-  echo "usage: $0 --yes-spend-tokens opencode|claude|codex model" >&2
-  exit 2
+	echo "usage: $0 --yes-spend-tokens opencode|claude|codex model" >&2
+	exit 2
 fi
 HARNESS="$2"
 MODEL="$3"
@@ -37,14 +37,15 @@ trap '"${OCD[@]}" stop >/dev/null 2>&1 || kill $DAEMON 2>/dev/null; echo "artifa
 sleep 2
 
 "${OCD[@]}" dispatch smoke "Smoke test" --key "smoke-$(date +%s)" \
-  --instructions "Create a file HELLO.md containing exactly the line: hello from ocd. Do not run any other commands." \
-  --criteria "HELLO.md exists"
+	--instructions "Create a file HELLO.md containing exactly the line: hello from ocd. Do not run any other commands." \
+	--criteria "HELLO.md exists"
 
-for _ in $(seq 1 120); do
-  STATE="$("${OCD[@]}" task list --all --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0]?.state??""))')"
-  echo "state: $STATE"
-  case "$STATE" in ready_for_review | needs_attention | failed | blocked | interrupted) break ;; esac
-  sleep 5
+# shellcheck disable=SC2066
+for _ in "$(seq 1 120)"; do
+	STATE="$("${OCD[@]}" task list --all --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0]?.state??""))')"
+	echo "state: $STATE"
+	case "$STATE" in ready_for_review | needs_attention | failed | blocked | interrupted) break ;; esac
+	sleep 5
 done
 
 ID="$("${OCD[@]}" task list --all --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].id))')"
