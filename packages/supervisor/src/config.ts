@@ -58,7 +58,18 @@ export const SupervisorConfig = z
       .strict()
       .prefault({}),
     notifications: z
-      .object({ enabled: z.boolean().default(true).describe("Send macOS desktop notifications.") })
+      .object({
+        enabled: z
+          .boolean()
+          .default(true)
+          .describe("Send desktop notifications (macOS and Linux)."),
+        focusApp: z
+          .string()
+          .optional()
+          .describe(
+            "Terminal app to bring forward when a notification is clicked: a macOS bundle id (com.mitchellh.ghostty) or a Linux window class (kitty). Detected from tmux by default.",
+          ),
+      })
       .strict()
       .prefault({}),
     opencode: z

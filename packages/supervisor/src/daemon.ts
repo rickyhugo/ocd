@@ -30,7 +30,7 @@ import { newId, systemClock, type Clock } from "./ids.ts";
 import { SupervisorLock } from "./lock.ts";
 import { createLogger, type Logger } from "./logger.ts";
 import { MemoryService } from "./memory.ts";
-import { MacNotifier, type ManagerChannel, type Notifier } from "./notify.ts";
+import { NullNotifier, type ManagerChannel, type Notifier } from "./notify.ts";
 import { OutboxWorker } from "./outbox.ts";
 import { Store } from "./store.ts";
 import type { PullRequestHost } from "./pull-requests.ts";
@@ -178,7 +178,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const outbox = new OutboxWorker(
       store,
       config,
-      options.notifier ?? new MacNotifier(),
+      options.notifier ?? new NullNotifier(),
       managerChannel,
       logger.child({ component: "outbox" }),
     );

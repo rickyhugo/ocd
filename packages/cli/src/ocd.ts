@@ -19,23 +19,33 @@ import {
   DatabaseTooNewError,
   GhPullRequests,
   LockHeldError,
-  MacNotifier,
+  loadConfig,
+  normalizeDirectory,
   startDaemon,
 } from "@ocd/supervisor";
 
-import { buildAdapters, buildManagerChannel, findBinary, probeHarnesses } from "./harnesses.ts";
-import { installLaunchAgent, launchAgentStatus, uninstallLaunchAgent } from "./launchagent.ts";
+import { buildAdapters, buildManagerChannel, probeHarnesses } from "./harnesses.ts";
+import {
+  currentPlatform,
+  execCommand,
+  findBinary,
+  focusManager,
+  locateBinary,
+  type Platform,
+} from "./platform/index.ts";
 
 const HELP = `ocd — local agent control plane
 
 Supervisor
   ocd daemon                        Run the supervisor in the foreground
-  ocd launchagent install|status|uninstall
-                                    Run the supervisor in the background (user LaunchAgent)
+  ocd service install|status|uninstall
+                                    Run the supervisor in the background and at login
+                                    (LaunchAgent on macOS, systemd user unit on Linux)
   ocd stop                          Stop the supervisor and report worker outcomes
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
-  ocd doctor                        Check harness binaries, versions and the OpenCode service
+  ocd doctor                        Check harnesses, the OpenCode service, notifications and the service manager
+  ocd focus                         Switch to the manager session (tmux pane + terminal window); what a notification click runs
 
 Configuration (human only)
   ocd repo list                     Repositories declared in ocd.jsonc
@@ -77,6 +87,24 @@ Environment: OCD_HOME (default ~/.ocd), OCD_SOCKET
 
 const paths = resolveOcdPaths();
 const client = new OcdClient({ socketPath: paths.socket, actor: "human" });
+const platform: Platform = currentPlatform();
+
+/** The built CLI, resolved through symlinks so services and click actions survive a relink. */
+function cliPath(): string {
+  return realpathSync(fileURLToPath(import.meta.url));
+}
+
+/**
+ * What a notification click runs: `ocd focus` with this process's Node and
+ * state directory. Notification daemons start it with a bare environment, so
+ * OCD_HOME / OCD_CONFIG are passed explicitly.
+ */
+function focusCommand(): string[] {
+  const env = (["OCD_HOME", "OCD_CONFIG"] as const).flatMap((k) =>
+    process.env[k] ? [`${k}=${process.env[k]}`] : [],
+  );
+  return [...(env.length ? ["/usr/bin/env", ...env] : []), process.execPath, cliPath(), "focus"];
+}
 
 function print(value: unknown, json: boolean, render?: () => string): void {
   if (json || !render) console.log(JSON.stringify(value, null, 2));
@@ -159,6 +187,7 @@ async function main(argv: string[]): Promise<void> {
           adapters: buildAdapters,
           managerChannel: buildManagerChannel,
           pullRequests: new GhPullRequests(findBinary("gh")),
+          notifier: await platform.notifier({ onClick: focusCommand() }),
         });
       } catch (error) {
         if (
@@ -169,7 +198,9 @@ async function main(argv: string[]): Promise<void> {
         ) {
           // Under launchd a clean exit avoids a restart loop; tell the human instead.
           console.error(`ocd: not started: ${error.message}`);
-          await new MacNotifier()
+          await (
+            await platform.notifier()
+          )
             .notify({ title: "OCD supervisor not started", body: error.message })
             .catch(() => undefined);
           process.exit(0);
@@ -194,43 +225,68 @@ async function main(argv: string[]): Promise<void> {
       process.exit(0);
       return;
     }
+    case "service":
     case "launchagent": {
+      const service = platform.service;
+      if (!service)
+        fail(`no background service manager for ${process.platform}; run \`ocd daemon\` instead`);
       if (sub === "install") {
         const status = await client.status().catch(() => null);
-        const agent = await launchAgentStatus();
-        if (status && !agent.loaded) {
+        const current = await service.status();
+        if (status && !current.loaded) {
           fail(
             `a supervisor is already running (pid ${status.pid}); stop it with \`ocd stop\` first`,
           );
         }
-        const { plist } = await installLaunchAgent({
+        const { definition } = await service.install({
           nodePath: process.execPath,
-          cliPath: realpathSync(fileURLToPath(import.meta.url)),
+          cliPath: cliPath(),
           logsDir: paths.logs,
           env: { OCD_HOME: process.env["OCD_HOME"], OCD_CONFIG: process.env["OCD_CONFIG"] },
         });
         print(
-          { plist },
+          { definition, manager: service.kind },
           json,
-          () => `installed ${plist}; the supervisor now runs in the background and starts at login`,
+          () =>
+            `installed ${definition}; the supervisor now runs in the background (${service.kind}) and starts at login`,
         );
       } else if (sub === "uninstall") {
-        const r = await uninstallLaunchAgent();
+        const r = await service.uninstall();
         print(r, json, () =>
           r.removed
-            ? "LaunchAgent removed; the background supervisor is stopped"
-            : "no LaunchAgent installed",
+            ? "background service removed; the supervisor is stopped"
+            : "no background service installed",
         );
       } else if (sub === "status" || sub === undefined) {
-        const s = await launchAgentStatus();
+        const s = await service.status();
         print(s, json, () =>
           [
-            `plist: ${s.installed ? s.plist : "not installed"}`,
-            `launchd: ${s.loaded ? `${s.state ?? "loaded"}${s.pid ? ` (pid ${s.pid})` : ""}${s.lastExitCode ? `, last exit ${s.lastExitCode}` : ""}` : "not loaded"}`,
+            `definition: ${s.installed ? s.definition : "not installed"}`,
+            `${s.manager}: ${s.loaded ? `${s.state ?? "loaded"}${s.pid ? ` (pid ${s.pid})` : ""}${s.lastExitCode ? `, last exit ${s.lastExitCode}` : ""}` : "not loaded"}`,
             `logs: ${paths.logs}`,
           ].join("\n"),
         );
-      } else fail("usage: ocd launchagent install|status|uninstall");
+      } else fail("usage: ocd service install|status|uninstall");
+      return;
+    }
+    case "focus": {
+      let directory: string | null = null;
+      let focusApp: string | undefined;
+      try {
+        const config = loadConfig(paths.config);
+        directory = config.manager ? normalizeDirectory(config.manager.directory) : null;
+        focusApp = config.notifications.focusApp;
+      } catch {
+        // An invalid config still lets tmux detection raise the terminal.
+      }
+      const steps = await focusManager({
+        directory,
+        tmux: locateBinary("tmux"),
+        focusApp,
+        exec: execCommand,
+        activate: (app) => platform.activate(app),
+      });
+      print({ steps }, json, () => steps.join("\n"));
       return;
     }
     case "stop": {
@@ -271,15 +327,39 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "doctor": {
-      const results = await probeHarnesses();
-      print(results, json, () =>
-        results
-          .map(
+      const harnesses = await probeHarnesses();
+      const notifier = await platform.notifier({ onClick: focusCommand() });
+      const tmux = locateBinary("tmux");
+      const report = {
+        harnesses,
+        platform: {
+          name: platform.name,
+          notifications: { backend: notifier.backend, clickable: notifier.clickable },
+          tmux,
+          service: platform.service?.kind ?? null,
+        },
+      };
+      print(report, json, () => {
+        const hints: string[] = [];
+        if (platform.name === "macos" && !notifier.clickable)
+          hints.push(
+            "  brew install terminal-notifier  # makes notifications open the manager session",
+          );
+        if (platform.name === "linux" && !notifier.clickable)
+          hints.push(
+            "  libnotify 0.7.9+ (notify-send --action) makes notifications open the manager session",
+          );
+        return [
+          ...harnesses.map(
             (r) =>
               `${r.harness.padEnd(9)} ${r.available ? "ok" : "--"} ${r.version ?? ""} ${r.problems.join("; ")}`,
-          )
-          .join("\n"),
-      );
+          ),
+          `${"notify".padEnd(9)} ${notifier.backend}${notifier.clickable ? ", click opens the manager" : ", not clickable"}`,
+          `${"tmux".padEnd(9)} ${tmux ?? "not found (ocd focus can only raise the terminal)"}`,
+          `${"service".padEnd(9)} ${platform.service?.kind ?? "none"} (${platform.name})`,
+          ...hints,
+        ].join("\n");
+      });
       return;
     }
     case "repo": {

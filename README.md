@@ -14,7 +14,7 @@ See [PLAN.md](PLAN.md) for the architecture, safety boundaries and milestones.
 | 2. OpenCode vertical slice      | Implemented; first real task completed end to end (OpenCode 2.0.28)             |
 | 3. Memory and attention         | Implemented and tested                                                          |
 | 4. Claude Code / Codex adapters | Implemented; tested with fake binaries ([notes](docs/claude-codex-adapters.md)) |
-| 5. LaunchAgent background mode  | Implemented: `ocd launchagent install`, automatic backups                       |
+| 5. Background service           | Implemented: `ocd service install` (launchd / systemd), automatic backups       |
 
 No real model call has been made by the test suite. The only checks against the
 real OpenCode service are read-only (`ocd doctor`). See
@@ -28,7 +28,7 @@ packages/
   supervisor/  Fastify API on a Unix socket, Drizzle schema + migrations, scheduler, recovery, outbox
   adapters/    OpenCode, Claude Code, Codex and fake adapters (+ test doubles)
   plugin/      OpenCode V2 plugin: ocd_* manager tools and the manager briefing (no database)
-  cli/         The `ocd` command
+  cli/         The `ocd` command and the platform layer (notifications, focus, launchd/systemd)
 ```
 
 ## Setup
@@ -129,18 +129,45 @@ plugin config, run `opencode reload` (it reloads every OpenCode location).
 ### Background operation (optional)
 
 ```sh
-ocd launchagent install     # user LaunchAgent: starts at login, survives closing the terminal
-ocd launchagent status
-ocd launchagent uninstall
+ocd service install     # starts at login, survives closing the terminal
+ocd service status
+ocd service uninstall
 ```
 
-The agent runs `ocd daemon --background` with absolute paths to the Node
-binary and CLI that installed it (launchd does not use your shell's PATH or
-mise). launchd restarts it after a crash, not after `ocd stop`. If it cannot
+macOS gets a user LaunchAgent (`~/Library/LaunchAgents/dev.ocd.supervisor.plist`),
+Linux a systemd user unit (`~/.config/systemd/user/ocd-supervisor.service`).
+Either runs `ocd daemon --background` with absolute paths to the Node binary
+and CLI that installed it (service managers do not use your shell's PATH or
+mise), and restarts it after a crash, not after `ocd stop`. If it cannot
 start (another daemon running, pending migration, invalid config) it sends a
 notification and exits instead of restarting in a loop. Logs: `~/.ocd/logs`.
 A restart never resumes coding runs automatically; OpenCode workers are
 reattached and anything uncertain shows up in `ocd attention list`.
+
+### Notifications
+
+OCD notifies you when a task is ready for review or needs you. Clicking a
+notification runs `ocd focus`, which switches tmux to the pane running OpenCode
+in the manager directory and raises the terminal window. `ocd doctor` shows
+which backend is in use.
+
+| Platform | Backend                                                | Click opens the manager                             |
+| -------- | ------------------------------------------------------ | --------------------------------------------------- |
+| macOS    | `terminal-notifier` (`brew install terminal-notifier`) | yes                                                 |
+| macOS    | `osascript` fallback                                   | no (macOS opens Script Editor)                      |
+| Linux    | `notify-send` (libnotify 0.7.9+)                       | yes; the window is raised on Hyprland, sway and X11 |
+
+The terminal is detected from the tmux client (Ghostty, kitty, WezTerm,
+Alacritty, iTerm2, Terminal, …); set `notifications.focusApp` to a macOS bundle
+id or Linux window class to override it. GNOME and KDE on Wayland do not let
+other programs raise windows, so there `ocd focus` only switches tmux. Under
+systemd, run `systemctl --user import-environment DISPLAY WAYLAND_DISPLAY
+SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE` (most desktops already do) so the
+service can reach the desktop.
+
+The platform layer (`packages/cli/src/platform`) is the only place that knows
+about the OS: notifier, window activation and service manager sit behind one
+`Platform` interface with macOS and Linux implementations.
 
 The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
 `backups.intervalHours` (24) and keeps the newest `backups.keep` (7).
@@ -150,8 +177,16 @@ The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
 The plugin's TUI part (`packages/plugin/tui.tsx`, loaded by OpenCode from the
 plugin directory) adds:
 
-- **Sidebar:** a live overview of ongoing work (running/queued/review counts,
-  items waiting on you, open tasks with their state).
+- **Sidebar:** `OCD` with a coloured one-line summary (`1 need you · 2 to
+  review · 3 running`). Anything blocked on you (permissions, questions,
+  decisions) is always listed. Click the header to expand the Needs you /
+  Review / Stuck / Running / Queued sections; each can be opened or closed and
+  the choice is remembered. Rows show how long ago a task finished or started,
+  and running tasks with no activity for 10 minutes show as `quiet`. Click a
+  row for actions that fit its state: _Summarize the result_, _Accept it_,
+  _Accept and open a PR_, _Status update_, _Cancel it_, _What happened?_,
+  _Retry it_, a free-form message, or details. Each action is a message to the
+  manager, which acts on it as your explicit instruction.
 - **`/task`:** reference a task when talking to the manager. `/task` opens a
   searchable picker, then asks for your message; `/task <id or words> <message>`
   skips the picker when it matches one task. The manager receives "Regarding OCD
