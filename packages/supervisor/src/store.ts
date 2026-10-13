@@ -71,7 +71,16 @@ export interface AttentionInput {
   resolvableBy: Actor;
   expiresAt?: string | null;
   status?: AttentionStatus;
+  /** "any": never raise this key again; "open": raise again once the previous one is settled. */
+  dedupe?: "any" | "open";
 }
+
+const FOREVER_DEDUPE_KINDS: ReadonlySet<AttentionKind> = new Set([
+  "permission",
+  "question",
+  "stall",
+  "ambiguous_launch",
+]);
 
 export interface TransitionOptions {
   /** Compare-and-set: the transition only applies from one of these states. */
@@ -311,6 +320,18 @@ export class Store {
       .all();
   }
 
+  /** Any session OCD ever launched as a worker, including earlier attempts. */
+  isWorkerSession(sessionId: string): boolean {
+    return Boolean(
+      this.db
+        .select({ id: workerRuns.id })
+        .from(workerRuns)
+        .where(eq(workerRuns.sessionId, sessionId))
+        .limit(1)
+        .get(),
+    );
+  }
+
   taskBySession(sessionId: string): TaskRow | null {
     return this.db.select().from(tasks).where(eq(tasks.sessionId, sessionId)).get() ?? null;
   }
@@ -463,12 +484,23 @@ export class Store {
     delivery: { notify: boolean; wake: boolean },
   ): { attention: Attention; created: boolean } {
     return this.tx(() => {
-      const existing = this.db
+      // Requests tied to one harness request or window dedupe for good; per-turn
+      // outcomes (review, failure, quota...) dedupe only while still open, so a
+      // later occurrence of the same situation is raised again.
+      const mode = input.dedupe ?? (FOREVER_DEDUPE_KINDS.has(input.kind) ? "any" : "open");
+      const escaped = input.dedupeKey.replaceAll(/[\\%_]/g, (c) => `\\${c}`);
+      const family = this.db
         .select()
         .from(attentionRequests)
-        .where(eq(attentionRequests.dedupeKey, input.dedupeKey))
-        .get();
+        .where(
+          mode === "any"
+            ? eq(attentionRequests.dedupeKey, input.dedupeKey)
+            : sql`(${attentionRequests.dedupeKey} = ${input.dedupeKey} OR ${attentionRequests.dedupeKey} LIKE ${`${escaped}#%`} ESCAPE '\\')`,
+        )
+        .all();
+      const existing = mode === "any" ? family[0] : family.find((row) => row.status === "open");
       if (existing) return { attention: this.toAttention(existing), created: false };
+      const dedupeKey = family.length > 0 ? `${input.dedupeKey}#${family.length}` : input.dedupeKey;
       const id = newId("a");
       this.db
         .insert(attentionRequests)
@@ -477,7 +509,7 @@ export class Store {
           taskId: input.taskId,
           kind: input.kind,
           status: input.status ?? "open",
-          dedupeKey: input.dedupeKey,
+          dedupeKey,
           reason: input.reason,
           operation: input.operation ?? null,
           harness: input.harness ?? null,

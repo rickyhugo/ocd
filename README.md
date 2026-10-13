@@ -93,6 +93,19 @@ uncertain launches become `needs_attention` instead of being retried, and
 interrupted workers are resumed only with `ocd task resume <id> --mode
 reattach|relaunch`.
 
+## Security model and limits
+
+The socket is `0600` in a `0700` directory, so other users cannot reach it.
+Within your user account, the caller's role (`human` or `manager`) is a
+request header: the human-only checks stop the manager _model_ from approving
+permissions, accepting work, or reconfiguring OCD through its tools, but they
+are not authentication. A worker or any process running as you with shell
+access could call the socket (or run `ocd`) directly. Keep worker profiles on
+`--permission ask` or `deny`, rely on the harness's own sandbox and permission
+rules for shell access, and treat OCD as a coordination layer, not a security
+boundary. Approving a permission from the CLI additionally requires typing
+`approve` in an interactive terminal.
+
 ## Memory
 
 `ocd_remember` / `ocd memory add` store scoped (`global`, `repo`, `task`) notes

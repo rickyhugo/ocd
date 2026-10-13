@@ -90,7 +90,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     req.actor = actor.data;
     const session = req.headers[HEADER_SESSION];
     req.sessionId = typeof session === "string" && session ? session : null;
-    if (req.sessionId && store.taskBySession(req.sessionId)) {
+    if (req.sessionId && store.isWorkerSession(req.sessionId)) {
       // Plugins load in worker sessions too; workers never get control-plane tools.
       throw forbidden("worker_session", "Worker sessions cannot use OCD control tools");
     }

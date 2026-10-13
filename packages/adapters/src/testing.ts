@@ -38,6 +38,8 @@ export class FakeOpenCodeService {
   readonly active = new Set<string>();
   readonly pending: Pending = { permissions: new Map(), forms: new Map() };
   readonly calls: { method: string; input: unknown }[] = [];
+  /** Undelivered inputs per session; prompts are delivered immediately unless queued here. */
+  readonly inbox = new Map<string, Array<{ type: "user"; id: string }>>();
   private readonly listeners = new Set<Listener>();
   private counter = 0;
   down = false;
@@ -199,6 +201,13 @@ export class FakeOpenCodeService {
         this.active.delete(sessionID);
         return { interrupted: true } as never;
       },
+      inbox: {
+        list: async (input) => {
+          this.record("session.inbox.list", input);
+          const { sessionID } = input as { sessionID: string };
+          return (this.inbox.get(sessionID) ?? []) as never;
+        },
+      },
       form: {
         list: async (input) => {
           this.record("session.form.list", input);
@@ -222,8 +231,15 @@ export class FakeOpenCodeService {
     message: {
       list: async (input) => {
         this.record("message.list", input);
-        const { sessionID } = input as { sessionID: string };
-        const messages = [...(this.sessions.get(sessionID)?.messages ?? [])].reverse();
+        const { sessionID, type, limit } = input as {
+          sessionID: string;
+          type?: string;
+          limit?: number;
+        };
+        const messages = [...(this.sessions.get(sessionID)?.messages ?? [])]
+          .reverse()
+          .filter((m) => !type || m["type"] === type)
+          .slice(0, limit ?? 50);
         return { data: messages, cursor: {} } as never;
       },
     },

@@ -18,6 +18,7 @@ import {
   type WorkerRun,
 } from "@ocd/core";
 import {
+  HarnessUnavailableError,
   requireCapability,
   type AdapterEvent,
   type HarnessAdapter,
@@ -64,6 +65,7 @@ export interface SupervisorOptions {
 
 const INTERACTION_KINDS = ["permission", "question"] as const;
 const ACTIVITY_WRITE_INTERVAL_MS = 10_000;
+const HARNESS_RETRY_MS = 30_000;
 
 export class Supervisor {
   private readonly adapters = new Map<HarnessName, HarnessAdapter>();
@@ -71,6 +73,7 @@ export class Supervisor {
   private readonly unsubscribers: (() => void)[] = [];
   private readonly taskLocks = new Map<string, Promise<unknown>>();
   private readonly lastActivityWrite = new Map<string, number>();
+  private readonly harnessRetryAt = new Map<HarnessName, number>();
   private schedulerTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
   private lastReconcileTick = 0;
@@ -338,32 +341,60 @@ export class Supervisor {
       if (this.stopped || this.isPaused()) return;
       const live = this.store.rowsInStates([...LIVE_STATES]).length;
       if (live >= this.o.config.concurrency) return;
-      const deps = this.store.dependencies(row.id);
-      const cancelled = deps.find((d) => d.state === "cancelled");
-      if (cancelled) {
-        this.store.transition(row.id, "needs_attention", {
-          from: ["queued"],
-          event: { type: "dependency.cancelled", data: { dependency: cancelled.id } },
-          attention: [
-            {
-              input: {
-                taskId: row.id,
-                kind: "decision",
-                dedupeKey: `dep-cancelled:${row.id}:${cancelled.id}`,
-                reason: `Dependency ${cancelled.id} was cancelled; this task cannot start as planned.`,
-                resolvableBy: "manager",
-              },
-              notify: false,
-              wake: true,
-            },
-          ],
-        });
-        continue;
+      // A harness that just refused connections is retried later, not hammered.
+      if ((this.harnessRetryAt.get(row.harness) ?? 0) > this.o.clock()) continue;
+      try {
+        await this.admitOne(row.id);
+      } catch (error) {
+        if (error instanceof SimulatedCrash) throw error;
+        // One bad task must not starve the rest of the queue.
+        this.log.error({ err: error, taskId: row.id }, "admission failed");
       }
-      // Only successful (accepted) dependencies release queued work.
-      if (deps.some((d) => d.state !== "completed")) continue;
-      await this.withTaskLock(row.id, () => this.launch(row.id, false));
     }
+  }
+
+  private async admitOne(taskId: string): Promise<void> {
+    const task = this.store.requireTask(taskId);
+    if (!this.adapters.has(task.harness)) {
+      this.store.transition(taskId, "needs_attention", {
+        from: ["queued"],
+        attention: [
+          this.attentionFor(
+            task,
+            "failure",
+            "no-adapter",
+            `Harness ${task.harness} is not configured in this supervisor; the task cannot start.`,
+            "human",
+          ),
+        ],
+      });
+      return;
+    }
+    const deps = this.store.dependencies(taskId);
+    const cancelled = deps.find((d) => d.state === "cancelled");
+    if (cancelled) {
+      this.store.transition(taskId, "needs_attention", {
+        from: ["queued"],
+        event: { type: "dependency.cancelled", data: { dependency: cancelled.id } },
+        attention: [
+          {
+            input: {
+              taskId,
+              kind: "decision",
+              dedupeKey: `dep-cancelled:${taskId}:${cancelled.id}`,
+              reason: `Dependency ${cancelled.id} was cancelled; this task cannot start as planned.`,
+              resolvableBy: "manager",
+            },
+            notify: false,
+            wake: true,
+          },
+        ],
+      });
+      return;
+    }
+    // Only successful (accepted) dependencies release queued work.
+    if (deps.some((d) => d.state !== "completed")) return;
+    await this.withTaskLock(taskId, () => this.launch(taskId, false));
   }
 
   private specFor(task: Task, run: WorkerRun): SessionSpec {
@@ -518,6 +549,28 @@ export class Supervisor {
             "human",
           ),
         ],
+      });
+      return;
+    }
+
+    if (error instanceof HarnessUnavailableError && !current.sessionId) {
+      // Nothing reached the harness, so the launch was provably not admitted: queue it again.
+      this.harnessRetryAt.set(task.harness, this.o.clock() + HARNESS_RETRY_MS);
+      this.store.tx(() => {
+        this.store.updateRun(run.id, { ...end, exitReason: `harness_unavailable: ${message}` });
+        this.store.transition(taskId, "queued", {
+          event: { type: "launch.deferred", data: { runId: run.id, reason: message } },
+        });
+        this.store.raiseAttention(
+          {
+            taskId: null,
+            kind: "failure",
+            dedupeKey: `harness-down:${task.harness}`,
+            reason: `The ${task.harness} harness is unreachable (${message}). Queued work waits until it is back.`,
+            resolvableBy: "human",
+          },
+          { notify: true, wake: false },
+        );
       });
       return;
     }
@@ -1134,6 +1187,7 @@ export class Supervisor {
         },
       ]);
     });
+    if (a.taskId) this.unblockIfClear(a.taskId);
   }
 
   // ---------------------------------------------------------------------------
@@ -1174,7 +1228,7 @@ export class Supervisor {
       requireCapability(adapter, "steer");
       const text = `${instructions}\n\n${REPORT_INSTRUCTIONS}`;
       await adapter.prompt({ sessionId: task.sessionId }, text);
-      if (task.state === "ready_for_review") {
+      if (this.store.requireTask(taskId).state === "ready_for_review") {
         const run = this.store.latestRun(taskId);
         if (run)
           this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
@@ -1195,23 +1249,27 @@ export class Supervisor {
   }
 
   /** Completion is a human decision; an agent's claim of success is not enough. */
-  accept(taskId: string, actor: Actor): Task {
+  async accept(taskId: string, actor: Actor): Promise<Task> {
     if (actor !== "human")
       throw forbidden("human_only", "Only a human can accept a task as completed");
-    const task = this.store.requireTask(taskId);
-    if (task.state !== "ready_for_review")
-      throw conflict("not_reviewable", `Task is ${task.state}, not ready_for_review`);
-    for (const a of this.store.listAttention({ taskId, status: "open", kinds: ["review"] })) {
-      this.store.settleAttention(a.id, {
-        status: "resolved",
-        response: { type: "approve" },
-        resolvedBy: "human",
+    const done = await this.withTaskLock(taskId, async () => {
+      const task = this.store.requireTask(taskId);
+      if (task.state !== "ready_for_review")
+        throw conflict("not_reviewable", `Task is ${task.state}, not ready_for_review`);
+      return this.store.tx(() => {
+        for (const a of this.store.listAttention({ taskId, status: "open", kinds: ["review"] })) {
+          this.store.settleAttention(a.id, {
+            status: "resolved",
+            response: { type: "approve" },
+            resolvedBy: "human",
+          });
+        }
+        return this.store.transition(taskId, "completed", {
+          from: ["ready_for_review"],
+          patch: { finishedAt: this.store.now() },
+          event: { type: "task.accepted" },
+        });
       });
-    }
-    const done = this.store.transition(taskId, "completed", {
-      from: ["ready_for_review"],
-      patch: { finishedAt: this.store.now() },
-      event: { type: "task.accepted" },
     });
     void this.tick();
     return done;
@@ -1227,25 +1285,31 @@ export class Supervisor {
         throw conflict("not_resumable", `Task is ${task.state}`);
       }
       const adapter = this.adapterFor(task.harness);
-      for (const a of this.store.listAttention({
-        taskId,
-        status: "open",
-        kinds: ["failure", "ambiguous_launch", "stall", "decision"],
-      })) {
-        this.store.settleAttention(a.id, {
-          status: "resolved",
-          response: { type: "acknowledge", note: `resume:${mode}` },
-          resolvedBy: "human",
-        });
-      }
+      // Open requests are settled only once the resume is known to go ahead.
+      const settleOpen = () => {
+        for (const a of this.store.listAttention({
+          taskId,
+          status: "open",
+          kinds: ["failure", "ambiguous_launch", "stall", "decision"],
+        })) {
+          this.store.settleAttention(a.id, {
+            status: "resolved",
+            response: { type: "acknowledge", note: `resume:${mode}` },
+            resolvedBy: "human",
+          });
+        }
+      };
       if (mode === "relaunch") {
         if (task.state === "blocked")
           throw conflict(
             "not_resumable",
             "Cancel or reattach a blocked task instead of relaunching it",
           );
-        this.store.transition(taskId, "queued", {
-          event: { type: "task.resumed", data: { mode } },
+        this.store.tx(() => {
+          settleOpen();
+          this.store.transition(taskId, "queued", {
+            event: { type: "task.resumed", data: { mode } },
+          });
         });
         return this.queueAndTick(taskId);
       }
@@ -1255,22 +1319,26 @@ export class Supervisor {
       const snap = await adapter.inspect({ sessionId: task.sessionId });
       if (snap.status === "missing")
         throw conflict("session_missing", "The recorded session no longer exists; use relaunch");
-      const run = this.store.latestRun(taskId);
-      if (run) this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
-      if (task.state !== "running") {
-        this.store.transition(taskId, "running", {
-          event: { type: "task.resumed", data: { mode } },
-          patch: { lastActivityAt: this.store.now() },
-        });
-      }
-      if (snap.status === "idle" || snap.quotaLimited) {
+      const needsPrompt = snap.status === "idle" || snap.status === "error";
+      if (needsPrompt) {
         await adapter.prompt(
           { sessionId: task.sessionId },
           `Continue the task from where you stopped.\n\n${REPORT_INSTRUCTIONS}`,
         );
-      } else {
-        await this.applySnapshot(adapter, taskId, snap);
       }
+      const run = this.store.latestRun(taskId);
+      this.store.tx(() => {
+        settleOpen();
+        if (run)
+          this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
+        if (task.state !== "running") {
+          this.store.transition(taskId, "running", {
+            event: { type: "task.resumed", data: { mode } },
+            patch: { lastActivityAt: this.store.now(), error: null },
+          });
+        }
+      });
+      if (!needsPrompt) await this.applySnapshot(adapter, taskId, snap);
       return this.store.requireTask(taskId);
     });
   }

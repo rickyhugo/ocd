@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { FakeAdapter, FakeHarnessState, type FakeAdapterOptions } from "@ocd/adapters";
+import {
+  FakeAdapter,
+  FakeHarnessState,
+  type FakeAdapterOptions,
+  type HarnessAdapter,
+} from "@ocd/adapters";
 import { OcdClient, type OcdPaths, type Actor } from "@ocd/core";
 
 import type { SupervisorConfig } from "./config.ts";
@@ -64,6 +69,8 @@ export interface Harness {
 
 export interface HarnessOptions {
   config: Partial<SupervisorConfig>;
+  /** Replace the default fake adapter (e.g. with an OpenCode adapter over a fake service). */
+  adapters: (fake: FakeAdapter) => HarnessAdapter[];
   fake: Omit<FakeAdapterOptions, "state">;
   hooks: DaemonOptions["hooks"];
   clock: DaemonOptions["clock"];
@@ -90,7 +97,7 @@ export async function startHarness(options: Partial<HarnessOptions> = {}): Promi
       config: { ...TEST_CONFIG, ...opts.config },
       adapters: () => {
         adapter = new FakeAdapter({ ...opts.fake, state: fakeState });
-        return [adapter];
+        return opts.adapters ? opts.adapters(adapter) : [adapter];
       },
       managerChannel: () => managerChannel,
       notifier,

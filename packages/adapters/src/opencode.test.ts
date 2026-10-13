@@ -165,3 +165,21 @@ describe("OpenCode adapter", () => {
     });
   });
 });
+
+describe("OpenCode prompt admission", () => {
+  it("counts a prompt still waiting in the session inbox as admitted", async () => {
+    const { service, adapter } = setup();
+    const ref = await adapter.createSession(spec);
+    expect((await adapter.inspect(ref)).prompted).toBe(false);
+    service.inbox.set(ref.sessionId, [{ type: "user", id: "msg_queued" }]);
+    expect((await adapter.inspect(ref)).prompted).toBe(true);
+  });
+
+  it("reports a refused connection as harness-unavailable", async () => {
+    const { service, adapter } = setup();
+    service.down = true;
+    await expect(adapter.createSession(spec)).rejects.toMatchObject({
+      name: "HarnessUnavailableError",
+    });
+  });
+});

@@ -19,13 +19,15 @@ const TRANSITIONS: Record<TaskState, readonly TaskState[]> = {
   // "queued" again only when reconciliation proves the launch was not admitted.
   starting: ["running", "queued", "failed", "interrupted", "cancelled", "needs_attention"],
   running: ["blocked", "ready_for_review", "failed", "interrupted", "cancelled", "needs_attention"],
-  blocked: ["running", "failed", "interrupted", "cancelled", "needs_attention"],
+  // A blocked worker can still finish (e.g. a request was answered in the harness UI).
+  blocked: ["running", "ready_for_review", "failed", "interrupted", "cancelled", "needs_attention"],
   // A follow-up instruction re-opens a reviewed task; acceptance is human-only.
   ready_for_review: ["completed", "running", "cancelled"],
   needs_attention: ["running", "queued", "ready_for_review", "failed", "cancelled", "interrupted"],
   // Explicit resume either reattaches (running) or relaunches (queued).
   interrupted: ["running", "queued", "cancelled"],
-  failed: ["queued", "cancelled"],
+  // Reattaching to a failed worker's session, or relaunching it.
+  failed: ["running", "queued", "cancelled"],
   completed: [],
   cancelled: [],
 };

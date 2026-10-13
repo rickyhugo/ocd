@@ -109,3 +109,14 @@ export function requireCapability(adapter: HarnessAdapter, capability: Capabilit
   if (!adapter.capabilities[capability])
     throw new UnsupportedCapabilityError(adapter.harness, capability);
 }
+
+/**
+ * The harness could not be reached, so no request was sent. A launch that
+ * fails this way was provably not admitted and may be queued again.
+ */
+export class HarnessUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "HarnessUnavailableError";
+  }
+}

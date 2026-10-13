@@ -7,16 +7,17 @@ import {
 } from "@opencode/client";
 import { Service } from "@opencode/client/service";
 
-import type {
-  AdapterEvent,
-  AdapterListener,
-  Capabilities,
-  HarnessAdapter,
-  Interaction,
-  InteractionReply,
-  SessionRef,
-  SessionSnapshot,
-  SessionSpec,
+import {
+  HarnessUnavailableError,
+  type AdapterEvent,
+  type AdapterListener,
+  type Capabilities,
+  type HarnessAdapter,
+  type Interaction,
+  type InteractionReply,
+  type SessionRef,
+  type SessionSnapshot,
+  type SessionSpec,
 } from "./types.ts";
 
 // OpenCode V2 worker adapter. Workers are sessions in the user's OpenCode
@@ -34,6 +35,7 @@ export interface OpenCodeApi {
     "create" | "list" | "get" | "active" | "prompt" | "synthetic" | "interrupt"
   > & {
     form: Pick<OpenCodeClient["session"]["form"], "list" | "reply" | "cancel">;
+    inbox: Pick<OpenCodeClient["session"]["inbox"], "list">;
   };
   message: Pick<OpenCodeClient["message"], "list">;
   permission: Pick<OpenCodeClient["permission"], "list" | "reply">;
@@ -45,16 +47,36 @@ export interface OpenCodeConnection {
   url: string;
 }
 
+/**
+ * Bounds every request except the long-lived event stream, so a hung service
+ * cannot hold supervisor locks forever.
+ */
+function timeoutFetch(timeoutMs: number): typeof fetch {
+  return (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (new URL(url).pathname.endsWith("/event")) return fetch(input, init);
+    const timeout = AbortSignal.timeout(timeoutMs);
+    return fetch(input, {
+      ...init,
+      signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+    });
+  };
+}
+
 /** Connects to the running OpenCode service without starting one. */
 export async function discoverOpenCode(
-  options: { serviceFile?: string } = {},
+  options: { serviceFile?: string; timeoutMs?: number } = {},
 ): Promise<OpenCodeConnection | null> {
   const endpoint = await Service.discover(options.serviceFile ? { file: options.serviceFile } : {});
   if (!endpoint) return null;
   const headers = Service.headers(
     endpoint.auth ? { url: endpoint.url, auth: endpoint.auth } : { url: endpoint.url },
   );
-  const api = OpenCode.make({ baseUrl: endpoint.url, ...(headers ? { headers } : {}) });
+  const api = OpenCode.make({
+    baseUrl: endpoint.url,
+    fetch: timeoutFetch(options.timeoutMs ?? 30_000),
+    ...(headers ? { headers } : {}),
+  });
   return { api, url: endpoint.url };
 }
 
@@ -95,6 +117,17 @@ function isNotFound(error: unknown): boolean {
   return status === 404 || /not.?found/i.test(e?.message ?? "");
 }
 
+function isConnectionRefused(error: unknown): boolean {
+  const codes = new Set(["ECONNREFUSED", "ENOENT", "EHOSTUNREACH"]);
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && codes.has(code)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 function looksLikeQuota(
   error: { type?: string; message?: string; status?: number } | undefined,
 ): boolean {
@@ -131,11 +164,19 @@ export class OpenCodeAdapter implements HarnessAdapter {
 
   private async api(): Promise<OpenCodeApi> {
     if (this.connection) return this.connection.api;
-    const connection = await this.options.connect();
-    if (!connection)
-      throw new Error(
+    let connection: OpenCodeConnection | null;
+    try {
+      connection = await this.options.connect();
+    } catch (error) {
+      throw new HarnessUnavailableError(`Cannot reach the OpenCode service: ${String(error)}`, {
+        cause: error,
+      });
+    }
+    if (!connection) {
+      throw new HarnessUnavailableError(
         "The OpenCode service is not running. Start it with `opencode service start`.",
       );
+    }
     this.connection = connection;
     return connection.api;
   }
@@ -298,15 +339,17 @@ export class OpenCodeAdapter implements HarnessAdapter {
 
   async createSession(spec: SessionSpec): Promise<SessionRef> {
     const api = await this.api();
-    const info = await api.session.create({
-      title: spec.title,
-      ...(spec.agent ? { agent: spec.agent } : {}),
-      model: parseModel(spec.model),
-      location: { directory: spec.directory },
-      metadata: { ocdTaskId: spec.taskId, ocdRunId: spec.runId, ocdMarker: spec.marker },
-      // Edits outside the task's worktree always surface as permission requests.
-      permissions: [{ action: "external_directory", resource: "*", effect: "ask" }],
-    });
+    const info = await this.unlessRefused(() =>
+      api.session.create({
+        title: spec.title,
+        ...(spec.agent ? { agent: spec.agent } : {}),
+        model: parseModel(spec.model),
+        location: { directory: spec.directory },
+        metadata: { ocdTaskId: spec.taskId, ocdRunId: spec.runId, ocdMarker: spec.marker },
+        // Edits outside the task's worktree always surface as permission requests.
+        permissions: [{ action: "external_directory", resource: "*", effect: "ask" }],
+      }),
+    );
     this.tracked.add(info.id);
     return { sessionId: info.id };
   }
@@ -333,6 +376,22 @@ export class OpenCodeAdapter implements HarnessAdapter {
     await (await this.api()).session.prompt({ sessionID: ref.sessionId, text, resume: true });
   }
 
+  /** A refused connection means the request never reached the service. */
+  private async unlessRefused<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      if (isConnectionRefused(error)) {
+        this.connection = null;
+        throw new HarnessUnavailableError(
+          `OpenCode service refused the connection: ${String(error)}`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
+
   async inspect(ref: SessionRef): Promise<SessionSnapshot> {
     const api = await this.api();
     const sessionID = ref.sessionId;
@@ -354,11 +413,13 @@ export class OpenCodeAdapter implements HarnessAdapter {
       throw error;
     }
     this.tracked.add(sessionID);
-    const [active, permissions, forms, messages] = await Promise.all([
+    const [active, permissions, forms, messages, userMessages, inbox] = await Promise.all([
       api.session.active(),
       api.permission.list({ sessionID }),
       api.session.form.list({ sessionID }),
       api.message.list({ sessionID, limit: 50, order: "desc" }),
+      api.message.list({ sessionID, limit: 1, type: "user" }),
+      api.session.inbox.list({ sessionID }),
     ]);
     const pending: Interaction[] = [
       ...permissions.map((p) => ({
@@ -374,7 +435,8 @@ export class OpenCodeAdapter implements HarnessAdapter {
         operation: { fields: f.fields },
       })),
     ];
-    const prompted = messages.data.some((m) => m.type === "user");
+    // A prompt counts once admitted: delivered as a message or still waiting in the inbox.
+    const prompted = userMessages.data.length > 0 || inbox.some((item) => item.type === "user");
     const lastAssistant = messages.data.find((m) => m.type === "assistant");
     const lastAssistantText =
       lastAssistant && lastAssistant.type === "assistant"
