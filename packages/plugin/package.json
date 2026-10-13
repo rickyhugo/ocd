@@ -11,7 +11,19 @@
       "default": "./dist/index.mjs"
     }
   },
+  "scripts": {
+    "build": "vp pack"
+  },
   "dependencies": {
-    "@ocd/core": "workspace:*"
+    "@ocd/core": "workspace:*",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@ocd/adapters": "workspace:*",
+    "@ocd/supervisor": "workspace:*",
+    "@opencode/plugin": "2.0.27"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "2.0.27"
   }
 }

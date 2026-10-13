@@ -9,12 +9,18 @@
       "source": "./src/index.ts",
       "types": "./dist/index.d.mts",
       "default": "./dist/index.mjs"
+    },
+    "./testing": {
+      "source": "./src/testing.ts",
+      "types": "./dist/testing.d.mts",
+      "default": "./dist/testing.mjs"
     }
   },
   "scripts": {
     "build": "vp pack"
   },
   "dependencies": {
-    "@ocd/core": "workspace:*"
+    "@ocd/core": "workspace:*",
+    "@opencode/client": "2.0.27"
   }
 }
