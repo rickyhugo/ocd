@@ -1,4 +1,4 @@
-import type { AdapterStatus, HarnessName, PermissionPolicy } from "@ocd/core";
+import type { AdapterStatus, HarnessName, PermissionPolicy, TodoItem } from "@ocd/core";
 
 /** What an adapter has implemented and tested against a recorded harness version. */
 export interface Capabilities {
@@ -10,6 +10,8 @@ export interface Capabilities {
   pendingInteractions: boolean;
   structuredResults: boolean;
   usage: boolean;
+  /** Emits `todos` events: the worker's own checklist/plan, as the harness exposes it. */
+  todos: boolean;
 }
 
 export type Capability = keyof Capabilities;
@@ -90,6 +92,8 @@ export type AdapterEvent =
     }
   | { type: "interaction"; sessionId: string; interaction: Interaction }
   | { type: "interaction_resolved"; sessionId: string; interactionId: string }
+  /** The whole current checklist (bounded with boundTodos), replacing any earlier one. */
+  | { type: "todos"; sessionId: string; todos: TodoItem[] }
   | { type: "stream"; state: "connected" | "disconnected" };
 
 export type AdapterListener = (event: AdapterEvent) => void;

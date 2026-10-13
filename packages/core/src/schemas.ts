@@ -228,6 +228,32 @@ export interface TaskDetail {
   attention: Attention[];
 }
 
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+/** One checklist item exactly as the worker's harness reported it (redacted, clipped). */
+export interface TodoItem {
+  text: string;
+  status: TodoStatus;
+}
+
+/** Most checklist items OCD keeps per task, and characters per item. */
+export const TODO_LIMITS = { items: 50, chars: 200 } as const;
+
+/**
+ * A running task's factual progress, for the sidebar: the latest checklist the
+ * harness reported and recent lifecycle events. Never transcripts or reasoning.
+ */
+export interface TaskProgress {
+  taskId: string;
+  /** Whether the task's harness reports checklists to OCD at all. */
+  todosSupported: boolean;
+  /** Latest checklist since the supervisor started; null when none was reported. */
+  todos: TodoItem[] | null;
+  todosUpdatedAt: string | null;
+  /** The most recent task events, oldest first (bounded). */
+  events: TaskEvent[];
+}
+
 export const SendToWorkerInput = z.object({ instructions: z.string().min(1).max(20_000) });
 export const CancelTaskInput = z.object({ reason: z.string().max(1000).optional() });
 export const CleanupTaskInput = z.object({ force: z.boolean().default(false) });

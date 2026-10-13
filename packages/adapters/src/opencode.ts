@@ -89,6 +89,8 @@ const CAPABILITIES: Capabilities = {
   pendingInteractions: true,
   structuredResults: true,
   usage: false,
+  // The V2 client (2.0.27) has no checklist events or typed todo tool to follow.
+  todos: false,
 };
 
 const PERMISSION_PREFIX = "perm:";

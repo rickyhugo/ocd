@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 
-import type { AdapterStatus } from "@ocd/core";
+import { boundTodos, type AdapterStatus } from "@ocd/core";
 
 import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
@@ -33,6 +33,7 @@ const CAPABILITIES: Capabilities = {
   pendingInteractions: true,
   structuredResults: true,
   usage: false,
+  todos: true,
 };
 
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -365,6 +366,20 @@ export class CodexAdapter implements HarnessAdapter {
       case "item/completed": {
         const item = params["item"] as { type?: string; text?: string };
         if (item.type === "agentMessage" && item.text) session.lastAssistantText = item.text;
+        this.emit({ type: "activity", sessionId });
+        return;
+      }
+      case "turn/plan/updated": {
+        // The agent's own plan steps; the free-text explanation is left out.
+        const plan = params["plan"];
+        if (Array.isArray(plan)) {
+          const steps = plan as { step?: unknown; status?: unknown }[];
+          this.emit({
+            type: "todos",
+            sessionId,
+            todos: boundTodos(steps.map((s) => ({ text: s.step, status: s.status }))),
+          });
+        }
         this.emit({ type: "activity", sessionId });
         return;
       }

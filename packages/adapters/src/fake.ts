@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { AdapterStatus } from "@ocd/core";
+import { boundTodos, type AdapterStatus, type TodoItem } from "@ocd/core";
 
 import type {
   AdapterEvent,
@@ -29,7 +29,8 @@ export type FakeStep =
   | { type: "reply"; text: string }
   | { type: "error"; message: string; quota?: boolean }
   | { type: "hang" }
-  | { type: "wait"; ms: number };
+  | { type: "wait"; ms: number }
+  | { type: "todos"; todos: TodoItem[] };
 
 export type FakeScript = (prompt: string, spec: SessionSpec) => FakeStep[];
 
@@ -80,6 +81,16 @@ export const defaultFakeScript: FakeScript = (prompt) => {
   const work: FakeStep[] = [{ type: "write", file, content: `${prompt.slice(0, 200)}\n` }];
   const done: FakeStep = { type: "reply", text: fakeReport("Wrote ocd-fake.txt", [file]) };
   if (prompt.includes("[fake:hang]")) return [{ type: "hang" }];
+  if (prompt.includes("[fake:todos]")) {
+    const todos = (done: number): FakeStep => ({
+      type: "todos",
+      todos: ["Read the code", "Make the change", "Run the tests"].map((text, i) => ({
+        text,
+        status: i < done ? "completed" : i === done ? "in_progress" : "pending",
+      })),
+    });
+    return [todos(0), todos(1), { type: "hang" }];
+  }
   if (prompt.includes("[fake:error]")) return [{ type: "error", message: "Fake harness error" }];
   if (prompt.includes("[fake:quota]"))
     return [{ type: "error", message: "Usage limit reached", quota: true }];
@@ -138,6 +149,7 @@ const CAPABILITIES: Capabilities = {
   pendingInteractions: true,
   structuredResults: true,
   usage: false,
+  todos: true,
 };
 
 export class FakeAdapter implements HarnessAdapter {
@@ -271,6 +283,13 @@ export class FakeAdapter implements HarnessAdapter {
           }
           case "reply":
             session.lastAssistantText = step.text;
+            break;
+          case "todos":
+            this.state.emit({
+              type: "todos",
+              sessionId: session.id,
+              todos: boundTodos(step.todos),
+            });
             break;
           case "error":
             session.error = step.message;

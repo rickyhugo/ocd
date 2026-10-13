@@ -1,6 +1,6 @@
 // Minimal stand-in for `codex app-server` (0.162.1 protocol subset) used by
 // adapter tests. Directives in the prompt pick behaviour: [approve-cmd],
-// [edit], [limit], [hang]. Never calls a model.
+// [edit], [limit], [hang], [plan]. Never calls a model.
 import { createInterface } from "node:readline";
 
 const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
@@ -18,6 +18,19 @@ function startTurn(text) {
   notify("turn/started", { threadId, turn: { id: turn.id, status: "inProgress", items: [] } });
   if (text.includes("[hang]")) return;
   if (text.includes("[params]")) return finish(turn, JSON.stringify(threadParams));
+  if (text.includes("[plan]")) {
+    notify("turn/plan/updated", {
+      threadId,
+      turnId: turn.id,
+      explanation: "Private-ish narration that OCD leaves out",
+      plan: [
+        { step: "Inspect the adapter", status: "completed" },
+        { step: "Add the handler", status: "inProgress" },
+        { step: "Write tests", status: "pending" },
+      ],
+    });
+    return finish(turn, `Planned.\n${report}`);
+  }
   if (text.includes("[limit]")) {
     notify("error", {
       threadId,

@@ -6,7 +6,9 @@
 // - Sidebar: one line, "▸ OCD  ! 1  ✓ 2  ● 3" (needs you, review, running).
 //   Anything waiting on you is always listed; expand for collapsible sections.
 //   When nothing is open: "OCD idle" and what finished today. Click a row for
-//   actions that fit its state, including accept and clean up.
+//   actions that fit its state, including accept and clean up. A running row's
+//   chevron expands a small scrollable panel: the worker's checklist, recent
+//   milestones and a recorded PR (read-only).
 // - Manual mode: /takeover (or a row action) stops OCD driving a worker and
 //   opens its session in a tmux window; /giveback hands it back to the manager.
 // - /task: pick an OCD task and send the manager a message about it.
@@ -18,20 +20,31 @@ import {
   collectSpill,
   formatSpill,
   resolveOcdPaths,
-  type Attention,
   type OcdApiError,
   type TakeOverResult,
   type Task,
 } from "@ocd/core";
 import { Plugin } from "@opencode/plugin/tui";
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Index, Show, createMemo, createSignal } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 
+import {
+  canExpand,
+  panelHeight,
+  panelScrolls,
+  progressLines,
+  progressTargets,
+  pruneExpanded,
+  toggleExpanded,
+  type ProgressState,
+} from "./src/progress-model.ts";
 import {
   actionsFor,
   buildSidebar,
   type Row,
   type Section,
   type SectionKey,
+  type SidebarModel,
   type Tone,
 } from "./src/sidebar-model.ts";
 import { openSessionWindow, shellLine } from "./src/session-window.ts";
@@ -43,6 +56,8 @@ const MAX_ROWS = 8;
 const SPILL_ROWS = 8;
 /** Usable width of a sidebar row; titles get what the glyph and detail leave. */
 const ROW_WIDTH = 36;
+/** Progress panel lines start under the row's title. */
+const PANEL_INDENT = 4;
 
 const GLYPH: Record<Task["state"], string> = {
   queued: "·",
@@ -80,12 +95,14 @@ export default Plugin.define({
     };
     const tone = (t: Tone) => color(TONE[t]);
 
-    const [tasks, setTasks] = createSignal<Task[]>([]);
-    const [finished, setFinished] = createSignal<Task[]>([]);
-    const [attention, setAttention] = createSignal<Attention[]>([]);
     const [now, setNow] = createSignal(Date.now());
+    // Reconciled by key, so rows (and an open panel's scroll position) survive refreshes.
+    const [model, setModel] = createStore<SidebarModel>(buildSidebar([], [], now()));
     const [online, setOnline] = createSignal(true);
     const [hovered, setHovered] = createSignal<string | null>(null);
+    // Session-only: which running tasks show their progress panel.
+    const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set());
+    const [progress, setProgress] = createSignal<Record<string, ProgressState>>({});
     // Durable: which sections the human opened or closed survives restarts.
     const [ui, setUi] = ctx.storage.store<{
       expanded: boolean;
@@ -99,22 +116,55 @@ export default Plugin.define({
           client.listTasks({ state: ["completed", "cancelled"], limit: 20 }),
           client.listAttention({ status: "open", limit: 100 }),
         ]);
-        setTasks(open);
-        setFinished(done);
-        setAttention(items);
+        setNow(Date.now());
+        setModel(reconcile(buildSidebar(open, items, now(), done), { key: "key" }));
+        setExpanded((e) =>
+          pruneExpanded(
+            e,
+            open.map((t) => t.id),
+          ),
+        );
         setOnline(true);
       } catch {
         setOnline(false);
+        setNow(Date.now());
+        return;
       }
-      setNow(Date.now());
+      await refreshProgress();
     };
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
 
-    const model = createMemo(() => buildSidebar(tasks(), attention(), now(), finished()));
     const toggle = () => void setUi((d) => void (d.expanded = !d.expanded));
     const isOpen = (s: Section) => ui.sections[s.key] ?? s.openByDefault;
     const toggleSection = (s: Section) => void setUi((d) => void (d.sections[s.key] = !isOpen(s)));
+
+    /** Running rows on screen; only their open panels are fetched. */
+    const visibleRunning = (): Row[] => {
+      const section = model.sections.find((s) => s.key === "running");
+      return ui.expanded && section && isOpen(section) ? section.rows.slice(0, MAX_ROWS) : [];
+    };
+    /** One read-only request per open, visible panel; a failed one keeps what it showed. */
+    const refreshProgress = async (ids = progressTargets(expanded(), visibleRunning())) => {
+      const fetched = await Promise.all(
+        ids.map(async (id): Promise<[string, ProgressState | null]> => [
+          id,
+          await client.taskProgress(id).catch(() => null),
+        ]),
+      );
+      const keep = new Set(progressTargets(expanded(), visibleRunning()));
+      setProgress((old) => {
+        const next: Record<string, ProgressState> = {};
+        for (const id of keep) if (old[id]) next[id] = old[id];
+        for (const [id, p] of fetched) if (keep.has(id)) next[id] = p ?? next[id] ?? "unavailable";
+        return next;
+      });
+    };
+    const toggleProgress = (id: string) => {
+      setExpanded((e) => toggleExpanded(e, id));
+      if (expanded().has(id)) void refreshProgress([id]);
+    };
+
+    void refresh();
+    const timer = setInterval(() => void refresh(), POLL_MS);
 
     const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
     const toast = (text: string, variant: "success" | "warning" | "error" = "success") =>
@@ -337,27 +387,92 @@ export default Plugin.define({
 
     const muted = () => color("textMuted");
 
-    const RowView = (props: { row: Row; indent: string }) => (
-      <box
-        flexDirection="row"
-        backgroundColor={hovered() === props.row.key ? color("backgroundElement") : "transparent"}
-        onMouseOver={() => setHovered(props.row.key)}
-        onMouseOut={() => setHovered((k) => (k === props.row.key ? null : k))}
-        // On release: a dialog opened on press is dismissed by the release landing on its backdrop.
-        onMouseUp={() => void rowActions(props.row)}
-      >
-        <text fg={tone(props.row.tone)}>{`${props.indent}${props.row.glyph} `}</text>
-        <box flexGrow={1}>
-          <text fg={props.row.tone === "muted" ? muted() : color("text")} wrapMode="none">
-            {clip(
-              props.row.title,
-              Math.max(8, ROW_WIDTH - props.indent.length - 2 - props.row.meta.length - 1),
+    /** A running task's progress: bounded height, scrolls on its own, never acts on the worker. */
+    const ProgressPanel = (props: { row: Row }) => {
+      const lines = createMemo(() =>
+        props.row.task ? progressLines(props.row.task, progress()[props.row.key], now()) : [],
+      );
+      return (
+        <scrollbox
+          height={panelHeight(lines())}
+          marginLeft={PANEL_INDENT}
+          scrollY
+          // Only an overflowing panel keeps the wheel from also scrolling the sidebar.
+          onMouseScroll={(e) => {
+            if (panelScrolls(lines())) e.stopPropagation();
+          }}
+        >
+          {/* By index: live updates change lines in place instead of rebuilding the list. */}
+          <Index each={lines()}>
+            {(line) => (
+              <box flexDirection="row">
+                <text fg={tone(line().tone)}>{`${line().glyph} `}</text>
+                <box flexGrow={1}>
+                  <text fg={line().tone === "muted" ? muted() : color("text")} wrapMode="none">
+                    {clip(
+                      line().text,
+                      Math.max(8, ROW_WIDTH - PANEL_INDENT - 2 - (line().meta.length + 1)),
+                    )}
+                  </text>
+                </box>
+                <text fg={muted()}>{line().meta ? ` ${line().meta}` : ""}</text>
+              </box>
             )}
-          </text>
+          </Index>
+        </scrollbox>
+      );
+    };
+
+    const RowView = (props: { row: Row; indent: string }) => {
+      // Only rows inside a section have room for the chevron, which takes the indent's place.
+      const expandable = () => props.indent.length >= 2 && canExpand(props.row);
+      const open = () => expandable() && expanded().has(props.row.key);
+      return (
+        <box flexDirection="column">
+          <box
+            flexDirection="row"
+            backgroundColor={
+              hovered() === props.row.key ? color("backgroundElement") : "transparent"
+            }
+            onMouseOver={() => setHovered(props.row.key)}
+            onMouseOut={() => setHovered((k) => (k === props.row.key ? null : k))}
+            // On release: a dialog opened on press is dismissed by the release landing on its backdrop.
+            onMouseUp={() => void rowActions(props.row)}
+          >
+            <Show
+              when={expandable()}
+              fallback={
+                <text fg={tone(props.row.tone)}>{`${props.indent}${props.row.glyph} `}</text>
+              }
+            >
+              {/* Chevron and status glyph only expand or collapse; they never open the row's actions. */}
+              <box
+                flexDirection="row"
+                onMouseUp={(e) => {
+                  e.stopPropagation();
+                  toggleProgress(props.row.key);
+                }}
+              >
+                <text fg={muted()}>{`${props.indent.slice(2)}${open() ? "▾" : "▸"} `}</text>
+                <text fg={tone(props.row.tone)}>{`${props.row.glyph} `}</text>
+              </box>
+            </Show>
+            <box flexGrow={1}>
+              <text fg={props.row.tone === "muted" ? muted() : color("text")} wrapMode="none">
+                {clip(
+                  props.row.title,
+                  Math.max(8, ROW_WIDTH - props.indent.length - 2 - props.row.meta.length - 1),
+                )}
+              </text>
+            </box>
+            <text fg={muted()}>{` ${props.row.meta}`}</text>
+          </box>
+          <Show when={open()}>
+            <ProgressPanel row={props.row} />
+          </Show>
         </box>
-        <text fg={muted()}>{` ${props.row.meta}`}</text>
-      </box>
-    );
+      );
+    };
 
     const removeSidebar = ctx.ui.slot({
       append: "sidebar.content",
@@ -378,7 +493,7 @@ export default Plugin.define({
             }
           >
             <Show
-              when={!model().idle}
+              when={!model.idle}
               fallback={
                 // Nothing open: no sections to expand, just what finished lately.
                 <box flexDirection="column">
@@ -387,12 +502,12 @@ export default Plugin.define({
                       <b>OCD</b>
                     </text>
                     <text fg={muted()}>
-                      {model().recent.length
-                        ? `  idle · ${model().recent.length} done today`
+                      {model.recent.length
+                        ? `  idle · ${model.recent.length} done today`
                         : "  idle"}
                     </text>
                   </box>
-                  <For each={model().recent.slice(0, 3)}>
+                  <For each={model.recent.slice(0, 3)}>
                     {(row) => <RowView row={row} indent="" />}
                   </For>
                 </box>
@@ -404,18 +519,18 @@ export default Plugin.define({
                 <text>
                   <b>OCD</b>
                 </text>
-                <For each={model().counts}>
+                <For each={model.counts}>
                   {(c) => <text fg={tone(c.tone)}>{`  ${c.glyph} ${c.count}`}</text>}
                 </For>
               </box>
               {/* Collapsed: only what waits on the human. */}
               <Show when={!ui.expanded}>
-                <For each={model().urgent.slice(0, 3)}>
+                <For each={model.urgent.slice(0, 3)}>
                   {(row) => <RowView row={row} indent="  " />}
                 </For>
               </Show>
               <Show when={ui.expanded}>
-                <For each={model().sections}>
+                <For each={model.sections}>
                   {(section) => (
                     <box flexDirection="column" marginTop={1}>
                       <box flexDirection="row" onMouseDown={() => toggleSection(section)}>
@@ -514,6 +629,30 @@ export default Plugin.define({
                 ],
               });
               if (mode) await giveBack(task, mode);
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.progress",
+          title: "OCD: show or hide a running task's progress",
+          group: "OCD",
+          palette: true,
+          run: async () => {
+            try {
+              const task = await pickTask("Progress of which task?", (t) =>
+                ["running", "starting", "blocked"].includes(t.state),
+              );
+              if (!task) return;
+              const opening = !expanded().has(task.id);
+              // Opening from the keyboard also opens the sidebar and its Running section.
+              if (opening)
+                await setUi((d) => {
+                  d.expanded = true;
+                  d.sections.running = true;
+                });
+              toggleProgress(task.id);
             } catch (error) {
               fail(error);
             }

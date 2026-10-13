@@ -1,6 +1,6 @@
 // Minimal stand-in for `claude -p --input-format stream-json ...` (2.1.296
 // protocol subset) used by adapter tests. Directives in the prompt pick
-// behaviour: [perm], [limit], [hang]. Never calls a model.
+// behaviour: [perm], [limit], [hang], [todos]. Never calls a model.
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -86,6 +86,63 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       result: "You've hit your usage limit · resets 5pm",
       api_error_status: 429,
     });
+  }
+  if (text.includes("[todos]")) {
+    // The task tools of 2.1.296: a call, then its result with `tool_use_result`.
+    const call = (id, name, input, output, extra = {}) => {
+      send({
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: { content: [{ type: "tool_use", id, name, input }] },
+        ...extra,
+      });
+      send({
+        type: "user",
+        parent_tool_use_id: null,
+        message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] },
+        tool_use_result: output,
+        ...extra,
+      });
+    };
+    call(
+      "tu_1",
+      "TaskCreate",
+      { subject: "Read the code", description: "d" },
+      {
+        task: { id: "1", subject: "Read the code" },
+      },
+    );
+    call(
+      "tu_2",
+      "TaskCreate",
+      { subject: "Fix the bug", description: "d" },
+      {
+        task: { id: "2", subject: "Fix the bug" },
+      },
+    );
+    call(
+      "tu_3",
+      "TaskUpdate",
+      { taskId: "1", status: "completed" },
+      { success: true, taskId: "1" },
+    );
+    // A subagent's own task list is not the worker's checklist.
+    call(
+      "tu_4",
+      "TaskCreate",
+      { subject: "Subagent step", description: "d" },
+      {
+        task: { id: "9", subject: "Subagent step" },
+      },
+      { parent_tool_use_id: "toolu_agent" },
+    );
+    call(
+      "tu_5",
+      "TaskUpdate",
+      { taskId: "2", status: "in_progress" },
+      { success: true, taskId: "2" },
+    );
+    return result(`Working on it.\n${report}`);
   }
   if (text.includes("[perm]")) {
     waiting = `req-${Date.now()}`;
