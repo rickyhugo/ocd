@@ -44,6 +44,12 @@ import {
 } from "@ocd/adapters";
 import type { z } from "zod";
 
+import {
+  BranchSyncer,
+  branchSyncAttentionKey,
+  type SyncPoint,
+  type SyncTrigger,
+} from "./branch-sync.ts";
 import type { LiveConfig, SupervisorConfig } from "./config.ts";
 import type { MergeMethod, PullRequestHost } from "./pull-requests.ts";
 import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } from "./errors.ts";
@@ -60,7 +66,8 @@ export type CrashPoint =
   | "after_workspace"
   | "after_session_created"
   | "after_session_persisted"
-  | "after_prompt";
+  | "after_prompt"
+  | SyncPoint;
 
 export interface SupervisorHooks {
   /** Test hook: throw SimulatedCrash to stop the supervisor at a crash boundary. */
@@ -133,6 +140,9 @@ export class Supervisor {
   private readonly todos = new Map<string, { items: TodoItem[]; at: string }>();
   private schedulerTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
+  private syncTimer: NodeJS.Timeout | null = null;
+  private syncing: Promise<void> | null = null;
+  private readonly branchSync: BranchSyncer;
   private lastReconcileTick = 0;
   /** After a wake from sleep, stall clocks restart from here. */
   private activityBaseline = 0;
@@ -146,6 +156,15 @@ export class Supervisor {
     this.o = o;
     for (const adapter of o.adapters) this.adapters.set(adapter.harness, adapter);
     this.startedAt = iso(o.clock());
+    this.branchSync = new BranchSyncer({
+      store: o.store,
+      workspaces: o.workspaces,
+      live: o.live,
+      logger: o.logger.child({ component: "branch-sync" }),
+      maxTasksPerTick: o.config.branchSync.maxTasksPerTick,
+      withTaskLock: (taskId, fn) => this.withTaskLock(taskId, fn),
+      at: (point, taskId) => this.crashPoint(point, taskId),
+    });
   }
 
   private get store(): Store {
@@ -180,6 +199,11 @@ export class Supervisor {
     this.reconcileTimer = setInterval(
       () => void this.periodicReconcile(),
       this.o.config.reconcileIntervalMs,
+    );
+    // Cheap when every repository is off: no git command runs.
+    this.syncTimer = setInterval(
+      () => void this.syncBranches(),
+      this.o.config.branchSync.intervalMs,
     );
     this.o.outbox.start();
     void this.tick();
@@ -216,8 +240,10 @@ export class Supervisor {
   private clearTimers(): void {
     if (this.schedulerTimer) clearInterval(this.schedulerTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    if (this.syncTimer) clearInterval(this.syncTimer);
     this.schedulerTimer = null;
     this.reconcileTimer = null;
+    this.syncTimer = null;
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
   }
 
@@ -229,6 +255,8 @@ export class Supervisor {
     this.stopped = true;
     this.clearTimers();
     await this.ticking;
+    // A branch sync in flight finishes its current task (bounded git commands), then stops.
+    await this.syncing;
     const report: ShutdownReport = {
       workerPolicy:
         "Service-owned workers (OpenCode) keep running and are reconciled on restart. Workers owned by the supervisor process are interrupted; their session IDs are kept for an explicit resume.",
@@ -423,6 +451,38 @@ export class Supervisor {
     return this.ticking;
   }
 
+  /**
+   * One branch-sync pass (docs/branch-sync.md). Never overlaps itself; runs on
+   * a timer and may be called directly (tests).
+   */
+  syncBranches(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    this.syncing ??= this.branchSync
+      .tick(() => this.stopped)
+      .catch((error: unknown) => {
+        if (!this.handleCrash(error)) this.log.error({ err: error }, "branch sync pass failed");
+      })
+      .finally(() => {
+        this.syncing = null;
+      });
+    return this.syncing;
+  }
+
+  /**
+   * Refreshes the task branch at a lifecycle boundary when its repository opted
+   * in. The caller holds the task lock. A sync problem never blocks the action;
+   * it shows up in the task's branch-sync status instead.
+   */
+  private async syncAtBoundary(taskId: string, trigger: SyncTrigger): Promise<string | null> {
+    try {
+      return (await this.branchSync.syncLocked(taskId, trigger)).note;
+    } catch (error) {
+      if (error instanceof SimulatedCrash) throw error;
+      this.log.warn({ err: error, taskId, trigger }, "branch sync at a boundary failed");
+      return null;
+    }
+  }
+
   private async admit(): Promise<void> {
     if (this.isPaused()) return;
     for (const row of this.store.queuedTasks()) {
@@ -503,7 +563,7 @@ export class Supervisor {
     };
   }
 
-  private buildPrompt(task: Task, relaunch: boolean): string {
+  private buildPrompt(task: Task, relaunch: boolean, syncNote: string | null = null): string {
     const repo = this.store.requireRepo(task.repo, { includeRetired: true });
     const notes = this.o.memory.workerMemory(repo.id);
     const parts = [
@@ -519,6 +579,7 @@ export class Supervisor {
       relaunch
         ? "This workspace may contain changes from an earlier attempt. Inspect `git status` and `git log` first and continue from there; do not discard existing changes."
         : "",
+      syncNote ?? "",
       "When your changes are complete, commit them to the current branch with a clear message. Do not push, merge, delete branches or worktrees, or try to dispatch other tasks.",
       REPORT_INSTRUCTIONS,
     ];
@@ -531,8 +592,15 @@ export class Supervisor {
    * leaves enough state for conservative reconciliation.
    */
   private async launch(taskId: string, relaunch: boolean): Promise<void> {
-    const row = this.store.taskRow(taskId);
+    let row = this.store.taskRow(taskId);
     if (!row || row.state !== "queued") return;
+    // A relaunch reuses its worktree: refresh it before a worker owns it again.
+    let syncNote: string | null = null;
+    if (row.workspacePath) {
+      syncNote = await this.syncAtBoundary(taskId, "launch");
+      row = this.store.taskRow(taskId);
+      if (!row || row.state !== "queued") return;
+    }
     const adapter = this.adapterFor(row.harness);
     const attempt = row.attempts + 1;
 
@@ -575,7 +643,14 @@ export class Supervisor {
       this.crashPoint("after_session_persisted", taskId);
 
       // 4. Prompt.
-      await this.sendInitialPrompt(adapter, taskId, run.id, ref.sessionId, relaunch || attempt > 1);
+      await this.sendInitialPrompt(
+        adapter,
+        taskId,
+        run.id,
+        ref.sessionId,
+        relaunch || attempt > 1,
+        syncNote,
+      );
     } catch (error) {
       if (error instanceof SimulatedCrash) throw error;
       await this.launchFailed(adapter, taskId, run, error);
@@ -599,10 +674,11 @@ export class Supervisor {
     runId: string,
     sessionId: string,
     relaunch: boolean,
+    syncNote: string | null = null,
   ): Promise<void> {
     const task = this.store.requireTask(taskId);
     this.store.appendEvent(taskId, "prompt.intent", { runId, sessionId });
-    await adapter.prompt({ sessionId }, this.buildPrompt(task, relaunch));
+    await adapter.prompt({ sessionId }, this.buildPrompt(task, relaunch, syncNote));
     this.crashPoint("after_prompt", taskId);
     const now = this.store.now();
     this.store.tx(() => {
@@ -1542,8 +1618,17 @@ export class Supervisor {
       }
       const adapter = this.adapterFor(task.harness);
       requireCapability(adapter, "steer");
-      const text = `${instructions}\n\n${REPORT_INSTRUCTIONS}`;
-      await adapter.prompt({ sessionId: task.sessionId }, text);
+      // A follow-up re-opens the review (the worker re-reports and OCD re-verifies),
+      // so it is the boundary where a stale reviewed branch may be refreshed.
+      const syncNote =
+        task.state === "ready_for_review" ? await this.syncAtBoundary(taskId, "follow_up") : null;
+      const text = [syncNote, instructions, REPORT_INSTRUCTIONS].filter(Boolean).join("\n\n");
+      try {
+        await adapter.prompt({ sessionId: task.sessionId }, text);
+      } catch (error) {
+        if (syncNote) await this.followUpNotSent(taskId, error);
+        throw error;
+      }
       if (this.store.requireTask(taskId).state === "ready_for_review") {
         const run = this.store.latestRun(taskId);
         if (run)
@@ -1565,6 +1650,40 @@ export class Supervisor {
   }
 
   /**
+   * The branch was refreshed for a follow-up that never reached the worker, so
+   * the task is still under review: re-verify so the review shows the branch as
+   * it is now, and say that the worker's report predates the merge.
+   */
+  private async followUpNotSent(taskId: string, error: unknown): Promise<void> {
+    const task = this.store.requireTask(taskId);
+    let verification: TaskResult["verification"] = task.result?.verification ?? null;
+    if (task.workspacePath && task.baseRef) {
+      verification = await this.o.workspaces
+        .verify({ path: task.workspacePath, baseRef: task.baseRef })
+        .catch(() => verification);
+    }
+    const sync = task.branchSync;
+    this.store.patchTask(
+      taskId,
+      {
+        ...(task.result ? { result: { ...task.result, verification } } : {}),
+        ...(sync
+          ? {
+              branchSync: {
+                ...sync,
+                reason: `${sync.reason} The follow-up was not delivered, so the worker's report predates this merge; OCD re-verified the branch.`,
+              },
+            }
+          : {}),
+      },
+      {
+        type: "branch_sync.follow_up_not_sent",
+        data: { error: truncate(redact(String(error)), 500) },
+      },
+    );
+  }
+
+  /**
    * Marks a reviewed task completed. The human (CLI) or the manager (after the
    * human approves in conversation) may accept; nothing is merged either way.
    */
@@ -1581,6 +1700,8 @@ export class Supervisor {
             resolvedBy: actor,
           });
         }
+        // Accepted work is never refreshed, so an open conflict report is moot.
+        this.store.settleOpenAttention(branchSyncAttentionKey(taskId), "expired");
         return this.store.transition(taskId, "completed", {
           from: ["ready_for_review"],
           patch: { finishedAt: this.store.now() },
@@ -1720,9 +1841,11 @@ export class Supervisor {
       // A turn the human left running (OpenCode) carries on; otherwise prompt.
       const needsPrompt = snap.status === "idle" || snap.status === "error";
       if (needsPrompt) {
+        // Nothing drives the session until this prompt: refresh the branch first.
+        const syncNote = await this.syncAtBoundary(taskId, "hand_back");
         await adapter.prompt(
           ref,
-          `The human drove this session directly for a while and has handed the task back to you.${noteText}\n\nCheck the current state of the worktree, continue the task, and finish with the report.\n\n${REPORT_INSTRUCTIONS}`,
+          `The human drove this session directly for a while and has handed the task back to you.${noteText}\n\n${syncNote ? `${syncNote}\n\n` : ""}Check the current state of the worktree, continue the task, and finish with the report.\n\n${REPORT_INSTRUCTIONS}`,
         );
       }
       const run = this.store.latestRun(taskId);

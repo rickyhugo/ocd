@@ -13,6 +13,7 @@ import type {
   AttentionKind,
   AttentionResponse,
   AttentionStatus,
+  BranchSync,
   HarnessName,
   MemoryScope,
   MemorySource,
@@ -59,6 +60,8 @@ export const tasks = sqliteTable(
     sessionId: text("session_id"),
     /** Pull request opened for the task branch, if any (optional, human/manager initiated). */
     pullRequestUrl: text("pull_request_url"),
+    /** Last branch-sync watchdog finding for the task branch (docs/branch-sync.md). */
+    branchSync: text("branch_sync", { mode: "json" }).$type<BranchSync>(),
     attempts: integer("attempts").notNull().default(0),
     result: text("result", { mode: "json" }).$type<TaskResult>(),
     error: text("error"),

@@ -184,6 +184,34 @@
       },
       "additionalProperties": false
     },
+    "branchSync": {
+      "description": "The branch-sync watchdog: keeps task branches near their repository's baseRef to reduce drift. Off by default.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "mode": {
+          "default": "off",
+          "description": "off: nothing runs. detect: read-only; tasks show how far their branch is behind the repo's baseRef and whether merging it would conflict. refresh: detect, and also fast-forward or merge the baseRef into clean, idle task branches at safe boundaries (never pushes, rebases, stashes or resolves conflicts). Per repo: repos.<name>.branchSync. See docs/branch-sync.md.",
+          "type": "string",
+          "enum": ["off", "detect", "refresh"]
+        },
+        "intervalMs": {
+          "default": 300000,
+          "description": "How often task branches are compared with their base (restart to apply).",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 9007199254740991
+        },
+        "maxTasksPerTick": {
+          "default": 25,
+          "description": "At most this many tasks are checked per interval, least recently checked first.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        }
+      },
+      "additionalProperties": false
+    },
     "log": {
       "default": {},
       "type": "object",
@@ -247,6 +275,11 @@
             "description": "How OCD merges this repository's pull requests when asked (default squash).",
             "type": "string",
             "enum": ["squash", "merge", "rebase"]
+          },
+          "branchSync": {
+            "description": "Branch-sync mode for this repository's tasks, overriding branchSync.mode. Tracks baseRef, which must be set. See docs/branch-sync.md.",
+            "type": "string",
+            "enum": ["off", "detect", "refresh"]
           }
         },
         "required": ["path"],

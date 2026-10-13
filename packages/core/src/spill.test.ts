@@ -52,6 +52,7 @@ function task(over: Partial<Task> = {}): Task {
     updatedAt: at(1),
     startedAt: at(20),
     finishedAt: null,
+    branchSync: null,
     ...over,
   };
 }

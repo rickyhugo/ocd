@@ -32,14 +32,14 @@ export function filteredEnv(
   return env;
 }
 
-interface ExecResult {
+export interface ExecResult {
   code: number | null;
   stdout: string;
   stderr: string;
   timedOut: boolean;
 }
 
-function run(
+export function run(
   cmd: string,
   args: string[],
   options: { cwd: string; env?: Record<string, string>; timeoutMs?: number },
@@ -69,7 +69,11 @@ function run(
   });
 }
 
-async function git(cwd: string, args: string[], options: { trim?: boolean } = {}): Promise<string> {
+export async function git(
+  cwd: string,
+  args: string[],
+  options: { trim?: boolean } = {},
+): Promise<string> {
   const result = await run("git", args, { cwd });
   if (result.code !== 0)
     throw new Error(

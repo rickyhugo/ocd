@@ -2,7 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync, watch, type FSWatcher
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { ProfilesConfig, ReposConfig, type Profile } from "@ocd/core";
+import { BranchSyncMode, ProfilesConfig, ReposConfig, type Profile } from "@ocd/core";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { z } from "zod";
 
@@ -160,6 +160,32 @@ export const SupervisorConfig = z
       })
       .strict()
       .prefault({}),
+    branchSync: z
+      .object({
+        mode: BranchSyncMode.default("off").describe(
+          "off: nothing runs. detect: read-only; tasks show how far their branch is behind the repo's baseRef and whether merging it would conflict. refresh: detect, and also fast-forward or merge the baseRef into clean, idle task branches at safe boundaries (never pushes, rebases, stashes or resolves conflicts). Per repo: repos.<name>.branchSync. See docs/branch-sync.md.",
+        ),
+        intervalMs: z
+          .number()
+          .int()
+          .min(100)
+          .default(300_000)
+          .describe("How often task branches are compared with their base (restart to apply)."),
+        maxTasksPerTick: z
+          .number()
+          .int()
+          .min(1)
+          .max(200)
+          .default(25)
+          .describe(
+            "At most this many tasks are checked per interval, least recently checked first.",
+          ),
+      })
+      .strict()
+      .prefault({})
+      .describe(
+        "The branch-sync watchdog: keeps task branches near their repository's baseRef to reduce drift. Off by default.",
+      ),
     log: z
       .object({ maxBytes: z.number().int().default(5_000_000), keep: z.number().int().default(3) })
       .strict()
@@ -283,6 +309,8 @@ export class LiveConfig {
   /** gh.binary with `~` expanded; null means a PATH lookup. */
   ghBinary: string | null = null;
   private mergeMethods = new Map<string, "squash" | "merge" | "rebase">();
+  private branchSyncDefault: BranchSyncMode = "off";
+  private branchSyncModes = new Map<string, BranchSyncMode>();
 
   constructor(config: SupervisorConfig) {
     this.apply(config);
@@ -297,6 +325,18 @@ export class LiveConfig {
         repo.mergeMethod ? [[name, repo.mergeMethod] as const] : [],
       ),
     );
+    this.branchSyncDefault = config.branchSync.mode;
+    this.branchSyncModes = new Map(
+      Object.entries(config.repos).flatMap(([name, repo]) =>
+        repo.branchSync ? [[name, repo.branchSync] as const] : [],
+      ),
+    );
+  }
+
+  /** The repository's branch-sync mode; repos no longer declared are off. */
+  branchSyncMode(repo: string, declared: boolean): BranchSyncMode {
+    if (!declared) return "off";
+    return this.branchSyncModes.get(repo) ?? this.branchSyncDefault;
   }
 
   mergeMethod(repo: string): "squash" | "merge" | "rebase" {

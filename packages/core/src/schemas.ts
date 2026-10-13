@@ -22,6 +22,10 @@ export const TaskStateSchema = z.enum(TASK_STATES);
 
 const EnvVarName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/, "Environment variable names only");
 
+/** off: nothing runs. detect: read-only drift/conflict status. refresh: detect, and update eligible idle task branches. */
+export const BranchSyncMode = z.enum(["off", "detect", "refresh"]);
+export type BranchSyncMode = z.infer<typeof BranchSyncMode>;
+
 // ---------------------------------------------------------------------------
 // Repositories and profiles (both declared in ocd.jsonc)
 
@@ -42,6 +46,9 @@ export const RepoConfig = z
       .enum(["squash", "merge", "rebase"])
       .optional()
       .describe("How OCD merges this repository's pull requests when asked (default squash)."),
+    branchSync: BranchSyncMode.optional().describe(
+      "Branch-sync mode for this repository's tasks, overriding branchSync.mode. Tracks baseRef, which must be set. See docs/branch-sync.md.",
+    ),
   })
   .strict();
 export type RepoConfig = z.input<typeof RepoConfig>;
@@ -172,6 +179,43 @@ export interface TaskResult {
   finalMessageExcerpt: string | null;
 }
 
+/**
+ * What the branch-sync watchdog last established about a task branch relative
+ * to its repository's configured base ref (docs/branch-sync.md).
+ */
+export interface BranchSync {
+  /**
+   * current: the branch contains the base tip. behind: the base advanced and the
+   * refresh is pending (reason says until when). conflict: merging the base would
+   * conflict; nothing was changed. skipped: not safe to evaluate or touch (reason
+   * says why). error: a git command failed.
+   */
+  state: "current" | "behind" | "conflict" | "skipped" | "error";
+  reason: string;
+  /** The configured base ref name, e.g. main. */
+  baseRef: string | null;
+  baseTip: string | null;
+  /** The task branch commit that was checked. */
+  head: string | null;
+  /** Commits on the base that the branch lacks. */
+  behind: number | null;
+  /** Files that would conflict (bounded), when state is conflict. */
+  conflictFiles: string[];
+  checkedAt: string;
+  /** "<head>:<baseTip>" of the conflict last reported, so it is reported once. */
+  conflictReported: string | null;
+  /** A write OCD started but did not record finishing (crash recovery). */
+  intent: { from: string; to: string; baseTip: string; method: "fast-forward" | "merge" } | null;
+  lastRefresh: {
+    at: string;
+    from: string;
+    to: string;
+    baseTip: string;
+    method: "fast-forward" | "merge";
+    trigger: string;
+  } | null;
+}
+
 export interface Task {
   id: string;
   idempotencyKey: string;
@@ -188,6 +232,8 @@ export interface Task {
   baseRef: string | null;
   sessionId: string | null;
   pullRequestUrl: string | null;
+  /** Null until the branch-sync watchdog has looked at the task. */
+  branchSync: BranchSync | null;
   attempts: number;
   result: TaskResult | null;
   error: string | null;

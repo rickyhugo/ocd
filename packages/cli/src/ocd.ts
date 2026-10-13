@@ -157,7 +157,14 @@ function fail(message: string): never {
 }
 
 function taskLine(t: Task): string {
-  return `${t.id}  ${t.state.padEnd(16)} ${t.repo.padEnd(14)} ${t.harness.padEnd(8)} ${t.title}`;
+  const sync = t.branchSync;
+  const drift =
+    sync?.state === "conflict"
+      ? "  [base conflict]"
+      : sync?.state === "behind"
+        ? `  [${sync.behind} behind ${sync.baseRef}]`
+        : "";
+  return `${t.id}  ${t.state.padEnd(16)} ${t.repo.padEnd(14)} ${t.harness.padEnd(8)} ${t.title}${drift}`;
 }
 
 function attentionLine(a: Attention): string {
@@ -629,6 +636,9 @@ async function main(argv: string[]): Promise<void> {
             `workspace: ${d.task.workspacePath ?? "-"} (branch ${d.task.branch ?? "-"}, base ${d.task.baseRef ?? "-"})`,
             `session: ${d.task.sessionId ?? "-"}  attempts: ${d.task.attempts}`,
             d.task.pullRequestUrl ? `pull request: ${d.task.pullRequestUrl}` : "",
+            d.task.branchSync
+              ? `branch sync: ${d.task.branchSync.state} (checked ${d.task.branchSync.checkedAt}) ${d.task.branchSync.reason}`
+              : "",
             d.task.error ? `error: ${d.task.error}` : "",
             d.task.result?.reported
               ? `reported: ${d.task.result.reported.summary}`
