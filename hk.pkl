@@ -1,0 +1,14 @@
+amends "package://github.com/jdx/hk/releases/download/v2.5.0/hk@2.5.0#/Config.pkl"
+
+import "package://github.com/jdx/hk/releases/download/v2.5.0/hk@2.5.0#/Builtins.pkl"
+// Using a coding agent? See https://hk.jdx.dev/agents
+
+// vp check = oxfmt + oxlint (type-aware, with type checking) using vite.config.ts,
+// so separate oxfmt/oxlint/tsc/prettier steps would only duplicate or fight it.
+local linters = new Mapping {
+  ["vp_check"] = Builtins.vp_check
+  ["shellcheck"] = Builtins.shellcheck
+  ["shfmt"] = Builtins.shfmt
+}
+
+steps = linters
