@@ -2,14 +2,20 @@
   "name": "ocd",
   "version": "0.0.0",
   "private": true,
+  "description": "A local agent control plane with an OpenCode manager and durable supervision.",
   "type": "module",
   "scripts": {
-    "dev": "vp dev",
-    "build": "tsc && vp build",
-    "preview": "vp preview"
+    "dev": "vp pack --watch",
+    "build": "vp pack",
+    "check": "vp check",
+    "check:fix": "vp check --fix",
+    "test": "vp test"
   },
   "devDependencies": {
-    "typescript": "~6.0.2",
+    "@types/node": "24.19.2",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
+    "typescript": "7.0.2",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },

@@ -2,13 +2,23 @@
 
 # Using Vite+, the Unified Toolchain for the Web
 
-This project is using Vite+, a unified toolchain built on top of Vite, Rolldown, Vitest, tsdown, Oxlint, Oxfmt, and Vite Task. Vite+ wraps runtime management, package management, and frontend tooling in a single global CLI called `vp`. Vite+ is distinct from Vite, and it invokes Vite through `vp dev` and `vp build`. Run `vp help` to print a list of commands and `vp <command> --help` for information about a specific command.
+This project is using Vite+, a unified toolchain built on top of Vite, Rolldown,
+Vitest, tsdown, Oxlint, Oxfmt, and Vite Task. Vite+ wraps runtime management,
+package management, and frontend tooling in a single global CLI called `vp`.
+Vite+ is distinct from Vite, and it invokes Vite through `vp dev` and
+`vp build`. Run `vp help` to print a list of commands and `vp <command> --help`
+for information about a specific command.
 
-Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.dev/guide/.
+Docs are local at `node_modules/vite-plus/docs` or online at
+https://viteplus.dev/guide/.
 
 ## Built-in Commands vs Scripts
 
-`vp <name>` runs a built-in command. `vp run <name>` runs a `package.json` script or a `vite.config.ts` task. Scripts cannot overwrite built-ins, so `vp dev` and `vp run dev` may do different things. Check `package.json` and `vite.config.ts` first, and run `vp run <name>` when the project defines a script or task with that name.
+`vp <name>` runs a built-in command. `vp run <name>` runs a `package.json`
+script or a `vite.config.ts` task. Scripts cannot overwrite built-ins, so
+`vp dev` and `vp run dev` may do different things. Check `package.json` and
+`vite.config.ts` first, and run `vp run <name>` when the project defines a
+script or task with that name.
 
 ## Tool Versions
 
@@ -21,7 +31,26 @@ release. Add a tool name to select part of the graph. For example, run
 
 - [ ] Run `vp install` after pulling remote changes and before getting started.
 - [ ] Run `vp check` and `vp test` to format, lint, type check and test changes.
-- [ ] Check if there are `vite.config.ts` tasks or `package.json` scripts necessary for validation, run via `vp run <script>`.
-- [ ] If setup, runtime, or package-manager behavior looks wrong, run `vp env doctor` and include its output when asking for help.
+- [ ] Check if there are `vite.config.ts` tasks or `package.json` scripts
+      necessary for validation, run via `vp run <script>`.
+- [ ] If setup, runtime, or package-manager behavior looks wrong, run
+      `vp env doctor` and include its output when asking for help.
 
 <!--VITE PLUS END-->
+
+## OCD project
+
+- Read `PLAN.md` before implementing the control plane. The current source is a
+  Node package skeleton, not a working supervisor or browser application.
+- Use Drizzle ORM with SQLite, not Kysely. Add runtime dependencies alongside
+  their implementation and review generated migrations.
+- Use TypeScript 7 and its built-in `tsc` LSP. Keep editor tools pinned locally.
+- Use OpenCode V2 interfaces. Keep the plugin thin and database-free; only the
+  supervisor writes orchestration state.
+- Package Node code with `vp pack` / `pnpm run build`, not the browser's
+  `vp build`.
+- Use `vite-plus/test` imports and fake adapters for routine tests. Real harness
+  runs and LaunchAgent/global plugin installation require explicit
+  authorization.
+- Preserve workspaces and user changes. No autonomous merges, permission bypass,
+  or blind retries of uncertain coding runs.

@@ -9,8 +9,22 @@ lerna-debug.log*
 
 node_modules
 dist
-dist-ssr
 *.local
+coverage
+.vite
+.env
+.env.*
+!.env.example
+
+# Local control-plane state (never commit tasks, memory, credentials, or worktrees)
+.ocd/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sock
+
+# Keep this project's requested editor configuration visible despite global ignores.
+!.nvim-tools.lua
 
 # Editor directories and files
 .vscode/*
