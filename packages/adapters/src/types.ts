@@ -113,6 +113,17 @@ export interface HarnessAdapter {
    * harnesses implement this; the session may still be revived later.
    */
   release?(ref: SessionRef): Promise<void>;
+  /**
+   * The command a human runs, in the task's worktree, to drive this session
+   * interactively (manual mode), e.g. `claude --resume <id>`.
+   */
+  interactiveCommand?(ref: SessionRef): string[];
+  /**
+   * Another process that has this session open (a human's interactive
+   * terminal), so OCD must not drive it too. Process-owned harnesses implement
+   * this; service-owned sessions can have many clients.
+   */
+  sessionInUse?(ref: SessionRef): Promise<{ pid: number; command: string } | null>;
   close(): Promise<void>;
 }
 

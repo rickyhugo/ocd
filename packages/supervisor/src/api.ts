@@ -15,6 +15,7 @@ import {
   RecallInput,
   RememberInput,
   ResolveAttentionInput,
+  GiveBackInput,
   ResumeTaskInput,
   SendToWorkerInput,
   TaskFilter,
@@ -236,6 +237,11 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   });
   app.post("/v1/tasks/:id/cancel", async (req) => {
     requireCaller(req);
+    if (
+      req.actor !== "human" &&
+      store.requireTask(IdParams.parse(req.params).id).state === "manual"
+    )
+      throw forbidden("manual_mode", "The human is driving this task; only they can cancel it");
     return supervisor.cancel(
       IdParams.parse(req.params).id,
       CancelTaskInput.parse(req.body ?? {}).reason,
@@ -259,6 +265,13 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   app.post("/v1/tasks/:id/accept", async (req) => {
     requireCaller(req);
     return supervisor.accept(IdParams.parse(req.params).id, req.actor);
+  });
+  app.post("/v1/tasks/:id/takeover", async (req) => {
+    return supervisor.takeOver(IdParams.parse(req.params).id, req.actor);
+  });
+  app.post("/v1/tasks/:id/giveback", async (req) => {
+    const { mode, note } = GiveBackInput.parse(req.body);
+    return supervisor.giveBack(IdParams.parse(req.params).id, mode, note, req.actor);
   });
   app.post("/v1/tasks/:id/resume", async (req) => {
     const { mode } = ResumeTaskInput.parse(req.body);

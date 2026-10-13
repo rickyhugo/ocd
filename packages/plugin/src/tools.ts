@@ -108,7 +108,8 @@ export function buildTools(
     },
     {
       name: "list_tasks",
-      description: "List tasks. By default only unfinished tasks are shown.",
+      description:
+        "List tasks. By default only unfinished tasks are shown. A task in state `manual` is being driven by the human directly in its worker session: do not send it work, cancel, accept or resume it until they hand it back (you are told when they do).",
       input: obj({
         repo: str("Filter by repository"),
         state: { type: "array", items: { type: "string" }, description: "Filter by states" },

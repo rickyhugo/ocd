@@ -3,6 +3,7 @@ import {
   DispatchTaskInput,
   LIVE_STATES,
   REPORT_INSTRUCTIONS,
+  TAKEOVER_STATES,
   parseWorkerReport,
   redact,
   truncate,
@@ -13,6 +14,7 @@ import {
   type HarnessName,
   type ShutdownReport,
   type SupervisorStatus,
+  type TakeOverResult,
   type Task,
   type TaskResult,
   type WorkerRun,
@@ -1318,6 +1320,162 @@ export class Supervisor {
     this.releaseWorker(done);
     void this.tick();
     return done;
+  }
+
+  /**
+   * Manual mode: the human takes over the worker's session and drives it
+   * directly. OCD stops driving it (interrupting a running turn, stopping a
+   * process-owned worker) and ignores it until it is handed back; the manager
+   * is told to leave it alone.
+   */
+  async takeOver(taskId: string, actor: Actor): Promise<TakeOverResult> {
+    if (actor !== "human")
+      throw forbidden("human_only", "Only a human can take over a worker's session");
+    return this.withTaskLock(taskId, async () => {
+      const task = this.store.requireTask(taskId);
+      if (task.state !== "manual" && !TAKEOVER_STATES.has(task.state))
+        throw conflict("not_takeoverable", `A ${task.state} task cannot be taken over`);
+      if (!task.sessionId || !task.workspacePath)
+        throw conflict("no_session", "The task has no worker session to take over");
+      const adapter = this.adapterFor(task.harness);
+      if (!adapter.interactiveCommand)
+        throw conflict("not_supported", `${task.harness} sessions cannot be opened interactively`);
+      const ref = { sessionId: task.sessionId };
+      // Already manual: just say again how to open the session.
+      if (task.state === "manual")
+        return { task, command: adapter.interactiveCommand(ref), cwd: task.workspacePath };
+      // Leave the live states first: an interrupted worker reports idle, which
+      // must not be read as a finished turn.
+      const manual = this.store.tx(() => {
+        for (const a of this.store.listAttention({ taskId, status: "open" }))
+          this.store.settleAttention(a.id, { status: "expired" });
+        this.endRun(taskId, "taken_over");
+        return this.store.transition(taskId, "manual", {
+          patch: { lastActivityAt: this.store.now() },
+          event: { type: "task.taken_over", data: { actor, from: task.state } },
+          outbox: [
+            this.wake(
+              task,
+              `manual:${this.store.now()}`,
+              `[manual] Task ${task.id} ("${task.title}", repo ${task.repo}): the human took over the ${task.harness} session and is driving it directly. Do not send it work, cancel, accept or resume it until they hand it back.`,
+            ),
+          ],
+        });
+      });
+      if (LIVE_STATES.has(task.state)) {
+        await adapter
+          .interrupt(ref)
+          .catch((error) =>
+            this.log.warn({ err: error, taskId }, "interrupting the worker for a takeover failed"),
+          );
+      }
+      // A process-owned worker must be gone before the human resumes its session.
+      await adapter.release?.(ref);
+      return { task: manual, command: adapter.interactiveCommand(ref), cwd: task.workspacePath };
+    });
+  }
+
+  /**
+   * Ends manual mode. "continue" resumes the worker headless on the same
+   * session with the human's note; "review" moves the task to review. Either
+   * way the manager is told and may act on the task again.
+   */
+  async giveBack(
+    taskId: string,
+    mode: "continue" | "review",
+    note: string | undefined,
+    actor: Actor,
+  ): Promise<Task> {
+    if (actor !== "human") throw forbidden("human_only", "Only a human can hand a task back");
+    return this.withTaskLock(taskId, async () => {
+      const task = this.store.requireTask(taskId);
+      if (task.state !== "manual")
+        throw conflict("not_manual", `Task is ${task.state}, not in manual mode`);
+      const adapter = this.adapterFor(task.harness);
+      if (!task.sessionId) throw conflict("no_session", "The task has no worker session");
+      const ref = { sessionId: task.sessionId };
+      const open = await adapter.sessionInUse?.(ref);
+      if (open)
+        throw conflict(
+          "session_in_use",
+          `The session is still open in another process (pid ${open.pid}: ${open.command}); quit it first`,
+        );
+      const noteText = note?.trim() ? ` Their note: "${truncate(redact(note.trim()), 2000)}"` : "";
+      const header = `[handed back] Task ${task.id} ("${task.title}", repo ${task.repo})`;
+      if (mode === "review") {
+        return this.store.transition(taskId, "ready_for_review", {
+          from: ["manual"],
+          patch: { finishedAt: this.store.now() },
+          event: { type: "task.given_back", data: { mode, note: note ?? null } },
+          attention: [
+            {
+              ...this.attentionFor(
+                task,
+                "review",
+                `manual:${this.store.now()}`,
+                `${header}: the human finished it by hand and it is ready for review.${noteText}`,
+                "human",
+              ),
+              // The human just handed it back; only the manager needs telling.
+              notify: false,
+            },
+          ],
+        });
+      }
+      requireCapability(adapter, "resume");
+      let snap = await adapter.inspect(ref);
+      if (snap.status === "missing" && adapter.revive) {
+        const run = this.store.latestRun(taskId);
+        if (run) {
+          try {
+            await adapter.revive(ref, this.specFor(task, run));
+          } catch (error) {
+            throw conflict(
+              "session_missing",
+              `The session cannot be resumed (${(error as Error).message})`,
+            );
+          }
+        }
+        snap = await adapter.inspect(ref);
+      }
+      if (snap.status === "missing")
+        throw conflict("session_missing", "The session no longer exists");
+      // A turn the human left running (OpenCode) carries on; otherwise prompt.
+      const needsPrompt = snap.status === "idle" || snap.status === "error";
+      if (needsPrompt) {
+        await adapter.prompt(
+          ref,
+          `The human drove this session directly for a while and has handed the task back to you.${noteText}\n\nCheck the current state of the worktree, continue the task, and finish with the report.\n\n${REPORT_INSTRUCTIONS}`,
+        );
+      }
+      const run = this.store.latestRun(taskId);
+      this.store.tx(() => {
+        if (run)
+          this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
+        this.store.transition(taskId, "running", {
+          from: ["manual"],
+          patch: { lastActivityAt: this.store.now(), error: null },
+          event: { type: "task.given_back", data: { mode, note: note ?? null } },
+          outbox: [
+            this.wake(
+              task,
+              `given-back:${this.store.now()}`,
+              `${header}: the human handed it back and the worker continues.${noteText}`,
+            ),
+          ],
+        });
+      });
+      if (!needsPrompt) await this.applySnapshot(adapter, taskId, snap);
+      return this.store.requireTask(taskId);
+    });
+  }
+
+  private wake(task: Pick<Task, "id">, key: string, text: string) {
+    return {
+      kind: "manager_wake" as const,
+      dedupeKey: `wake:${task.id}:${key}`,
+      payload: { text: truncate(redact(text), 4000), taskId: task.id },
+    };
   }
 
   /** Explicit, human-initiated recovery for interrupted, failed, or ambiguous tasks. */

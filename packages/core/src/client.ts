@@ -8,6 +8,7 @@ import type {
   Decision,
   DecisionInput,
   DispatchTaskInput,
+  GiveBackInput,
   ManagerInfo,
   Memory,
   OutboxEntry,
@@ -18,6 +19,7 @@ import type {
   Repository,
   ShutdownReport,
   SupervisorStatus,
+  TakeOverResult,
   Task,
   TaskDetail,
   TaskFilter,
@@ -200,6 +202,12 @@ export class OcdClient {
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/merge`, method ? { method } : {});
   acceptTask = (id: string) =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/accept`);
+  /** Manual mode: stops OCD driving the worker and returns the command to open the session. Human only. */
+  takeOverTask = (id: string) =>
+    this.call<TakeOverResult>("POST", `/v1/tasks/${encodeURIComponent(id)}/takeover`);
+  /** Ends manual mode: the worker continues headless, or the task goes to review. Human only. */
+  giveBackTask = (id: string, input: GiveBackInput) =>
+    this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/giveback`, input);
   resumeTask = (id: string, mode: "reattach" | "relaunch") =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/resume`, { mode });
 

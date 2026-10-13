@@ -109,6 +109,10 @@ export class FakeHarnessState {
   readonly listeners = new Set<AdapterListener>();
   createdCount = 0;
   promptCount = 0;
+  /** Sessions a pretend interactive terminal has open (manual mode tests). */
+  readonly inUse = new Set<string>();
+  /** Prompt texts in order, for assertions. */
+  readonly prompts: string[] = [];
 
   emit(event: AdapterEvent): void {
     for (const listener of this.listeners) listener(event);
@@ -228,6 +232,7 @@ export class FakeAdapter implements HarnessAdapter {
     const session = this.session(ref);
     this.fault("prompt", "before");
     session.prompts.push(text);
+    this.state.prompts.push(text);
     this.state.promptCount += 1;
     session.abort?.abort();
     const abort = new AbortController();
@@ -381,6 +386,29 @@ export class FakeAdapter implements HarnessAdapter {
       this.state.onDisk.set(session.id, session);
       this.state.sessions.delete(session.id);
     }
+  }
+
+  /** Stops a process-owned session's worker; it stays revivable from "disk". */
+  async release(ref: SessionRef): Promise<void> {
+    if (this.sessionsSurviveSupervisor) return;
+    const session = this.state.sessions.get(ref.sessionId);
+    if (!session) return;
+    session.abort?.abort(new Error("released"));
+    session.abort = null;
+    session.pending.clear();
+    session.status = "idle";
+    this.state.onDisk.set(session.id, session);
+    this.state.sessions.delete(session.id);
+  }
+
+  interactiveCommand(ref: SessionRef): string[] {
+    return ["fake-harness", "--resume", ref.sessionId];
+  }
+
+  async sessionInUse(ref: SessionRef): Promise<{ pid: number; command: string } | null> {
+    return this.state.inUse.has(ref.sessionId)
+      ? { pid: 4242, command: `fake-harness --resume ${ref.sessionId}` }
+      : null;
   }
 
   /** Like `claude --resume`: restores a session from "disk" in a new process. */

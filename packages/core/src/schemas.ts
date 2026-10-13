@@ -240,6 +240,21 @@ export const OpenPullRequestInput = z.object({
   /** Commit uncommitted worker changes before pushing. */
   commit: z.boolean().default(false),
 });
+export const GiveBackInput = z.object({
+  /** continue: the worker resumes headless; review: the human is done, the task goes to review. */
+  mode: z.enum(["continue", "review"]),
+  note: z.string().max(4000).optional(),
+});
+export type GiveBackInput = z.input<typeof GiveBackInput>;
+
+/** What the human runs to drive a taken-over session. */
+export interface TakeOverResult {
+  task: Task;
+  /** Run in `cwd`, the task's worktree. */
+  command: string[];
+  cwd: string;
+}
+
 export const ResumeTaskInput = z.object({
   /** reattach: continue the recorded session; relaunch: new session in the same workspace. */
   mode: z.enum(["reattach", "relaunch"]),

@@ -30,6 +30,7 @@ import {
   currentPlatform,
   execCommand,
   findBinary,
+  shellQuote,
   focusManager,
   locateBinary,
   type Platform,
@@ -64,6 +65,10 @@ Tasks
   ocd task cancel <id> [--reason TEXT]
   ocd task accept <id>
   ocd task resume <id> --mode reattach|relaunch
+  ocd task takeover <id>            Manual mode: stop OCD driving the worker and print the command
+                                    that opens its session (claude --resume, codex resume, opencode -s)
+  ocd task giveback <id> --mode continue|review [--message NOTE]
+                                    End manual mode: the worker continues headless, or the task goes to review
   ocd task pr <id> [--draft] [--base BRANCH] [--commit]
                                     Push the task branch and open a pull request (optional; never merges)
   ocd task merge <id> [--method squash|merge|rebase]
@@ -581,7 +586,29 @@ async function main(argv: string[]): Promise<void> {
         if (flags.mode !== "reattach" && flags.mode !== "relaunch")
           fail("--mode reattach|relaunch is required");
         print(await client.resumeTask(id, flags.mode), json, () => `resumed ${id} (${flags.mode})`);
-      } else fail("usage: ocd task list|show|send|cancel|accept|resume");
+      } else if (sub === "takeover") {
+        const r = await client.takeOverTask(id);
+        print(r, json, () =>
+          [
+            `${id} is in manual mode: OCD stopped driving it and the manager was told to leave it alone.`,
+            "Drive the session yourself (in tmux it keeps running after you close the terminal):",
+            `  cd ${shellQuote([r.cwd])} && ${shellQuote(r.command)}`,
+            `Hand it back with: ocd task giveback ${id} --mode continue|review [--message NOTE]`,
+          ].join("\n"),
+        );
+      } else if (sub === "giveback") {
+        if (flags.mode !== "continue" && flags.mode !== "review")
+          fail("--mode continue|review is required");
+        const t = await client.giveBackTask(id, {
+          mode: flags.mode,
+          ...(flags.message ? { note: flags.message } : {}),
+        });
+        print(t, json, () =>
+          flags.mode === "continue"
+            ? `handed ${id} back; the worker continues`
+            : `handed ${id} back; it is ready for review`,
+        );
+      } else fail("usage: ocd task list|show|send|cancel|accept|resume|takeover|giveback");
       return;
     }
     case "attention": {
