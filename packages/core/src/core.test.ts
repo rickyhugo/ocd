@@ -4,6 +4,7 @@ import {
   canTransition,
   findSecrets,
   parseWorkerReport,
+  plainText,
   redact,
   resolveOcdPaths,
   TASK_STATES,
@@ -33,6 +34,19 @@ describe("secret detection", () => {
 
   it("redacts in place", () => {
     expect(redact("use sk-ant-abcdefghijklmnopqrstuv now")).toBe("use [REDACTED] now");
+  });
+});
+
+describe("plain text", () => {
+  it("drops escape sequences, control and invisible characters", () => {
+    const text = "\u001b[31mred\u001b[0m \u001b]0;title\u0007ok\u0007\u0000 \u202egnp.exe\u200b";
+    expect(plainText(text)).toBe("red ok gnp.exe");
+  });
+
+  it("folds lines into one unless multiline, dropping blank lines", () => {
+    const text = "  one\r\n\n\ttwo  \u2028three\r";
+    expect(plainText(text)).toBe("one two three");
+    expect(plainText(text, { multiline: true })).toBe("one\ntwo\nthree");
   });
 });
 

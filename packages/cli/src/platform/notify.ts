@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-import { redact, truncate } from "@ocd/core";
+import { plainText, redact, truncate } from "@ocd/core";
 import type { Notifier } from "@ocd/supervisor";
 
 import { execCommand, shellQuote, type Exec } from "./exec.ts";
@@ -11,8 +11,15 @@ export interface DesktopNotifier extends Notifier {
   readonly clickable: boolean;
 }
 
+/**
+ * Every backend receives plain text: no secrets, escape sequences or control
+ * characters, a one-line title, and no leading "-" that a backend's argument
+ * parser could take for an option.
+ */
 function clean(message: { title: string; body: string }): { title: string; body: string } {
-  return { title: truncate(redact(message.title), 120), body: truncate(redact(message.body), 400) };
+  const text = (value: string, multiline: boolean, max: number) =>
+    truncate(redact(plainText(value, { multiline })).replace(/^-+\s*/, ""), max);
+  return { title: text(message.title, false, 120), body: text(message.body, true, 400) };
 }
 
 async function run(exec: Exec, cmd: string, args: string[]): Promise<void> {

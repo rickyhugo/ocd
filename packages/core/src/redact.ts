@@ -59,3 +59,29 @@ export const LOG_REDACT_PATHS = [
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
 }
+
+/* oxlint-disable no-control-regex -- these patterns exist to remove control characters */
+// Terminal escape sequences (CSI, OSC, and two-byte escapes).
+const ESCAPE_SEQUENCES =
+  /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-_])/g;
+// Zero-width and bidirectional formatting characters that can disguise text.
+const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+// C0 and C1 controls other than tab and line breaks, which are handled per line.
+const CONTROLS = /[\u0000-\u0008\u000e-\u001f\u007f-\u009f]/g;
+/* oxlint-enable no-control-regex */
+
+/**
+ * Text that is safe to show outside a terminal-aware viewer: no escape
+ * sequences, control or invisible formatting characters, collapsed whitespace,
+ * no blank lines. Lines are joined with spaces unless `multiline` is set.
+ */
+export function plainText(text: string, options: { multiline?: boolean } = {}): string {
+  const lines = text
+    .replace(ESCAPE_SEQUENCES, "")
+    .replace(INVISIBLE, "")
+    .replace(CONTROLS, "")
+    .split(/\r\n|[\n\r\v\f\u2028\u2029]/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  return lines.join(options.multiline ? "\n" : " ");
+}

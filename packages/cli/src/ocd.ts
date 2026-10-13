@@ -247,7 +247,7 @@ async function main(argv: string[]): Promise<void> {
           await (
             await platform.notifier()
           )
-            .notify({ title: "OCD supervisor not started", body: error.message })
+            .notify({ title: "OCD: Supervisor not started", body: error.message })
             .catch(() => undefined);
           process.exit(0);
         }
@@ -459,7 +459,7 @@ async function main(argv: string[]): Promise<void> {
       if (flags.notify) {
         try {
           await notifier.notify({
-            title: "OCD test notification",
+            title: "OCD: Test notification",
             body: notifier.clickable ? "Click to jump to the manager session" : "Delivered",
           });
           const fellBack = notifier instanceof FallbackNotifier ? notifier.lastError : null;

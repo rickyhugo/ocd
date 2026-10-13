@@ -239,7 +239,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
             reason,
             resolvableBy: "human",
           },
-          { notify: true, wake: false },
+          {
+            notify: true,
+            wake: false,
+            notice: {
+              headline: "Config invalid",
+              detail: "ocd.jsonc has errors; the previous configuration stays in effect",
+            },
+          },
         );
         // One open item per broken file, always describing the current error.
         if (!created && attention.reason !== reason)

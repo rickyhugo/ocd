@@ -137,6 +137,23 @@ describe("notifiers", () => {
     await notifier.notify({ title: "t", body: "b" });
     expect(calls).toEqual([["/bin/ns", "--app-name=OCD", "t", "b"]]);
   });
+
+  it("hands every backend plain text that cannot pass for an option", async () => {
+    const { exec, calls } = recordingExec();
+    const message = {
+      title: "OCD: Review\nready\u001b[31m",
+      body: "--help \u0007me\u202e\napp · 1 file changed\n\n",
+    };
+    await new TerminalNotifier({ binary: "/bin/tn", exec }).notify(message);
+    await new OsascriptNotifier({ exec }).notify(message);
+    await new NotifySendNotifier({ binary: "/bin/ns", supportsActions: false, exec }).notify(
+      message,
+    );
+    const expected = ["OCD: Review ready", "help me\napp · 1 file changed"];
+    expect(calls[0]).toEqual(["/bin/tn", "-title", expected[0], "-message", expected[1]]);
+    expect(calls[1]?.slice(-2)).toEqual(expected);
+    expect(calls[2]).toEqual(["/bin/ns", "--app-name=OCD", ...expected]);
+  });
 });
 
 describe("raising the terminal", () => {
