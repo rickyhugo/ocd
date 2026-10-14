@@ -1,5 +1,7 @@
 import {
   assertTransition,
+  redact,
+  truncate,
   type Actor,
   type Attention,
   type AttentionKind,
@@ -238,7 +240,23 @@ export class Store {
         .where(eq(tasks.idempotencyKey, input.idempotencyKey))
         .get();
       if (existing) {
-        if (existing.instructions !== input.instructions || existing.repoId !== input.repo.id) {
+        const sameDeps = (a: string[], b: string[]) =>
+          JSON.stringify([...a].toSorted()) === JSON.stringify([...b].toSorted());
+        const existingDeps = this.db
+          .select({ dependsOn: taskDependencies.dependsOn })
+          .from(taskDependencies)
+          .where(eq(taskDependencies.taskId, existing.id))
+          .all()
+          .map((d) => d.dependsOn);
+        if (
+          existing.instructions !== input.instructions ||
+          existing.repoId !== input.repo.id ||
+          existing.title !== input.title ||
+          existing.profileSnapshot.name !== input.profile.name ||
+          JSON.stringify(existing.acceptanceCriteria) !==
+            JSON.stringify(input.acceptanceCriteria) ||
+          !sameDeps(existingDeps, input.dependsOn)
+        ) {
           throw conflict(
             "idempotency_mismatch",
             "Idempotency key was already used for a different task",
@@ -717,7 +735,7 @@ export class Store {
           .update(outbox)
           .set({
             attempts,
-            lastError: error,
+            lastError: redact(truncate(error, 2000)),
             status: dead ? "dead" : "pending",
             nextAttemptAt: iso(this.clock() + delay),
           })
@@ -730,7 +748,7 @@ export class Store {
               taskId: (row.payload as { taskId?: string }).taskId ?? null,
               kind: "failure",
               dedupeKey: `delivery-dead:${id}`,
-              reason: `Could not deliver ${row.kind === "notify" ? "a notification" : "a manager update"} after ${attempts} attempts: ${error}`,
+              reason: `Could not deliver ${row.kind === "notify" ? "a notification" : "a manager update"} after ${attempts} attempts: ${redact(truncate(error, 500))}`,
               resolvableBy: "human",
             },
             { notify: false, wake: false },

@@ -32,6 +32,33 @@ describe("secret detection", () => {
     expect(findSecrets("Prefer small commits")).toEqual([]);
   });
 
+  it("catches prefixed, quoted, URL, header and flag forms", () => {
+    const cases = [
+      "GITHUB_TOKEN=abcd1234efgh",
+      "MY_API_KEY=abcd1234efgh",
+      "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENG",
+      '{"password":"hunter2hunter2"}',
+      "clone https://user:pw12345@example.com/repo.git",
+      "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+      "run --token abcd1234efgh",
+      "NPM_CONFIG=npm_abcdefghijklmnopqrstuvwxyz0123456789",
+      "key AIzaSyA-abcdefghijklmnopqrstuvwxyz0123456",
+      "sk_live_abcdefghijklmnop1234",
+    ];
+    for (const text of cases) {
+      expect(findSecrets(text), text).not.toEqual([]);
+      expect(redact(text), text).toContain("[REDACTED]");
+    }
+    expect(redact("https://user:pw12345@example.com")).toBe("https://[REDACTED]@example.com");
+    expect(redact('{"password":"hunter2hunter2"}')).not.toContain("hunter2");
+    for (const prose of [
+      "Basic configuration is documented here",
+      "set max_tokens: 4000 and use https://example.com/a:b",
+      "the tokenizer = fastest",
+    ])
+      expect(findSecrets(prose), prose).toEqual([]);
+  });
+
   it("redacts in place", () => {
     expect(redact("use sk-ant-abcdefghijklmnopqrstuv now")).toBe("use [REDACTED] now");
   });
