@@ -49,6 +49,7 @@ import {
   servicePath,
   shellQuote,
   focusManager,
+  iconAssets,
   locateBinary,
   loginShellPath,
   toolPath,
@@ -172,6 +173,11 @@ function stableCliPath(home: string): string {
   const builds = join(home, "install", "builds") + sep;
   const current = join(home, "install", "current", "packages", "cli", "dist", "ocd.mjs");
   return real.startsWith(builds) && existsSync(current) ? current : real;
+}
+
+/** Notifications open the manager when clicked and carry OCD's icon. */
+function notifierOptions() {
+  return { onClick: focusCommand(), icon: iconAssets(import.meta.url), home: paths.home };
 }
 
 /** After a switch to a new version: OpenCode reloads its plugins (the OCD plugin runs from the install). */
@@ -384,7 +390,7 @@ async function run(
           adapters: buildAdapters,
           managerChannel: buildManagerChannel,
           pullRequests: ({ config }) => (config.github.enabled ? new GhPullRequests() : undefined),
-          notifier: await platform.notifier({ onClick: focusCommand() }),
+          notifier: await platform.notifier(notifierOptions()),
           selfUpdate: { runningFrom: cliPath(), service: background, afterApplied: reloadOpenCode },
         });
       } catch (error) {
@@ -397,7 +403,7 @@ async function run(
           // Under launchd a clean exit avoids a restart loop; tell the human instead.
           console.error(`ocd: not started: ${error.message}`);
           await (
-            await platform.notifier()
+            await platform.notifier({ ...notifierOptions(), onClick: undefined })
           )
             .notify({ title: "OCD: Supervisor not started", body: error.message })
             .catch(() => undefined);
@@ -636,7 +642,7 @@ async function run(
       const harnesses = await probeHarnesses(config);
       const gh = config.github.enabled ? await probeGh({ timeoutMs: 10_000 }) : null;
       const git = locateBinary("git");
-      const notifier = await platform.notifier({ onClick: focusCommand() });
+      const notifier = await platform.notifier(notifierOptions());
       const tmux = config.tmux.enabled ? locateBinary("tmux") : null;
       let delivery: string | null = null;
       if (flags.notify) {

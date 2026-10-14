@@ -101,6 +101,7 @@ export class NotifySendNotifier implements DesktopNotifier {
   private readonly onClick: readonly string[] | null;
   private readonly exec: Exec;
   private readonly graceMs: number;
+  private readonly icon: string | null;
 
   constructor(options: {
     binary: string;
@@ -109,7 +110,10 @@ export class NotifySendNotifier implements DesktopNotifier {
     exec?: Exec;
     /** How long to wait for an immediate failure before calling it delivered. */
     graceMs?: number;
+    /** Image file shown with the notification (OCD's icon). */
+    icon?: string;
   }) {
+    this.icon = options.icon ?? null;
     this.graceMs = options.graceMs ?? 750;
     this.binary = options.binary;
     this.onClick = options.supportsActions ? (options.onClick ?? null) : null;
@@ -119,7 +123,7 @@ export class NotifySendNotifier implements DesktopNotifier {
 
   notify(message: { title: string; body: string }): Promise<void> {
     const { title, body } = clean(message);
-    const args = ["--app-name=OCD", title, body];
+    const args = ["--app-name=OCD", ...(this.icon ? [`--icon=${this.icon}`] : []), title, body];
     const onClick = this.onClick;
     if (!onClick) return run(this.exec, this.binary, args);
     return new Promise((resolve, reject) => {

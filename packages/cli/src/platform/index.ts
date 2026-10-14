@@ -8,6 +8,7 @@ import {
   type DesktopNotifier,
 } from "./notify.ts";
 import { execCommand, locateBinary, type Exec } from "./exec.ts";
+import { ensureNotifierApp } from "./notifier-app.ts";
 import type { ServiceManager } from "./service.ts";
 import { SystemdService } from "./systemd.ts";
 import type { TerminalApp } from "./terminal.ts";
@@ -15,6 +16,7 @@ import type { TerminalApp } from "./terminal.ts";
 export * from "./exec.ts";
 export * from "./focus.ts";
 export * from "./launchd.ts";
+export * from "./notifier-app.ts";
 export * from "./notify.ts";
 export * from "./service.ts";
 export * from "./shell-env.ts";
@@ -28,12 +30,23 @@ export * from "./terminal.ts";
  */
 export interface Platform {
   readonly name: "macos" | "linux" | "unsupported";
-  /** The best notifier available; clicking runs `onClick` where the backend supports it. */
-  notifier(options?: { onClick?: readonly string[] | undefined }): Promise<DesktopNotifier>;
+  /**
+   * The best notifier available; clicking runs `onClick` where the backend
+   * supports it. With `icon` (and `home` on macOS) notifications carry OCD's icon.
+   */
+  notifier(options?: NotifierOptions): Promise<DesktopNotifier>;
   /** Raises a terminal app's window; false when the platform cannot. */
   activate(app: TerminalApp): Promise<boolean>;
   /** Background service manager, or null where OCD has none. */
   readonly service: ServiceManager | null;
+}
+
+export interface NotifierOptions {
+  onClick?: readonly string[] | undefined;
+  /** OCD's icon: .icns for the macOS notifier app, PNG for notify-send. */
+  icon?: { icns: string; png: string } | undefined;
+  /** OCD's home; the macOS notifier app is kept in <home>/notifier. */
+  home?: string | undefined;
 }
 
 export class MacPlatform implements Platform {
@@ -46,10 +59,19 @@ export class MacPlatform implements Platform {
     this.service = options.service ?? new LaunchdService({ exec: this.exec });
   }
 
-  async notifier(
-    options: { onClick?: readonly string[] | undefined } = {},
-  ): Promise<DesktopNotifier> {
-    const binary = locateBinary("terminal-notifier");
+  async notifier(options: NotifierOptions = {}): Promise<DesktopNotifier> {
+    const found = locateBinary("terminal-notifier");
+    // OCD's own copy of terminal-notifier carries its name and icon (see notifier-app.ts).
+    const branded =
+      found && options.icon && options.home
+        ? await ensureNotifierApp({
+            terminalNotifier: found,
+            icns: options.icon.icns,
+            home: options.home,
+            exec: this.exec,
+          })
+        : null;
+    const binary = branded ?? found;
     const osascript = new OsascriptNotifier({ exec: this.exec });
     return binary
       ? new FallbackNotifier(
@@ -79,9 +101,7 @@ export class LinuxPlatform implements Platform {
       new SystemdService({ exec: this.exec, systemctl: locateBinary("systemctl") ?? "systemctl" });
   }
 
-  async notifier(
-    options: { onClick?: readonly string[] | undefined } = {},
-  ): Promise<DesktopNotifier> {
+  async notifier(options: NotifierOptions = {}): Promise<DesktopNotifier> {
     const binary = locateBinary("notify-send");
     if (!binary) return new NoDesktopNotifier("install libnotify for notify-send");
     // Actions arrived in libnotify 0.7.9; older versions reject the flag.
@@ -90,6 +110,7 @@ export class LinuxPlatform implements Platform {
       binary,
       onClick: options.onClick,
       supportsActions: help.stdout.includes("--action"),
+      ...(options.icon ? { icon: options.icon.png } : {}),
       exec: this.exec,
     });
   }
