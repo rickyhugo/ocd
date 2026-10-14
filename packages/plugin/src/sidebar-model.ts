@@ -253,7 +253,9 @@ export type ActionKind =
   | "land_direct"
   | "land_confirm"
   | "land_decline"
-  | "discard";
+  | "discard"
+  | "diff"
+  | "request_changes";
 /** A message goes to the manager, which acts on it; a kind runs directly against OCD. */
 export type QuickAction = { label: string; message: string } | { label: string; kind: ActionKind };
 
@@ -301,6 +303,7 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
   }
   const landing = row.task && landable(row.task) ? landingActions(options) : [];
   const discard = { label: "Discard the work…", kind: "discard" as const };
+  const diff = row.task?.workspacePath ? [{ label: "View the diff", kind: "diff" as const }] : [];
   // Manual mode needs a worker session to open.
   const takeover = row.task?.sessionId
     ? [{ label: "Take over (manual mode)", kind: "takeover" as const }]
@@ -309,6 +312,7 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
     case "manual":
       return [
         { label: "Open the session", kind: "open" },
+        ...diff,
         { label: "Give back: let the worker continue", kind: "giveback_continue" },
         { label: "Give back: ready for review", kind: "giveback_review" },
         message,
@@ -316,7 +320,9 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
       ];
     case "ready_for_review":
       return [
+        ...diff,
         ...landing,
+        { label: "Request changes…", kind: "request_changes" },
         { label: "Accept (keep the worktree)", kind: "accept" },
         ...takeover,
         {
@@ -332,6 +338,7 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
     case "blocked":
       return [
         { label: "Status update", message: "How is it going? Give me a short status update." },
+        ...diff,
         ...takeover,
         message,
         { label: "Cancel it", message: "Cancel this task." },
@@ -343,6 +350,7 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
       return [
         { label: "What happened?", message: "What happened, and what do you suggest?" },
         { label: "Retry it", message: "Look at what went wrong and retry it if that is safe." },
+        ...diff,
         ...takeover,
         message,
         discard,
@@ -352,7 +360,12 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
     case "cancelled":
       return [
         ...(row.task.workspacePath
-          ? [...landing, { label: "Clean up the worktree", kind: "clean" as const }, discard]
+          ? [
+              ...diff,
+              ...landing,
+              { label: "Clean up the worktree", kind: "clean" as const },
+              discard,
+            ]
           : []),
         message,
         details,

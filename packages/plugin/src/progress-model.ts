@@ -108,6 +108,7 @@ const MILESTONE: Record<string, string> = {
   "land.requested": "Push awaiting confirmation",
   "land.failed": "Push failed",
   "task.landed": "Landed",
+  "review.changes_requested": "Changes requested",
 };
 
 const field = (data: unknown, key: string): unknown =>

@@ -19,7 +19,11 @@ import {
   buildSpill,
   collectSpill,
   describeLandResult,
+  diffTotals,
+  fileCounts,
+  formatDiffStat,
   formatLandPlan,
+  splitPatch,
   formatSpill,
   resolveOcdPaths,
   type Attention,
@@ -28,8 +32,10 @@ import {
   type OcdApiError,
   type TakeOverResult,
   type Task,
+  type TaskDiff,
 } from "@ocd/core";
 import { Plugin } from "@opencode/plugin/tui";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { For, Index, Show, createMemo, createSignal } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 
@@ -308,6 +314,178 @@ export default Plugin.define({
       await refresh();
     };
 
+    /** Picks a landing route for one task (the pull request route only when it is on), then lands. */
+    const chooseLanding = async (task: Task) => {
+      const routes = landingActions({ pullRequests: await pullRequestsOn() });
+      const route = await ctx.ui.dialog.select<"land" | "land_direct">({
+        title: clip(task.title, 60),
+        options: routes.map((r) => ({ title: r.label, value: r.kind })),
+      });
+      if (route === "land") await land(task);
+      else if (route === "land_direct") await landDirect(task);
+    };
+
+    /** Review feedback goes to the same worker session; the task comes back for review. */
+    const requestChanges = async (task: Task) => {
+      const feedback = await ctx.ui.dialog.prompt({
+        title: `Request changes: ${clip(task.title, 40)}`,
+        description: "The worker gets this as a follow-up; the task comes back for review.",
+        placeholder: "What should change?",
+      });
+      if (!feedback?.trim()) return;
+      await client.requestChanges(task.id, feedback.trim());
+      toast(`Sent the feedback; “${clip(task.title, 40)}” is back with the worker`);
+      await refresh();
+    };
+
+    // The diff opens in OpenCode's session panel, drawn with OpenTUI's diff
+    // component. The supervisor produces it; nothing here touches git.
+    const DIFF_PANEL = "ocd-diff";
+    const [diffView, setDiffView] = createSignal<{ task: Task; diff: TaskDiff } | null>(null);
+    const [split, setSplit] = createSignal(false);
+
+    const openDiff = async (task: Task) => {
+      const diff = await client.taskDiff(task.id);
+      setDiffView({ task, diff });
+      // Outside a session there is no panel: show the per-file summary instead.
+      if (!ctx.ui.panel.open(DIFF_PANEL))
+        await ctx.ui.dialog.alert({ title: clip(task.title, 60), message: formatDiffStat(diff) });
+    };
+
+    /** The theme's diff colours, where it defines them; OpenTUI's defaults otherwise. */
+    const diffColors = () => {
+      const pick = (key: string) => theme[key] as never;
+      const entries = {
+        fg: pick("text"),
+        addedBg: pick("diffAddedBg"),
+        removedBg: pick("diffRemovedBg"),
+        contextBg: pick("diffContextBg"),
+        addedSignColor: pick("diffHighlightAdded") ?? pick("diffAdded"),
+        removedSignColor: pick("diffHighlightRemoved") ?? pick("diffRemoved"),
+        lineNumberFg: pick("diffLineNumber"),
+        addedLineNumberBg: pick("diffAddedLineNumberBg"),
+        removedLineNumberBg: pick("diffRemovedLineNumberBg"),
+      };
+      return Object.fromEntries(Object.entries(entries).filter(([, v]) => v !== undefined));
+    };
+
+    const DiffPanel = (props: {
+      view: { task: Task; diff: TaskDiff };
+      focused: boolean;
+      focus: () => void;
+      close: () => void;
+      toggleFullscreen: () => void;
+    }) => {
+      let scroll: ScrollBoxRenderable | undefined;
+      const files = createMemo(() =>
+        splitPatch(props.view.diff.patch).map((part) => ({
+          ...part,
+          file: props.view.diff.files.find((f) => f.path === part.path),
+        })),
+      );
+      const reviewable = () => props.view.task.state === "ready_for_review";
+      ctx.keymap.layer(() => ({
+        enabled: () => props.focused,
+        commands: [
+          {
+            title: "Diff: unified / side by side",
+            group: "OCD diff",
+            bind: "v",
+            run: () => void setSplit((s) => !s),
+          },
+          {
+            title: "Diff: scroll down",
+            group: "OCD diff",
+            bind: "j",
+            run: () => scroll?.scrollBy(3),
+          },
+          {
+            title: "Diff: scroll up",
+            group: "OCD diff",
+            bind: "k",
+            run: () => scroll?.scrollBy(-3),
+          },
+          {
+            title: "Diff: page down",
+            group: "OCD diff",
+            bind: "space",
+            run: () => scroll?.scrollBy(20),
+          },
+          {
+            title: "Diff: page up",
+            group: "OCD diff",
+            bind: "b",
+            run: () => scroll?.scrollBy(-20),
+          },
+          {
+            title: "Request changes…",
+            group: "OCD diff",
+            bind: "r",
+            enabled: reviewable,
+            run: () => void requestChanges(props.view.task).catch(fail),
+          },
+          {
+            title: "Land…",
+            group: "OCD diff",
+            bind: "l",
+            enabled: () => landable(props.view.task),
+            run: () => void chooseLanding(props.view.task).catch(fail),
+          },
+          {
+            title: "Diff: fullscreen",
+            group: "OCD diff",
+            bind: "f",
+            run: () => props.toggleFullscreen(),
+          },
+          { title: "Diff: close", group: "OCD diff", bind: "q", run: () => props.close() },
+        ],
+      }));
+      const d = () => props.view.diff;
+      return (
+        <box flexDirection="column" flexGrow={1} paddingLeft={1} paddingRight={1}>
+          <text fg={color("text")} wrapMode="none" flexShrink={0}>
+            <b>{props.view.task.title}</b>
+          </text>
+          <text fg={muted()} wrapMode="none" flexShrink={0}>
+            {`${d().branch ?? props.view.task.id} vs ${d().baseRef} · ${diffTotals(d())}${d().truncated ? " · truncated" : ""}`}
+          </text>
+          <text fg={muted()} wrapMode="none" flexShrink={0}>
+            {`v split · j/k scroll${reviewable() ? " · r request changes" : ""}${landable(props.view.task) ? " · l land" : ""} · f fullscreen · q close`}
+          </text>
+          <scrollbox
+            ref={(r: ScrollBoxRenderable) => (scroll = r)}
+            flexGrow={1}
+            scrollY
+            marginTop={1}
+          >
+            <Show when={files().length} fallback={<text fg={muted()}>No changes.</text>}>
+              <For each={files()}>
+                {(part) => (
+                  <box flexDirection="column" marginBottom={1}>
+                    <box flexDirection="row">
+                      <text fg={color("text")} wrapMode="none">
+                        <b>{part.path}</b>
+                      </text>
+                      <text fg={muted()} wrapMode="none">
+                        {`  ${part.file ? fileCounts(part.file) : ""}${part.file?.uncommitted ? " · uncommitted" : ""}`}
+                      </text>
+                    </box>
+                    <diff
+                      diff={part.patch}
+                      view={split() ? "split" : "unified"}
+                      showLineNumbers
+                      wrapMode="none"
+                      {...diffColors()}
+                    />
+                  </box>
+                )}
+              </For>
+            </Show>
+          </scrollbox>
+        </box>
+      );
+    };
+
     /** Opens a taken-over session: a tmux window when tmux is on and the TUI runs in it, else the command to run. */
     const openSession = async (r: TakeOverResult) => {
       const window = r.tmux
@@ -405,6 +583,12 @@ export default Plugin.define({
             return;
           case "discard":
             if (task) await discard(task);
+            return;
+          case "diff":
+            if (task) await openDiff(task);
+            return;
+          case "request_changes":
+            if (task) await requestChanges(task);
             return;
           default:
             if (task) await runDirect(task, action.kind);
@@ -544,6 +728,23 @@ export default Plugin.define({
         </box>
       );
     };
+
+    const removeDiffPanel = ctx.ui.slot({
+      append: "session.panel",
+      render: (input) => (
+        <Show when={input.name === DIFF_PANEL ? diffView() : null}>
+          {(view: () => { task: Task; diff: TaskDiff }) => (
+            <DiffPanel
+              view={view()}
+              focused={input.focused}
+              focus={input.focus}
+              close={input.close}
+              toggleFullscreen={input.toggleFullscreen}
+            />
+          )}
+        </Show>
+      ),
+    });
 
     const removeSidebar = ctx.ui.slot({
       append: "sidebar.content",
@@ -691,14 +892,40 @@ export default Plugin.define({
           run: async () => {
             try {
               const task = await pickTask("Land which task?", landable);
-              if (!task) return;
-              const routes = landingActions({ pullRequests: await pullRequestsOn() });
-              const route = await ctx.ui.dialog.select<"land" | "land_direct">({
-                title: clip(task.title, 60),
-                options: routes.map((r) => ({ title: r.label, value: r.kind })),
-              });
-              if (route === "land") await land(task);
-              else if (route === "land_direct") await landDirect(task);
+              if (task) await chooseLanding(task);
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.diff",
+          title: "OCD: view a task's diff",
+          group: "OCD",
+          palette: true,
+          slash: { name: "diff" },
+          run: async () => {
+            try {
+              const task = await pickTask("Diff of which task?", (t) => !!t.workspacePath);
+              if (task) await openDiff(task);
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.changes",
+          title: "OCD: request changes on a task under review",
+          group: "OCD",
+          palette: true,
+          slash: { name: "changes" },
+          run: async () => {
+            try {
+              const task = await pickTask(
+                "Request changes on which task?",
+                (t) => t.state === "ready_for_review",
+              );
+              if (task) await requestChanges(task);
             } catch (error) {
               fail(error);
             }
@@ -764,6 +991,7 @@ export default Plugin.define({
     return () => {
       clearInterval(timer);
       removeSidebar();
+      removeDiffPanel();
     };
   },
 });

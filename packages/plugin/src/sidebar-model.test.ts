@@ -120,18 +120,28 @@ describe("sidebar model", () => {
     ]);
   });
 
-  it("offers landing first for review, and clean up for kept worktrees", () => {
-    const [review] = buildSidebar([task("c", "ready_for_review")], [], NOW).sections[0]!.rows;
-    expect(actionsFor(review!, PR_ON).slice(0, 3)).toEqual([
+  it("offers the diff and landing first for review, and clean up for kept worktrees", () => {
+    const [review] = buildSidebar(
+      [task("c", "ready_for_review", { workspacePath: "/ws/c" })],
+      [],
+      NOW,
+    ).sections[0]!.rows;
+    expect(actionsFor(review!, PR_ON).slice(0, 5)).toEqual([
+      { label: "View the diff", kind: "diff" },
       { label: "Land through a pull request", kind: "land" },
       { label: "Land directly on the base branch…", kind: "land_direct" },
+      { label: "Request changes…", kind: "request_changes" },
       { label: "Accept (keep the worktree)", kind: "accept" },
     ]);
     // Without pull requests (github.enabled off) only the direct route is offered.
-    expect(actionsFor(review!, { pullRequests: false }).slice(0, 2)).toEqual([
+    expect(actionsFor(review!, { pullRequests: false }).slice(1, 3)).toEqual([
       { label: "Land directly on the base branch…", kind: "land_direct" },
-      { label: "Accept (keep the worktree)", kind: "accept" },
+      { label: "Request changes…", kind: "request_changes" },
     ]);
+    // No worktree, no diff.
+    const [bare] = buildSidebar([task("d", "ready_for_review", { workspacePath: null })], [], NOW)
+      .sections[0]!.rows;
+    expect(actionsFor(bare!, PR_ON).map((a) => a.label)).not.toContain("View the diff");
     expect(actionsFor(review!, PR_ON).map((a) => a.label)).not.toContain("Accept and clean up");
     expect(actionsFor(review!, PR_ON).map((a) => a.label)).toContain("Discard the work…");
     const [kept, gone] = buildSidebar([], [], NOW, [

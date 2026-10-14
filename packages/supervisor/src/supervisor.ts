@@ -23,6 +23,7 @@ import {
   type HarnessName,
   type LandPlan,
   type LandResult,
+  type TaskDiff,
   type ShutdownReport,
   type SupervisorStatus,
   type TakeOverResult,
@@ -2209,6 +2210,45 @@ export class Supervisor {
       );
       return this.store.requireTask(taskId);
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Review
+
+  /** The task's changes against where its branch started. Read-only; no task lock. */
+  async diff(taskId: string): Promise<TaskDiff> {
+    const task = this.store.requireTask(taskId);
+    if (!task.workspacePath || !task.baseRef)
+      throw conflict("no_workspace", "The task has no worktree to diff");
+    const d = await this.o.workspaces.diff(task.workspacePath, task.baseRef);
+    return { taskId, branch: task.branch, baseRef: task.baseRef, ...d };
+  }
+
+  /**
+   * Review feedback: sent to the same worker session as a follow-up (the task
+   * reopens, then comes back for review with a new report), and recorded as a
+   * numbered review round.
+   */
+  async requestChanges(taskId: string, feedback: string, actor: Actor): Promise<Task> {
+    const task = this.store.requireTask(taskId);
+    if (task.state !== "ready_for_review")
+      throw conflict(
+        "not_reviewable",
+        `Request changes on a task under review (task is ${task.state})`,
+      );
+    const round =
+      this.store.events(taskId, 10_000).filter((e) => e.type === "review.changes_requested")
+        .length + 1;
+    const reopened = await this.sendToWorker(
+      taskId,
+      `Review feedback (round ${round}) on your work:\n\n${feedback}\n\nAddress it in this worktree and commit your changes.`,
+    );
+    this.store.appendEvent(taskId, "review.changes_requested", {
+      round,
+      actor,
+      feedback: truncate(redact(feedback), 2000),
+    });
+    return reopened;
   }
 
   // ---------------------------------------------------------------------------

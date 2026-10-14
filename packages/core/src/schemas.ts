@@ -363,6 +363,33 @@ export interface LandResult {
   commit: string | null;
 }
 
+/** One file in a task's diff. */
+export interface TaskDiffFile {
+  path: string;
+  status: "added" | "deleted" | "modified";
+  /** null for binary files. */
+  additions: number | null;
+  deletions: number | null;
+  /** Not committed yet (a change in the worktree, or a new untracked file). */
+  uncommitted: boolean;
+}
+
+/** A task's changes against the point its branch left its base, uncommitted ones included. */
+export interface TaskDiff {
+  taskId: string;
+  branch: string | null;
+  /** The ref the task branch started from, e.g. main. */
+  baseRef: string;
+  mergeBase: string;
+  head: string;
+  files: TaskDiffFile[];
+  /** Unified diff text (git format), capped in size. */
+  patch: string;
+  truncated: boolean;
+}
+
+export const RequestChangesInput = z.object({ feedback: z.string().min(1).max(20_000) });
+
 export const GiveBackInput = z.object({
   /** continue: the worker resumes headless; review: the human is done, the task goes to review. */
   mode: z.enum(["continue", "review"]),

@@ -286,10 +286,10 @@ plugin directory) adds:
   refresh), and checklists live in supervisor memory, so after a restart one
   reappears with the worker's next update. No transcripts or reasoning.
 - **Row actions** (click a row) fit the task's state:
-  - Ready for review: **Land through a pull request** (only with
-    `github.enabled`), **Land directly on the base branch…** (shows the commits
-    and asks first), **Accept (keep the worktree)**, Summarize the result,
-    **Discard the work…**.
+  - Ready for review: **View the diff**, **Land through a pull request** (only
+    with `github.enabled`), **Land directly on the base branch…** (shows the
+    commits and asks first), **Request changes…**, **Accept (keep the
+    worktree)**, Summarize the result, **Discard the work…**.
   - Accepted with a kept worktree: the two Land actions, **Clean up the
     worktree**, **Discard the work…**.
   - A push the manager asked for: **Review and confirm the push…**, **Decline
@@ -303,6 +303,18 @@ plugin directory) adds:
   the toast says how to proceed (land it, or discard it). The other actions
   are messages to the manager, which acts on them as your explicit
   instruction.
+
+- **Review**: **View the diff** (a row action, or `/diff`) opens the task's
+  changes in OpenCode's session panel, drawn with OpenTUI's diff component:
+  everything since the branch left its base, uncommitted and new files
+  included. Keys while it is focused: `v` unified / side by side, `j`/`k`
+  and `space`/`b` to scroll, `r` request changes, `l` land, `f` fullscreen,
+  `q` close. **Request changes…** (a row action, `/changes`, or `r` in the
+  diff) sends your feedback to the same worker session; the task comes back
+  for review with a new report, and each round is recorded
+  (`review.changes_requested`). In a terminal: `ocd task diff <id> [--stat]`
+  and `ocd task request-changes <id> <feedback>`; the manager has
+  `ocd_diff_task` and `ocd_request_changes`.
 
 - **`/land`:** pick a finished task, then a route: through a pull request
   (only with `github.enabled`), or directly on the base branch after you
@@ -436,13 +448,15 @@ says why (`available: false` with notes) instead of guessing.
 5. Workers commit to `ocd/<task>` (never push). Nothing is merged
    automatically. You decide what happens next:
 
-   | Command (manager tool)                                     | What it does                                                                                                                |
-   | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-   | `ocd task accept <id>` (`ocd_accept_task`)                 | Approve the work; the worktree is kept.                                                                                     |
-   | `ocd task land <id> [--commit] [--wait]` (`ocd_land_task`) | Accept, open or reuse a pull request, merge it once GitHub allows, remove the worktree and branches. Run again to continue. |
-   | `ocd task land <id> --direct`                              | Escape hatch: push straight to the base branch, after you confirm the exact commits.                                        |
-   | `ocd task cleanup <id>` (`ocd_cleanup_task`)               | Remove a finished task's worktree and branch, refusing while that would lose work.                                          |
-   | `ocd task discard <id>`                                    | Cancel if needed and delete the worktree and branch, work included (asks first).                                            |
+   | Command (manager tool)                                             | What it does                                                                                                                |
+   | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+   | `ocd task diff <id> [--stat]` (`ocd_diff_task`)                    | Read the changes: everything since the branch left its base, uncommitted files included.                                    |
+   | `ocd task request-changes <id> <feedback>` (`ocd_request_changes`) | Send review feedback to the same worker; the task comes back for review.                                                    |
+   | `ocd task accept <id>` (`ocd_accept_task`)                         | Approve the work; the worktree is kept.                                                                                     |
+   | `ocd task land <id> [--commit] [--wait]` (`ocd_land_task`)         | Accept, open or reuse a pull request, merge it once GitHub allows, remove the worktree and branches. Run again to continue. |
+   | `ocd task land <id> --direct`                                      | Escape hatch: push straight to the base branch, after you confirm the exact commits.                                        |
+   | `ocd task cleanup <id>` (`ocd_cleanup_task`)                       | Remove a finished task's worktree and branch, refusing while that would lose work.                                          |
+   | `ocd task discard <id>`                                            | Cancel if needed and delete the worktree and branch, work included (asks first).                                            |
 
 6. **Landing through a pull request** (needs `github.enabled`) goes as far as
    it safely can and says what is left: "checks still running", a failing

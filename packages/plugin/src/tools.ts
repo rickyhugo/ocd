@@ -1,5 +1,6 @@
 import {
   describeLandResult,
+  formatDiffStat,
   renderTranscript,
   truncate,
   type OcdClient,
@@ -275,6 +276,40 @@ export function buildTools(
           .parse(input);
         const t = await clientFor(ctx.sessionID, ctx.directory).mergePullRequest(i.id, i.method);
         return `Merge done or queued for ${t.pullRequestUrl}. Check ocd_inspect_task for the pull_request.merged event.`;
+      },
+    },
+    {
+      name: "diff_task",
+      description:
+        "Read-only: a task's changes against where its branch started, uncommitted ones included. Returns the per-file stat and the patch (capped). Use it to review the work before recommending acceptance; the worker's summary is only a claim.",
+      input: obj(
+        {
+          id: str("Task ID"),
+          stat_only: { type: "boolean", description: "Only the per-file summary" },
+        },
+        ["id"],
+      ),
+      run: async (input, ctx) => {
+        const i = z.object({ id: z.string(), stat_only: z.boolean().optional() }).parse(input);
+        const d = await clientFor(ctx.sessionID, ctx.directory).taskDiff(i.id);
+        const stat = formatDiffStat(d);
+        if (i.stat_only) return stat;
+        const patch = truncate(d.patch, 60_000);
+        return `${UNTRUSTED}\n\n${stat}\n\n${patch}${patch.length < d.patch.length || d.truncated ? "\n(patch truncated; look at specific files in the worktree)" : ""}`;
+      },
+    },
+    {
+      name: "request_changes",
+      description:
+        "Send the human's review feedback to the worker of a task under review: it continues in the same session and the task comes back for review with a new report. Recorded as a numbered review round. Only with feedback the human gave or approved in this conversation.",
+      input: obj({ id: str("Task ID"), feedback: str("What to change, specifically") }, [
+        "id",
+        "feedback",
+      ]),
+      run: async (input, ctx) => {
+        const i = z.object({ id: z.string(), feedback: z.string().min(1) }).parse(input);
+        const t = await clientFor(ctx.sessionID, ctx.directory).requestChanges(i.id, i.feedback);
+        return `Feedback sent; ${taskLine(t)}`;
       },
     },
     {

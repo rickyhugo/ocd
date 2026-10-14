@@ -340,6 +340,99 @@ export class WorkspaceManager {
     return result.code === 0;
   }
 
+  /**
+   * A worktree's changes since its branch left `baseRef`: committed and
+   * uncommitted edits plus new untracked files, as one git-format patch capped
+   * at `maxBytes`. Read-only: no index or ref is touched, and external diff
+   * drivers and textconv filters are not run.
+   */
+  async diff(
+    path: string,
+    baseRef: string,
+    maxBytes = 1_500_000,
+  ): Promise<{
+    mergeBase: string;
+    head: string;
+    files: {
+      path: string;
+      status: "added" | "deleted" | "modified";
+      additions: number | null;
+      deletions: number | null;
+      uncommitted: boolean;
+    }[];
+    patch: string;
+    truncated: boolean;
+  }> {
+    const opts = ["-c", "core.quotePath=false"];
+    const plain = ["--no-ext-diff", "--no-textconv", "--no-color", "--no-renames"];
+    const mergeBase = await git(path, ["merge-base", baseRef, "HEAD"]);
+    const head = await this.head(path);
+    const [numstat, nameStatus, untrackedZ, dirtyZ] = await Promise.all([
+      git(path, [...opts, "diff", ...plain, "--numstat", mergeBase]),
+      git(path, [...opts, "diff", ...plain, "--name-status", mergeBase]),
+      git(path, ["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }),
+      git(path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { trim: false }),
+    ]);
+    const dirty = new Set(parsePorcelainZ(dirtyZ));
+    const status = new Map(
+      nameStatus
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [code = "M", ...rest] = line.split("\t");
+          const kind = code.startsWith("A")
+            ? "added"
+            : code.startsWith("D")
+              ? "deleted"
+              : "modified";
+          return [rest.join("\t"), kind] as const;
+        }),
+    );
+    const files = numstat
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [add = "-", del = "-", ...rest] = line.split("\t");
+        const file = rest.join("\t");
+        return {
+          path: file,
+          status: status.get(file) ?? ("modified" as const),
+          additions: add === "-" ? null : Number(add),
+          deletions: del === "-" ? null : Number(del),
+          uncommitted: dirty.has(file),
+        };
+      });
+    let patch = await git(path, [...opts, "diff", ...plain, mergeBase], { trim: false });
+    for (const file of untrackedZ.split("\0").filter(Boolean)) {
+      // `git diff --no-index` exits 1 when the files differ, which they always do here.
+      const r = await run(
+        "git",
+        [...opts, "diff", ...plain, "--no-index", "--numstat", "--", "/dev/null", file],
+        { cwd: path },
+      );
+      const [add = "-", del = "-"] = r.stdout.trim().split("\t");
+      files.push({
+        path: file,
+        status: "added",
+        additions: add === "-" ? null : Number(add),
+        deletions: del === "-" ? null : Number(del),
+        uncommitted: true,
+      });
+      if (patch.length < maxBytes)
+        patch += (
+          await run("git", [...opts, "diff", ...plain, "--no-index", "--", "/dev/null", file], {
+            cwd: path,
+          })
+        ).stdout;
+    }
+    // Byte order, as git lists paths.
+    files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const truncated = patch.length > maxBytes;
+    if (truncated)
+      patch = patch.slice(0, patch.lastIndexOf("\ndiff --git ", maxBytes) + 1 || maxBytes);
+    return { mergeBase, head, files, patch, truncated };
+  }
+
   /** The commit a worktree's HEAD points at. */
   async head(path: string): Promise<string> {
     return git(path, ["rev-parse", "--verify", "HEAD^{commit}"]);
