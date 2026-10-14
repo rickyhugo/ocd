@@ -169,6 +169,58 @@ describe("Claude Code adapter", () => {
     await fresh.close();
   });
 
+  // Recorded from Claude Code 2.1.299: a message sent mid-turn is either run
+  // as its own turn after the current one (two results) or folded into the
+  // running turn (one result); the replay echo says which.
+  it("stays busy across a result while a message sent mid-turn is still queued", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    const statuses: string[] = [];
+    adapter.subscribe((e) => void (e.type === "status" && statuses.push(e.status)));
+    await adapter.prompt(ref, "[queue]");
+    await delay(50);
+    await adapter.prompt(ref, "second");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+    expect((await adapter.inspect(ref)).lastAssistantText).toContain("claude did it");
+    expect(statuses).toEqual(["idle"]);
+  });
+
+  it("goes idle after one result when a message sent mid-turn was folded into it", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "[fold]");
+    await delay(50);
+    await adapter.prompt(ref, "second");
+    const s = await until(
+      () => adapter.inspect(ref),
+      (x) => x.status === "idle",
+    );
+    expect(s.lastAssistantText).toContain("folded: second");
+  });
+
+  it("does not read an interrupted turn as a failure when a prompt follows at once", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    const statuses: string[] = [];
+    adapter.subscribe((e) => void (e.type === "status" && statuses.push(e.status)));
+    await adapter.prompt(ref, "[hang]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "busy",
+    );
+    await adapter.interrupt(ref);
+    await adapter.prompt(ref, "after the interrupt");
+    const s = await until(
+      () => adapter.inspect(ref),
+      (x) => x.status === "idle" && x.lastAssistantText !== null,
+    );
+    expect(s.error).toBeNull();
+    expect(statuses).not.toContain("error");
+  });
+
   it("fails fast when the binary cannot start", async () => {
     const { spec } = setup();
     adapter = new ClaudeAdapter({ command: ["/nonexistent/claude"] });

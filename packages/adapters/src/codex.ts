@@ -695,13 +695,27 @@ export class CodexAdapter implements HarnessAdapter {
     const session = this.live(ref);
     this.clearIdleStop(session);
     const input = [{ type: "text", text }];
+    let steered = false;
     if (session.activeTurnId) {
-      await this.call(session, "turn/steer", {
-        threadId: session.threadId,
-        expectedTurnId: session.activeTurnId,
-        input,
-      });
-    } else {
+      const turnId = session.activeTurnId;
+      try {
+        await this.call(session, "turn/steer", {
+          threadId: session.threadId,
+          expectedTurnId: turnId,
+          input,
+        });
+        steered = true;
+      } catch (error) {
+        // The turn ended (on its own, or by an interrupt) between our view of it
+        // and the steer arriving: Codex refuses, and the text starts a new turn.
+        const ended =
+          session.activeTurnId !== turnId ||
+          /no active turn|expected turn/i.test(error instanceof Error ? error.message : "");
+        if (!ended) throw error;
+        if (session.activeTurnId === turnId) session.activeTurnId = null;
+      }
+    }
+    if (!steered) {
       const { effort } = parseCodexModel(session.spec.model);
       // Busy before the request: the turn's notifications can arrive before its
       // reply, and a turn that already completed must not be marked busy again.
@@ -761,10 +775,14 @@ export class CodexAdapter implements HarnessAdapter {
   async interrupt(ref: SessionRef): Promise<void> {
     const session = this.sessions.get(ref.sessionId);
     if (!session?.proc.running || !session.activeTurnId) return;
-    await this.call(session, "turn/interrupt", {
-      threadId: session.threadId,
-      turnId: session.activeTurnId,
-    });
+    const turnId = session.activeTurnId;
+    await this.call(session, "turn/interrupt", { threadId: session.threadId, turnId });
+    // Codex acknowledges before the turn reports completion; wait (bounded) for
+    // it, so a prompt sent right after starts a new turn instead of steering a
+    // turn that is already over.
+    const deadline = Date.now() + 10_000;
+    while (session.activeTurnId === turnId && session.proc.running && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
   async reply(ref: SessionRef, interactionId: string, reply: InteractionReply): Promise<void> {
