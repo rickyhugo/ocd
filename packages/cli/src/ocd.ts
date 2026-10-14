@@ -22,25 +22,26 @@ import {
   ConfigError,
   DatabaseTooNewError,
   GhPullRequests,
-  LiveConfig,
+  probeGh,
   LockHeldError,
   loadConfig,
   normalizeDirectory,
   startDaemon,
 } from "@ocd/supervisor";
 
-import { checkGh, describeGh, ghServiceHints, miseShim, serviceGh } from "./github.ts";
+import { describeGh } from "./github.ts";
 import { insideWorktree } from "./guard.ts";
 import { buildAdapters, buildManagerChannel, probeHarnesses } from "./harnesses.ts";
 import {
   FallbackNotifier,
   currentPlatform,
   execCommand,
-  extraBinDirs,
   servicePath,
   shellQuote,
   focusManager,
   locateBinary,
+  loginShellPath,
+  toolPath,
   type Platform,
 } from "./platform/index.ts";
 import { followInterval, followTranscript } from "./peek.ts";
@@ -59,7 +60,7 @@ Supervisor
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
   ocd doctor [--notify]             Check harnesses, the OpenCode service, notifications, the service manager and
-                                    the GitHub CLI (gh) as both this shell and the background service would find it;
+                                    the tools (gh, git, tmux) on the PATH the supervisor uses (your login shell's);
                                     --notify sends a test notification (click it to try \`ocd focus\`)
   ocd focus                         Switch to the manager session (tmux pane + terminal window); what a notification click runs
 
@@ -126,24 +127,25 @@ function cliPath(): string {
 }
 
 /**
- * What a notification click runs: `ocd focus` with this process's Node and
- * state directory. Notification daemons start it with a bare environment, so
- * OCD_HOME / OCD_CONFIG are passed explicitly.
+ * What a notification click runs: `ocd focus` with this process's Node, state
+ * directory and PATH (so it finds tmux). Notification daemons start it with a
+ * bare environment, so they are passed explicitly.
  */
 function focusCommand(): string[] {
-  const env = (["OCD_HOME", "OCD_CONFIG"] as const).flatMap((k) =>
+  const env = (["OCD_HOME", "OCD_CONFIG", "PATH"] as const).flatMap((k) =>
     process.env[k] ? [`${k}=${process.env[k]}`] : [],
   );
-  return [...(env.length ? ["/usr/bin/env", ...env] : []), process.execPath, cliPath(), "focus"];
+  return ["/usr/bin/env", ...env, process.execPath, cliPath(), "focus"];
 }
 
-/** gh.binary from ocd.jsonc, `~` expanded; null when unset or the file is invalid. */
-function configuredGh(): string | null {
-  try {
-    return new LiveConfig(loadConfig(paths.config)).ghBinary;
-  } catch {
-    return null;
-  }
+/**
+ * The PATH the supervisor runs every tool with (gh, git, tmux, the harnesses):
+ * the one the user's login shell sets up, so whatever installed a tool, it is
+ * found without configuration. See platform/shell-env.ts.
+ */
+async function supervisorPath(inherited: string | undefined) {
+  const login = await loginShellPath();
+  return { login, path: toolPath({ login: login.path, inherited }) };
 }
 
 function print(value: unknown, json: boolean, render?: () => string): void {
@@ -243,6 +245,13 @@ async function main(argv: string[]): Promise<void> {
   switch (command) {
     case "daemon": {
       const background = flags.background ?? false;
+      // Before anything is spawned: workers, gh and notifications inherit it.
+      const tools = await supervisorPath(process.env["PATH"]);
+      process.env["PATH"] = tools.path;
+      if (tools.login.error)
+        console.error(
+          `ocd: could not read your login shell's PATH (${tools.login.error}); using the inherited PATH and common install locations`,
+        );
       let daemon: Awaited<ReturnType<typeof startDaemon>>;
       try {
         daemon = await startDaemon({
@@ -250,9 +259,7 @@ async function main(argv: string[]): Promise<void> {
           foreground: !background,
           adapters: buildAdapters,
           managerChannel: buildManagerChannel,
-          // gh is resolved per call: gh.binary from ocd.jsonc (live), else PATH.
-          pullRequests: ({ live }) =>
-            new GhPullRequests({ binary: () => live.ghBinary, extraDirs: extraBinDirs() }),
+          pullRequests: () => new GhPullRequests(),
           notifier: await platform.notifier({ onClick: focusCommand() }),
         });
       } catch (error) {
@@ -310,21 +317,11 @@ async function main(argv: string[]): Promise<void> {
           logsDir: paths.logs,
           env: { OCD_HOME: process.env["OCD_HOME"], OCD_CONFIG: process.env["OCD_CONFIG"] },
         });
-        // The service does not get this shell's PATH; say so if gh would go missing.
-        const ghHints = ghServiceHints({
-          configured: configuredGh(),
-          shellPath: locateBinary("gh"),
-          service: serviceGh({
-            configured: configuredGh(),
-            servicePath: servicePath(process.execPath),
-          }),
-          shim: miseShim("gh"),
-        });
-        print({ definition, manager: service.kind, warnings: ghHints }, json, () =>
-          [
+        print(
+          { definition, manager: service.kind },
+          json,
+          () =>
             `installed ${definition}; the supervisor now runs in the background (${service.kind}) and starts at login`,
-            ...(ghHints.length ? ["warning: pull requests will fail:", ...ghHints] : []),
-          ].join("\n"),
         );
       } else if (sub === "uninstall") {
         const r = await service.uninstall();
@@ -467,12 +464,14 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "doctor": {
+      // Check with the PATH the supervisor would have, not this shell's.
+      const tools = await supervisorPath(
+        platform.service ? servicePath(process.execPath) : process.env["PATH"],
+      );
+      process.env["PATH"] = tools.path;
       const harnesses = await probeHarnesses();
-      const gh = await checkGh({
-        configured: configuredGh(),
-        extraDirs: extraBinDirs(),
-        servicePath: platform.service ? servicePath(process.execPath) : null,
-      });
+      const gh = await probeGh({ timeoutMs: 10_000 });
+      const git = locateBinary("git");
       const notifier = await platform.notifier({ onClick: focusCommand() });
       const tmux = locateBinary("tmux");
       let delivery: string | null = null;
@@ -493,6 +492,8 @@ async function main(argv: string[]): Promise<void> {
       const report = {
         harnesses,
         github: gh,
+        path: { value: tools.path, shell: tools.login.shell, error: tools.login.error },
+        git,
         platform: {
           name: platform.name,
           notifications: { backend: notifier.backend, clickable: notifier.clickable, delivery },
@@ -519,13 +520,9 @@ async function main(argv: string[]): Promise<void> {
           ...(delivery ? [`${"".padEnd(9)} test notification ${delivery}`] : []),
           `${"tmux".padEnd(9)} ${tmux ?? "not found (ocd focus can only raise the terminal)"}`,
           `${"service".padEnd(9)} ${platform.service?.kind ?? "none"} (${platform.name})`,
-          `${"gh".padEnd(9)} ${describeGh(gh.shell)}`,
-          ...(gh.service
-            ? [
-                `${"".padEnd(9)} background service: ${gh.service.path ?? `not found (${gh.service.problem})`}`,
-              ]
-            : []),
-          ...gh.hints.map((h) => `  ${h}`),
+          `${"gh".padEnd(9)} ${describeGh(gh)}`,
+          `${"git".padEnd(9)} ${git ?? "not found (worktrees need git)"}`,
+          `${"PATH".padEnd(9)} ${tools.login.error ? `login shell not readable (${tools.login.error}); common install locations only` : `from your login shell (${tools.login.shell})`}`,
           ...hints,
         ].join("\n");
       });

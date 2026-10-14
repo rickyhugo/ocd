@@ -510,7 +510,6 @@ export interface AdapterStatus {
  */
 export type GitHubCliProblem =
   | "not_found"
-  | "invalid_path"
   | "auth_missing"
   | "auth_invalid"
   | "unreachable"
@@ -520,9 +519,8 @@ export type GitHubCliProblem =
 export interface GitHubCliStatus {
   /** gh was found and `gh --version` ran. */
   available: boolean;
+  /** Where gh was found on the supervisor's PATH. */
   path: string | null;
-  /** config: gh.binary in ocd.jsonc; path: found on the supervisor's PATH. */
-  source: "config" | "path" | null;
   version: string | null;
   /** unknown when the check could not tell (e.g. GitHub unreachable), never a guess. */
   auth: "ok" | "missing" | "invalid" | "unknown";

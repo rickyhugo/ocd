@@ -1,22 +1,22 @@
 import { execFile } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { redact, truncate, type GitHubCliProblem, type GitHubCliStatus } from "@ocd/core";
 
 import { ApiError } from "./errors.ts";
 
-// The one place OCD finds and runs the GitHub CLI. Every pull request action
-// goes through runGh: an explicit `gh.binary` from ocd.jsonc, else a PATH
-// lookup, argument arrays only (no shell), no prompts, and failures sorted into
-// problems a person can act on. gh's output is redacted before it is shown.
+// The one place OCD runs the GitHub CLI. Every pull request action goes
+// through runGh: gh found on the supervisor's PATH (which `ocd daemon` takes
+// from the user's login shell), argument arrays only (no shell), no prompts,
+// and failures sorted into problems a person can act on. gh's output is
+// redacted before it is shown.
 
 export type GhProblem = GitHubCliProblem;
 
 const CODES: Record<GhProblem, { status: number; code: string }> = {
   not_found: { status: 422, code: "gh_not_found" },
-  invalid_path: { status: 422, code: "gh_invalid_path" },
   auth_missing: { status: 422, code: "gh_auth_required" },
   auth_invalid: { status: 422, code: "gh_auth_required" },
   unreachable: { status: 503, code: "gh_unreachable" },
@@ -34,13 +34,9 @@ export class GhError extends ApiError {
   }
 }
 
-const CONFIG_HINT =
-  'set "gh": { "binary": "/absolute/path/to/gh" } in ocd.jsonc (find it with `command -v gh` or `mise which gh` in your shell; saved changes apply without a restart)';
-
 export const GH_HINTS: Record<GhProblem, string> = {
-  not_found: `The supervisor inherits the PATH of whatever started it; a LaunchAgent or systemd unit does not read your shell profile or mise activation, so gh can work in your terminal and still be missing here. Either ${CONFIG_HINT}, or install gh into a directory on the supervisor's PATH. \`ocd doctor\` compares both.`,
-  invalid_path:
-    "Fix gh.binary in ocd.jsonc so it names the gh executable, or remove it to look gh up on PATH.",
+  not_found:
+    "Install gh so your login shell finds it (`command -v gh` in a new terminal), then run `ocd restart`; the supervisor reads your login shell's PATH when it starts.",
   auth_missing:
     "Run `gh auth login` in a terminal as the same user (OCD never starts a login itself), then retry.",
   auth_invalid:
@@ -49,11 +45,6 @@ export const GH_HINTS: Record<GhProblem, string> = {
     "GitHub could not be reached (network, VPN, proxy or a GitHub outage); gh's login was not the problem. Retry when the connection is back.",
   failed: "",
 };
-
-/** Expands `~/`; everything else is used as written. */
-function expandHome(path: string): string {
-  return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
-}
 
 function isExecutableFile(path: string): boolean {
   try {
@@ -67,56 +58,20 @@ function isExecutableFile(path: string): boolean {
 
 export interface GhLocation {
   path: string;
-  source: "config" | "path";
 }
 
 export interface ResolveGhOptions {
-  /** `gh.binary` from ocd.jsonc. When set it is used or reported, never silently skipped. */
-  configured?: string | null | undefined;
   /** PATH to search; defaults to this process's. */
   pathEnv?: string | undefined;
-  /** Searched after PATH (the platform's usual user bin directories). */
-  extraDirs?: readonly string[];
 }
 
-/** Finds gh: the configured executable, else the first executable `gh` on PATH. Throws GhError. */
+/** Finds the first executable `gh` on PATH. Throws GhError. */
 export function resolveGh(options: ResolveGhOptions = {}): GhLocation {
-  if (options.configured) {
-    const path = expandHome(options.configured);
-    if (!isAbsolute(path))
-      throw new GhError(
-        "invalid_path",
-        `gh.binary must be an absolute path (got ${options.configured}). ${GH_HINTS.invalid_path}`,
-      );
-    let kind: string | null = null;
-    try {
-      const s = statSync(path);
-      if (!s.isFile()) kind = "is not a file";
-      else {
-        try {
-          accessSync(path, constants.X_OK);
-        } catch {
-          kind = "is not executable";
-        }
-      }
-    } catch {
-      kind = "does not exist";
-    }
-    if (kind)
-      throw new GhError(
-        "invalid_path",
-        `gh.binary in ocd.jsonc (${path}) ${kind}. ${GH_HINTS.invalid_path}`,
-        { configured: path },
-      );
-    return { path, source: "config" };
-  }
   const pathEnv = options.pathEnv ?? process.env["PATH"] ?? "";
-  const dirs = [...new Set([...pathEnv.split(delimiter), ...(options.extraDirs ?? [])])].filter(
-    Boolean,
-  );
+  const dirs = [...new Set(pathEnv.split(delimiter))].filter(Boolean);
   for (const dir of dirs) {
     const candidate = join(dir, "gh");
-    if (isExecutableFile(candidate)) return { path: candidate, source: "path" };
+    if (isExecutableFile(candidate)) return { path: candidate };
   }
   throw new GhError(
     "not_found",
@@ -195,11 +150,10 @@ export function runGh(
         if (!error) return resolve(String(stdout));
         const errno = (error as NodeJS.ErrnoException).code;
         if (errno === "ENOENT" || errno === "EACCES") {
-          const problem = location.source === "config" ? "invalid_path" : "not_found";
           return reject(
             new GhError(
-              problem,
-              `${label} failed: ${location.path} could not be started (${errno}). ${GH_HINTS[problem]}`,
+              "not_found",
+              `${label} failed: ${location.path} could not be started (${errno}). ${GH_HINTS.not_found}`,
             ),
           );
         }
@@ -242,7 +196,6 @@ export async function probeGh(options: ProbeGhOptions = {}): Promise<GitHubCliSt
   const checkedAt = (options.now?.() ?? new Date()).toISOString();
   const base = {
     path: null,
-    source: null,
     version: null,
     auth: "unknown",
     checkedAt,
@@ -264,13 +217,12 @@ export async function probeGh(options: ProbeGhOptions = {}): Promise<GitHubCliSt
     return {
       ...base,
       path: location.path,
-      source: location.source,
       available: false,
       problem: e.problem,
       problems: [`${location.path} could not be run: ${e.message}`],
     };
   }
-  const found = { ...base, path: location.path, source: location.source, version, available: true };
+  const found = { ...base, path: location.path, version, available: true };
   try {
     // Exit 0 means every configured host has a working login.
     await runGh(location, ["auth", "status"], run);

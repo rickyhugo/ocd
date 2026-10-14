@@ -13,7 +13,6 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { ConfigError, LiveConfig, loadConfig } from "./config.ts";
 import {
   GhError,
   classifyGhOutput,
@@ -98,27 +97,18 @@ const caught = async (p: Promise<unknown>): Promise<GhError> => {
 };
 
 describe("resolving gh", () => {
-  it("uses a configured executable", () => {
-    const gh = fakeGh();
-    expect(resolveGh({ configured: gh, pathEnv: "" })).toEqual({ path: gh, source: "config" });
-  });
-
-  it("falls back to PATH, skipping non-executables, then the extra directories", () => {
+  it("finds the first executable gh on PATH", () => {
     const notExec = join(root, "noexec");
     mkdirSync(notExec);
     writeFileSync(join(notExec, "gh"), "#!/bin/sh\n", { mode: 0o644 });
     const gh = fakeGh(join(root, "later"));
-    expect(resolveGh({ pathEnv: `${notExec}:${join(root, "later")}` })).toEqual({
-      path: gh,
-      source: "path",
-    });
-    expect(resolveGh({ pathEnv: notExec, extraDirs: [join(root, "later")] }).path).toBe(gh);
+    expect(resolveGh({ pathEnv: `${notExec}:${join(root, "later")}` })).toEqual({ path: gh });
   });
 
   it("says where it looked and how to fix it when gh is missing", () => {
     const error = (() => {
       try {
-        resolveGh({ pathEnv: "/nonexistent-a:/nonexistent-b", extraDirs: [] });
+        resolveGh({ pathEnv: "/nonexistent-a:/nonexistent-b" });
       } catch (e) {
         return e as GhError;
       }
@@ -126,33 +116,9 @@ describe("resolving gh", () => {
     })();
     expect(error).toBeInstanceOf(GhError);
     expect(error).toMatchObject({ problem: "not_found", code: "gh_not_found", status: 422 });
-    expect(error.message).toContain('"gh": { "binary"');
-    expect(error.message).toContain("mise");
+    expect(error.message).toContain("login shell");
+    expect(error.message).toContain("ocd restart");
     expect(error.details).toEqual({ searched: ["/nonexistent-a", "/nonexistent-b"] });
-  });
-
-  it("reports a wrong gh.binary instead of silently using PATH", () => {
-    const onPath = fakeGh();
-    const pathEnv = join(onPath, "..");
-    const plain = join(root, "plain");
-    writeFileSync(plain, "#!/bin/sh\n", { mode: 0o644 });
-    const cases: [string, string][] = [
-      [join(root, "missing", "gh"), "does not exist"],
-      [plain, "is not executable"],
-      [root, "is not a file"],
-      ["relative/gh", "must be an absolute path"],
-    ];
-    for (const [configured, text] of cases) {
-      let error: GhError | null = null;
-      try {
-        resolveGh({ configured, pathEnv });
-      } catch (e) {
-        error = e as GhError;
-      }
-      expect(error).toMatchObject({ problem: "invalid_path", code: "gh_invalid_path" });
-      expect(error!.message).toContain(text);
-      expect(error!.message).toContain("gh.binary");
-    }
   });
 });
 
@@ -176,10 +142,7 @@ describe("classifying gh failures", () => {
 });
 
 describe("running gh", () => {
-  const at = (path: string, source: GhLocation["source"] = "path"): GhLocation => ({
-    path,
-    source,
-  });
+  const at = (path: string): GhLocation => ({ path });
 
   it("passes arguments verbatim without a shell, feeds stdin and disables prompts", async () => {
     const gh = fakeGh();
@@ -225,20 +188,16 @@ describe("running gh", () => {
     expect(await caught(runGh(at(gh), ["--version"], { cwd: root }))).toMatchObject({
       code: "gh_not_found",
     });
-    expect(await caught(runGh(at(gh, "config"), ["--version"], { cwd: root }))).toMatchObject({
-      code: "gh_invalid_path",
-    });
   });
 });
 
 describe("startup check (probeGh)", () => {
-  it("reports version, source and a working login", async () => {
+  it("reports version, path and a working login", async () => {
     const gh = fakeGh();
-    const status = await probeGh({ configured: gh, cwd: root, now: () => new Date(0) });
+    const status = await probeGh({ pathEnv: join(gh, ".."), cwd: root, now: () => new Date(0) });
     expect(status).toEqual({
       available: true,
       path: gh,
-      source: "config",
       version: "9.9.9",
       auth: "ok",
       problem: null,
@@ -250,13 +209,13 @@ describe("startup check (probeGh)", () => {
   });
 
   it("distinguishes a missing gh, a missing login, a rejected token and no network", async () => {
-    expect(await probeGh({ pathEnv: "", extraDirs: [] })).toMatchObject({
+    expect(await probeGh({ pathEnv: "" })).toMatchObject({
       available: false,
       problem: "not_found",
       auth: "unknown",
     });
     const gh = fakeGh();
-    const probe = () => probeGh({ configured: gh, cwd: root });
+    const probe = () => probeGh({ pathEnv: join(gh, ".."), cwd: root });
     setMode(gh, "logged_out");
     expect(await probe()).toMatchObject({
       available: true,
@@ -275,7 +234,7 @@ describe("startup check (probeGh)", () => {
   it("is bounded when GitHub does not answer", async () => {
     const gh = fakeGh(undefined, "auth_hang");
     const started = Date.now();
-    const status = await probeGh({ configured: gh, cwd: root, timeoutMs: 2000 });
+    const status = await probeGh({ pathEnv: join(gh, ".."), cwd: root, timeoutMs: 2000 });
     // The fake hangs for 30s; the check gives up after the timeout.
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(status).toMatchObject({ available: true, auth: "unknown", problem: "unreachable" });
@@ -283,7 +242,7 @@ describe("startup check (probeGh)", () => {
 
   it("never exposes a token gh prints", async () => {
     const gh = fakeGh(undefined, "leak");
-    const status = await probeGh({ configured: gh, cwd: root });
+    const status = await probeGh({ pathEnv: join(gh, ".."), cwd: root });
     expect(JSON.stringify(status)).not.toContain("ghp_abcdefghij");
   });
 });
@@ -291,7 +250,7 @@ describe("startup check (probeGh)", () => {
 describe("GhPullRequests (every gh call site)", () => {
   it("creates a PR with argument arrays after checking for an open one", async () => {
     const gh = fakeGh();
-    const prs = new GhPullRequests({ binary: () => gh });
+    const prs = new GhPullRequests({ pathEnv: join(gh, "..") });
     const input = {
       cwd: root,
       head: "ocd/t_1",
@@ -335,7 +294,7 @@ describe("GhPullRequests (every gh call site)", () => {
   it("reuses an open PR for the branch instead of opening a second one", async () => {
     const gh = fakeGh();
     writeFileSync(join(root, "bin", "list.json"), '[{"url":"https://github.com/o/r/pull/3"}]');
-    const prs = new GhPullRequests({ binary: () => gh });
+    const prs = new GhPullRequests({ pathEnv: join(gh, "..") });
     expect(
       await prs.create({ cwd: root, head: "h", base: "main", title: "t", body: "b", draft: false }),
     ).toEqual({ url: "https://github.com/o/r/pull/3", existing: true });
@@ -354,7 +313,7 @@ describe("GhPullRequests (every gh call site)", () => {
         statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }],
       }),
     );
-    const prs = new GhPullRequests({ binary: () => gh });
+    const prs = new GhPullRequests({ pathEnv: join(gh, "..") });
     expect(await prs.status("https://github.com/o/r/pull/7", root)).toMatchObject({
       state: "open",
       mergeable: "mergeable",
@@ -364,20 +323,23 @@ describe("GhPullRequests (every gh call site)", () => {
     expect(calls(gh).at(-1)).toEqual(["pr", "merge", "https://github.com/o/r/pull/7", "--squash"]);
   });
 
-  it("re-resolves gh on every call, so a saved gh.binary applies without a restart", async () => {
-    let configured: string | null = join(root, "nowhere", "gh");
-    const prs = new GhPullRequests({ binary: () => configured });
-    expect(await caught(prs.status("u", root))).toMatchObject({ code: "gh_invalid_path" });
-    configured = fakeGh();
-    writeFileSync(join(root, "bin", "view.json"), '{"state":"MERGED","isDraft":false}');
-    expect((await prs.status("u", root)).state).toBe("merged");
+  it("looks gh up on every call, so a gh installed after startup is used", async () => {
+    const saved = process.env["PATH"];
+    process.env["PATH"] = `${join(root, "bin")}:/usr/bin:/bin`;
+    try {
+      const prs = new GhPullRequests();
+      expect(await caught(prs.status("u", root))).toMatchObject({ code: "gh_not_found" });
+      fakeGh();
+      writeFileSync(join(root, "bin", "view.json"), '{"state":"MERGED","isDraft":false}');
+      expect((await prs.status("u", root)).state).toBe("merged");
+    } finally {
+      process.env["PATH"] = saved;
+    }
   });
 
   it("fails each action with the same actionable error when gh is missing or logged out", async () => {
-    const missing = new GhPullRequests({ binary: () => null, extraDirs: [] });
-    const saved = process.env["PATH"];
-    process.env["PATH"] = "/nonexistent";
-    try {
+    const missing = new GhPullRequests({ pathEnv: "/nonexistent" });
+    {
       const input = { cwd: root, head: "h", base: "main", title: "t", body: "b", draft: false };
       for (const action of [
         () => missing.create(input),
@@ -385,30 +347,12 @@ describe("GhPullRequests (every gh call site)", () => {
         () => missing.merge("u", root, "squash"),
       ])
         expect(await caught(action())).toMatchObject({ code: "gh_not_found" });
-    } finally {
-      process.env["PATH"] = saved;
     }
     const gh = fakeGh(undefined, "auth_missing");
-    const loggedOut = new GhPullRequests({ binary: () => gh });
+    const loggedOut = new GhPullRequests({ pathEnv: join(gh, "..") });
     expect(await caught(loggedOut.merge("u", root, "merge"))).toMatchObject({
       code: "gh_auth_required",
     });
-  });
-});
-
-describe("gh.binary configuration", () => {
-  it("accepts an absolute or ~/ path, expands ~, and rejects relative paths", () => {
-    const file = join(root, "ocd.jsonc");
-    writeFileSync(file, '{ "gh": { "binary": "~/bin/gh" } }');
-    const live = new LiveConfig(loadConfig(file));
-    expect(live.ghBinary).toMatch(/\/bin\/gh$/);
-    expect(live.ghBinary).not.toContain("~");
-    live.apply(loadConfig(file, { gh: {} }));
-    expect(live.ghBinary).toBeNull();
-    writeFileSync(file, '{ "gh": { "binary": "gh" } }');
-    expect(() => loadConfig(file)).toThrow(ConfigError);
-    writeFileSync(file, '{ "gh": { "path": "/usr/bin/gh" } }');
-    expect(() => loadConfig(file)).toThrow(/gh/);
   });
 });
 
@@ -443,7 +387,7 @@ describe("pull request actions in the supervisor", () => {
     const prs = new RecordingPullRequests();
     prs.failure = new GhError(
       "not_found",
-      "GitHub CLI (gh) was not found on the supervisor's PATH. Set gh.binary",
+      "GitHub CLI (gh) was not found on the supervisor's PATH. Install gh, then run `ocd restart`",
     );
     h = await startHarness({ pullRequests: prs });
     const task = await finishedTaskWithOrigin(h, "gh-missing");
@@ -451,7 +395,7 @@ describe("pull request actions in the supervisor", () => {
     await expect(h.manager("mgr").openPullRequest(task.id, { commit: true })).rejects.toMatchObject(
       {
         code: "gh_not_found",
-        message: expect.stringContaining("gh.binary"),
+        message: expect.stringContaining("ocd restart"),
       },
     );
     const detail = await h.human.inspectTask(task.id);
@@ -514,7 +458,6 @@ describe("pull request actions in the supervisor", () => {
           resolve({
             available: true,
             path: "/x/gh",
-            source: "path",
             version: "1",
             auth: "missing",
             problem: "auth_missing",
@@ -535,16 +478,12 @@ describe("pull request actions in the supervisor", () => {
     expect((await h.human.status()).github).toBeNull();
   });
 
-  it("wires gh.binary from ocd.jsonc into real gh calls end to end", async () => {
+  it("runs the gh found on PATH for real pull request calls end to end", async () => {
     const gh = fakeGh();
-    h = await startHarness({
-      config: { gh: { binary: gh } },
-      pullRequests: ({ live }) =>
-        new GhPullRequests({ binary: () => live.ghBinary, extraDirs: [] }),
-    });
+    h = await startHarness({ pullRequests: () => new GhPullRequests({ pathEnv: join(gh, "..") }) });
     await expect
       .poll(async () => (await h!.human.status()).github)
-      .toMatchObject({ path: gh, source: "config", auth: "ok" });
+      .toMatchObject({ path: gh, auth: "ok" });
     const task = await finishedTaskWithOrigin(h, "gh-end-to-end");
     const opened = await h.human.openPullRequest(task.id, { commit: true });
     expect(opened.pullRequestUrl).toBe("https://github.com/o/r/pull/7");
