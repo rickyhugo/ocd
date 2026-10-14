@@ -18,7 +18,7 @@ Profiles:
 
 ```jsonc
 "cc":    { "harness": "claude", "model": "sonnet#high", "permissionPolicy": "ask" },
-"codex": { "harness": "codex",  "model": "gpt-5-codex#medium", "permissionPolicy": "ask" }
+"codex": { "harness": "codex",  "model": "gpt-6-astra#medium", "permissionPolicy": "ask" }
 ```
 
 `#…` is the reasoning effort (`--effort` for Claude Code, `effort` for Codex).
@@ -54,7 +54,7 @@ few prompts it still raises, which OCD approves) and Codex threads with
 `approvalPolicy: "never"`, `sandbox: "danger-full-access"`. Nothing is
 recorded per request; there is no sandbox.
 
-## Claude Code (recorded against 2.1.296)
+## Claude Code (recorded against 2.1.299)
 
 - `claude -p --input-format stream-json --output-format stream-json --verbose
   --session-id <uuid> --model <m> [--effort <e>] --permission-mode default
@@ -115,10 +115,14 @@ supervisor restart; peeking never starts or resumes a process to fill it.
 
 ## Verification status
 
-| Check                                        | Status                                             |
-| -------------------------------------------- | -------------------------------------------------- |
-| Flags and message shapes match the versions  | From `--help`, generated schemas, SDK              |
-| Version and login probes on this machine     | Done (`ocd doctor`)                                |
-| Session lifecycle, approvals, limits, resume | Fake binaries in `packages/adapters/test-fixtures` |
-| One real task per harness                    | `scripts/smoke.sh` (spends tokens), not yet run    |
-| Transcript extraction                        | Fake binaries only; not checked against real runs  |
+| Check                                       | Claude Code                                        | Codex                                          |
+| ------------------------------------------- | -------------------------------------------------- | ---------------------------------------------- |
+| Flags and message shapes match the versions | From `--help` and the SDK                          | From the generated schema                      |
+| Version and login probes on this machine    | Done (`ocd doctor`)                                | Done (`ocd doctor`)                            |
+| Turns, follow-ups mid-turn, interrupts      | Real runs (Haiku), see "Worker processes"          | Real runs (low effort), see "Worker processes" |
+| Approvals, usage limits, resume             | Fake binaries in `packages/adapters/test-fixtures` | Fake binaries                                  |
+| Real tasks through OCD                      | In use: many tasks dispatched by the manager       | Not yet                                        |
+| Transcript extraction (`ocd task peek`)     | Fake binaries only                                 | Fake binaries only                             |
+
+The fakes model the behaviour recorded in the real runs, and the tests for it
+fail against the adapter code from before those runs.

@@ -8,17 +8,34 @@ See [PLAN.md](PLAN.md) for the architecture, safety boundaries and milestones.
 
 ## Status
 
-| Milestone                       | State                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------- |
-| 1. Durable core and daemon      | Implemented and tested with fake harnesses                                      |
-| 2. OpenCode vertical slice      | Implemented; first real task completed end to end (OpenCode 2.0.28)             |
-| 3. Memory and attention         | Implemented and tested                                                          |
-| 4. Claude Code / Codex adapters | Implemented; tested with fake binaries ([notes](docs/claude-codex-adapters.md)) |
-| 5. Background service           | Implemented: `ocd service install` (launchd / systemd), automatic backups       |
+| Area                       | State                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 1. Durable core and daemon | Implemented; tested with fake harnesses                                                                |
+| 2. OpenCode workers        | In use: real tasks end to end (OpenCode 2.0.28)                                                        |
+| 3. Memory and attention    | Implemented and tested; desktop notifications in use                                                   |
+| 4. Claude Code workers     | In use: real tasks end to end, including follow-ups mid-turn (Claude Code 2.1.299)                     |
+| 4. Codex workers           | Adapter checked against real codex 0.162.1 (turns, steering, interrupts); no full task through OCD yet |
+| 5. Background service      | In use on macOS: LaunchAgent, self-update, automatic backups and cleanup; Linux written, not yet tried |
+| Beyond the plan            | Review and landing, manual mode, peek, branch sync ([what moved](PLAN.md#where-the-plan-moved))        |
 
-No real model call has been made by the test suite. The only checks against the
-real OpenCode service are read-only (`ocd doctor`). See
-[docs/opencode-adapter.md](docs/opencode-adapter.md) for exactly what is verified.
+The test suite never calls a real model: it runs fake harnesses that model
+behaviour recorded from the real ones. Real checks are opt-in and spend tokens
+(`scripts/smoke.sh`, and the adapter probes described in
+[docs/claude-codex-adapters.md](docs/claude-codex-adapters.md) and
+[docs/opencode-adapter.md](docs/opencode-adapter.md)).
+
+Known gaps:
+
+- **Sleep:** there is no wake detection. Periodic reconciliation should pick
+  workers up again after the Mac sleeps, but this has not been tried across a
+  real sleep.
+- **Logs** rotate only when the supervisor starts (5 MB, 3 kept), so one that
+  runs for weeks grows a single file.
+- **Node path:** the service runs the Node binary that installed it. After
+  upgrading Node, re-run `ocd service install`.
+- **Model names** in profiles are checked only when a task starts, not by
+  `ocd doctor`.
+- **Usage:** token and cost usage is not tracked.
 
 ## Packages
 
@@ -64,7 +81,7 @@ dispatch to. Both are referred to by name.
   "profiles": {
     "oc": {
       "harness": "opencode",
-      "model": "anthropic/claude-sonnet-4-5",
+      "model": "openai/gpt-6-astra",
       "permissionPolicy": "ask",
       "description": "Default for real coding work",
     },
@@ -294,10 +311,18 @@ Clicking a digest runs `ocd focus` like any other notification, and
 | macOS    | `osascript` fallback                                   | no (macOS opens Script Editor)                      |
 | Linux    | `notify-send` (libnotify 0.7.9+)                       | yes; the window is raised on Hyprland, sway and X11 |
 
-terminal-notifier needs macOS notification permission (System Settings →
-Notifications). Until it has it, OCD falls back to osascript so nothing is
-lost, and it tries terminal-notifier again each time. `ocd doctor --notify`
-sends a test notification and says which path delivered it.
+macOS takes a notification's icon from the app that sends it, so OCD makes
+its own copy of terminal-notifier, `~/.ocd/notifier/OCD.app`: the same
+program with OCD's name, bundle id (`dev.ocd.notifier`) and icon, signed ad
+hoc. It is rebuilt only when terminal-notifier or the icon changes; if it
+cannot be made, plain terminal-notifier is used. On Linux the icon is passed to
+`notify-send`. The icon is drawn by `packages/cli/assets/make-icon.swift`
+(`build-icon.sh` regenerates `ocd.icns` and `ocd-icon.png`).
+
+Allow notifications for **OCD** in System Settings → Notifications (macOS asks
+once, the first time it sends one). Until it may, OCD falls back to osascript
+so nothing is lost, and it tries again each time. `ocd doctor --notify` sends
+a test notification and says which path delivered it.
 
 With `tmux.enabled`, the terminal is detected from the tmux client (Ghostty,
 kitty, WezTerm, Alacritty, iTerm2, Terminal, …); set `notifications.focusApp`
@@ -624,7 +649,7 @@ Migrations are generated with `pnpm run db:generate` and checked in under
 ```sh
 scripts/smoke.sh --yes-spend-tokens opencode provider/model
 scripts/smoke.sh --yes-spend-tokens claude sonnet
-scripts/smoke.sh --yes-spend-tokens codex gpt-5-codex#low
+scripts/smoke.sh --yes-spend-tokens codex gpt-6-astra#low
 ```
 
 It uses a throwaway `OCD_HOME` and git repo, dispatches one tiny task to the
