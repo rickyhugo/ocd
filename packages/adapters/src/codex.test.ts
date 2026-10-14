@@ -157,6 +157,29 @@ describe("Codex adapter", () => {
     await fresh.close();
   });
 
+  // Recorded from codex 0.162.1: turn/interrupt is acknowledged before the turn
+  // completes, and steering a turn that already ended is refused.
+  it("starts a new turn for a prompt sent right after an interrupt", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    const statuses: string[] = [];
+    adapter.subscribe((e) => void (e.type === "status" && statuses.push(e.status)));
+    await adapter.prompt(ref, "[hang]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "busy",
+    );
+    await adapter.interrupt(ref);
+    expect((await adapter.inspect(ref)).status).toBe("idle");
+    await adapter.prompt(ref, "after the interrupt");
+    const s = await until(
+      () => adapter.inspect(ref),
+      (x) => x.status === "idle" && x.lastAssistantText !== null,
+    );
+    expect(s.error).toBeNull();
+    expect(statuses).not.toContain("error");
+  });
+
   it("refuses to start when Codex is not logged in", async () => {
     const { adapter, spec } = setup({ FAKE_CODEX_LOGGED_OUT: "1" });
     await expect(adapter.createSession(spec)).rejects.toMatchObject({

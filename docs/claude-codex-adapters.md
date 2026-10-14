@@ -32,6 +32,16 @@ instruction to that task resumes the session transparently (`--resume` /
 waits for it, then resumes. Accepting or cancelling a task stops its process
 at once.
 
+A follow-up sent while a turn is running is handled the way each harness
+does it. Codex steers the running turn (`turn/steer`); if that turn has just
+ended, the text starts a new turn. Claude Code either folds the message into
+the running turn or runs it as a turn of its own after the current one; OCD
+starts Claude Code with `--replay-user-messages` and treats the worker as
+finished only once every message it sent has been picked up, so a steered
+worker is not reviewed on its first turn's result. An interrupt followed
+straight away by a new prompt is not read as a failure. (Recorded against
+Claude Code 2.1.299 and codex 0.162.1.)
+
 Each worker runs in its own process group. A stop that has to be forced
 (SIGTERM, then SIGKILL) signals the whole group, so tools the worker started
 (dev servers, test watchers) stop with it.

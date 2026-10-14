@@ -72,6 +72,8 @@ type ClaudeMessage = ClaudeStreamMessage & {
   error?: string;
   rate_limit_info?: { status?: string };
   uuid?: string;
+  /** A user message echoed back by --replay-user-messages as it is consumed. */
+  isReplay?: boolean;
   message?: { id?: string; role?: string; content?: unknown };
 };
 
@@ -119,6 +121,16 @@ interface ClaudeSession {
   todos: ClaudeTodoTracker;
   /** Fallback transcript keys for messages without uuid or id. */
   observed: number;
+  /**
+   * User messages sent to the current process that Claude Code has not picked
+   * up yet. With --replay-user-messages it echoes each one when it consumes
+   * it: a message sent mid-turn is either folded into the running turn (echoed
+   * before that turn's result) or queued for a turn of its own (echoed after).
+   * A result ends the work only when nothing is left unconsumed.
+   */
+  unconsumed: number;
+  /** Interrupts whose aborted turn has not reported its result yet. */
+  interrupts: number;
 }
 
 function summarize(tool: string, input: Record<string, unknown>): string {
@@ -210,6 +222,8 @@ export class ClaudeAdapter implements HarnessAdapter {
       idleTimer: null,
       todos: new ClaudeTodoTracker(),
       observed: 0,
+      unconsumed: 0,
+      interrupts: 0,
     } as unknown as ClaudeSession;
     this.startProcess(state, session.resume);
     this.sessions.set(session.id, state);
@@ -230,6 +244,8 @@ export class ClaudeAdapter implements HarnessAdapter {
       "--output-format",
       "stream-json",
       "--verbose",
+      // Echoes each user message when it is consumed; see ClaudeSession.unconsumed.
+      "--replay-user-messages",
       ...(resume ? ["--resume", state.sessionId] : ["--session-id", state.sessionId]),
       "--model",
       model,
@@ -253,6 +269,9 @@ export class ClaudeAdapter implements HarnessAdapter {
     });
     state.proc = proc;
     state.parked = false;
+    // A new process has nothing in flight.
+    state.unconsumed = 0;
+    state.interrupts = 0;
     // Ignore exits of a process that has since been replaced.
     void proc.exited.then((exit) => {
       if (state.proc === proc) this.onExit(state, exit);
@@ -343,8 +362,21 @@ export class ClaudeAdapter implements HarnessAdapter {
         const failed =
           message.is_error === true ||
           (message.subtype !== undefined && message.subtype !== "success");
-        const interrupted =
-          message.subtype === "error_during_execution" && session.status === "idle";
+        // The next result after an interrupt belongs to the aborted turn, even
+        // when a new prompt was sent before it arrived.
+        const interrupted = session.interrupts > 0 && message.subtype === "error_during_execution";
+        if (session.interrupts > 0) session.interrupts -= 1;
+        if (interrupted && session.unconsumed > 0) {
+          // The follow-up sent after the interrupt is still running.
+          this.emit({ type: "activity", sessionId });
+          return;
+        }
+        if (!failed && session.unconsumed > 0) {
+          // A message sent mid-turn is still queued: this result is not the end.
+          if (text) session.lastAssistantText = text;
+          this.emit({ type: "activity", sessionId });
+          return;
+        }
         if (failed && !interrupted) {
           session.error =
             text ?? message.errors?.join("; ") ?? message.subtype ?? "Claude Code turn failed";
@@ -361,7 +393,7 @@ export class ClaudeAdapter implements HarnessAdapter {
             quotaLimited: session.quotaLimited,
           });
         } else {
-          if (text) session.lastAssistantText = text;
+          if (text && !interrupted) session.lastAssistantText = text;
           session.status = "idle";
           this.emit({ type: "status", sessionId, status: "idle" });
         }
@@ -370,6 +402,12 @@ export class ClaudeAdapter implements HarnessAdapter {
         return;
       }
       default:
+        if (message.type === "user" && message.isReplay) {
+          // OCD's own prompt, now being worked on; not part of the transcript.
+          session.unconsumed = Math.max(0, session.unconsumed - 1);
+          this.emit({ type: "activity", sessionId });
+          return;
+        }
         if (message.type === "user") this.record(session, message);
         if (message.type === "user" || message.type === "stream_event" || message.type === "system")
           this.emit({ type: "activity", sessionId });
@@ -555,6 +593,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       parent_tool_use_id: null,
     });
     session.prompted = true;
+    session.unconsumed += 1;
     session.error = null;
     session.quotaLimited = false;
     if (session.status !== "waiting") session.status = "busy";
@@ -589,7 +628,9 @@ export class ClaudeAdapter implements HarnessAdapter {
   async interrupt(ref: SessionRef): Promise<void> {
     const session = this.sessions.get(ref.sessionId);
     if (!session?.proc.running || session.status === "idle") return;
-    session.status = "idle"; // the turn's result arrives as an interrupted execution
+    // The turn's result arrives as an interrupted execution; it is not a failure.
+    session.interrupts += 1;
+    session.status = "idle";
     session.pending.clear();
     session.proc.send({
       type: "control_request",

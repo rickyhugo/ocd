@@ -25,6 +25,11 @@ const send = (m) => process.stdout.write(`${JSON.stringify({ session_id: session
 const report = '```ocd-report\n{"summary":"claude did it"}\n```';
 let waiting = null;
 let hanging = false;
+// [queue] / [fold]: a turn held open until the next message arrives, which
+// Claude Code then either runs as a turn of its own after this one ([queue],
+// e.g. sent during text generation) or folds into this turn ([fold], e.g.
+// sent while a tool runs). Recorded from 2.1.299.
+let held = null;
 
 function result(text, extra = {}) {
   hanging = false;
@@ -60,7 +65,24 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (m.type !== "user") return;
+  // Like Claude Code with --replay-user-messages: echo the message as it is consumed.
+  const consume = () =>
+    args.includes("--replay-user-messages") &&
+    send({ type: "user", isReplay: true, message: m.message, parent_tool_use_id: null });
   const text = m.message.content.map((c) => c.text).join("\n");
+  if (held === "queue") {
+    held = null;
+    result("first turn done");
+  } else if (held === "fold") {
+    held = null;
+    consume();
+    return result(`folded: ${text}\n${report}`);
+  }
+  consume();
+  if (text.includes("[queue]") || text.includes("[fold]")) {
+    held = text.includes("[queue]") ? "queue" : "fold";
+    return send({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } });
+  }
   send({
     type: "system",
     subtype: "init",

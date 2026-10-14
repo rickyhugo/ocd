@@ -260,11 +260,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       return startTurn(text);
     }
     case "turn/steer":
-      return reply({ turnId: active?.id });
+      // As codex 0.162.1: steering a turn that already ended is refused.
+      if (!active)
+        return send({ id: m.id, error: { code: -32600, message: "no active turn to steer" } });
+      return reply({ turnId: active.id });
     case "turn/interrupt": {
+      // As codex 0.162.1: acknowledged first, the turn completes just after.
       const turn = active;
-      if (turn) complete(turn, "interrupted", null);
-      return reply({});
+      reply({});
+      if (turn) setTimeout(() => complete(turn, "interrupted", null), 30);
+      return;
     }
     default:
       return send({ id: m.id, error: { code: -32601, message: `unknown ${m.method}` } });
