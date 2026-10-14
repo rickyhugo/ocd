@@ -388,6 +388,7 @@ export class Supervisor {
       manager: this.store.activeManager(),
       adapters: [...this.versions.values()],
       github: this.github,
+      pullRequests: this.o.pullRequests !== undefined,
     };
   }
 

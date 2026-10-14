@@ -46,6 +46,8 @@ import {
 import {
   actionsFor,
   buildSidebar,
+  landable,
+  landingActions,
   type Row,
   type Section,
   type SectionKey,
@@ -233,30 +235,26 @@ export default Plugin.define({
 
     /**
      * Accept and clean up run directly against OCD as the human. Cleanup never
-     * forces: OCD keeps a worktree with uncommitted files or commits that exist
-     * on no other branch or remote, and says so.
+     * forces: OCD keeps a worktree whose work is not in the base branch yet,
+     * and says so.
      */
-    const runDirect = async (task: Task, kind: "accept" | "accept_clean" | "clean") => {
-      if (kind !== "clean") await client.acceptTask(task.id);
+    const runDirect = async (task: Task, kind: "accept" | "clean") => {
       if (kind === "accept") {
+        await client.acceptTask(task.id);
         toast(`Accepted “${clip(task.title, 40)}”; worktree kept`);
       } else {
         try {
           await client.cleanupTask(task.id);
-          toast(
-            kind === "clean"
-              ? `Removed the worktree of “${clip(task.title, 40)}”`
-              : `Accepted and cleaned up “${clip(task.title, 40)}”`,
-          );
+          toast(`Removed the worktree of “${clip(task.title, 40)}”`);
         } catch (error) {
-          toast(
-            `${kind === "clean" ? "Kept" : "Accepted, but kept"} the worktree: ${keptReason(error)}`,
-            "warning",
-          );
+          toast(`Kept the worktree: ${keptReason(error)}`, "warning");
         }
       }
       await refresh();
     };
+
+    /** Whether the supervisor has pull requests on; asked when a menu opens, never cached. */
+    const pullRequestsOn = async () => (await client.status()).pullRequests ?? false;
 
     const landed = (task: Task, r: LandResult) =>
       toast(
@@ -365,7 +363,7 @@ export default Plugin.define({
 
     const rowActions = async (row: Row) => {
       try {
-        const actions = actionsFor(row);
+        const actions = actionsFor(row, { pullRequests: await pullRequestsOn() });
         const picked = await ctx.ui.dialog.select<number>({
           title: clip(row.title, 60),
           options: actions.map((a, i) => ({ title: a.label, value: i })),
@@ -679,6 +677,28 @@ export default Plugin.define({
                 (t) => !!t.sessionId && (t.state === "manual" || TAKEOVER_STATES.has(t.state)),
               );
               if (task) await takeOver(task);
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.land",
+          title: "OCD: land a finished task (pull request or direct push)",
+          group: "OCD",
+          palette: true,
+          slash: { name: "land" },
+          run: async () => {
+            try {
+              const task = await pickTask("Land which task?", landable);
+              if (!task) return;
+              const routes = landingActions({ pullRequests: await pullRequestsOn() });
+              const route = await ctx.ui.dialog.select<"land" | "land_direct">({
+                title: clip(task.title, 60),
+                options: routes.map((r) => ({ title: r.label, value: r.kind })),
+              });
+              if (route === "land") await land(task);
+              else if (route === "land_direct") await landDirect(task);
             } catch (error) {
               fail(error);
             }

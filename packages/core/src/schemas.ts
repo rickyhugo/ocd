@@ -598,6 +598,8 @@ export interface SupervisorStatus {
   adapters: AdapterStatus[];
   /** null while the startup check runs, or when pull requests are not configured. */
   github?: GitHubCliStatus | null;
+  /** Pull requests are on (github.enabled): tasks can land through a PR. */
+  pullRequests?: boolean;
 }
 
 export interface OutboxEntry {
