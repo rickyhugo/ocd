@@ -1,5 +1,7 @@
-// Draws OCD's icon (1024×1024 PNG, transparent margin per the macOS icon grid):
-// a supervisor hub wired to three workers, one per harness.
+// Draws OCD's icon (1024×1024 PNG, transparent margin per the macOS icon grid).
+// OpenCode's mark (a thick white "o" on near-black) with real OCD: everything
+// snapped to a grid, the hole's contents sorted into evenly spaced bars, and
+// alignment guides proving it is all perfectly centred.
 // Usage: swift packages/cli/assets/make-icon.swift <out.png>
 import CoreGraphics
 import Foundation
@@ -21,75 +23,82 @@ func rgb(_ hex: UInt32, _ a: CGFloat = 1) -> CGColor {
 // Body: the macOS grid's 824×824 rounded square, centred.
 let body = CGRect(x: 100, y: 100, width: 824, height: 824)
 let shape = CGPath(roundedRect: body, cornerWidth: 185, cornerHeight: 185, transform: nil)
-
-// Soft drop shadow under the body.
 ctx.saveGState()
 ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: rgb(0x000000, 0.35))
 ctx.addPath(shape)
-ctx.setFillColor(rgb(0x1E1B4B))
+ctx.setFillColor(rgb(0x131010))
 ctx.fillPath()
 ctx.restoreGState()
 
-// Background: indigo, lighter at the top.
 ctx.saveGState()
 ctx.addPath(shape)
 ctx.clip()
-let bg = CGGradient(
-  colorsSpace: space, colors: [rgb(0x6366F1), rgb(0x312E81), rgb(0x1E1B4B)] as CFArray,
-  locations: [0, 0.55, 1])!
-ctx.drawLinearGradient(
-  bg, start: CGPoint(x: 512, y: 924), end: CGPoint(x: 512, y: 100), options: [])
-// A faint glow behind the hub.
-let glow = CGGradient(
-  colorsSpace: space, colors: [rgb(0xA5B4FC, 0.35), rgb(0xA5B4FC, 0)] as CFArray,
-  locations: [0, 1])!
-ctx.drawRadialGradient(
-  glow, startCenter: CGPoint(x: 512, y: 512), startRadius: 0,
-  endCenter: CGPoint(x: 512, y: 512), endRadius: 330, options: [])
-ctx.restoreGState()
 
-let hub = CGPoint(x: 512, y: 512)
-// Workers: OpenCode (sky), Claude Code (amber), Codex (mint), evenly around the hub.
-let workers: [(CGFloat, UInt32)] = [(90, 0x38BDF8), (210, 0xFBBF24), (330, 0x34D399)]
-let orbit: CGFloat = 255
-func point(_ degrees: CGFloat) -> CGPoint {
-  let r = degrees * .pi / 180
-  return CGPoint(x: hub.x + orbit * cos(r), y: hub.y + orbit * sin(r))
-}
-
-// The orbit the workers sit on.
-ctx.setLineWidth(10)
-ctx.setStrokeColor(rgb(0xE0E7FF, 0.16))
-ctx.strokeEllipse(
-  in: CGRect(x: hub.x - orbit, y: hub.y - orbit, width: orbit * 2, height: orbit * 2))
-
-// Wires.
-ctx.setLineCap(.round)
-ctx.setLineWidth(30)
-ctx.setStrokeColor(rgb(0xE0E7FF, 0.7))
-for (deg, _) in workers {
-  ctx.move(to: hub)
-  ctx.addLine(to: point(deg))
+// Graph paper: a 32px grid laid out from the centre, so a line runs through it.
+let cell: CGFloat = 32
+ctx.setLineWidth(2)
+ctx.setStrokeColor(rgb(0xFFFFFF, 0.05))
+var v: CGFloat = 512 - 12 * cell
+while v <= 512 + 12 * cell {
+  ctx.move(to: CGPoint(x: v, y: 100))
+  ctx.addLine(to: CGPoint(x: v, y: 924))
+  ctx.move(to: CGPoint(x: 100, y: v))
+  ctx.addLine(to: CGPoint(x: 924, y: v))
+  v += cell
 }
 ctx.strokePath()
 
-// Worker nodes with a white rim.
-for (deg, color) in workers {
-  let p = point(deg)
-  ctx.setFillColor(rgb(0xFFFFFF))
-  ctx.fillEllipse(in: CGRect(x: p.x - 78, y: p.y - 78, width: 156, height: 156))
-  ctx.setFillColor(rgb(color))
-  ctx.fillEllipse(in: CGRect(x: p.x - 60, y: p.y - 60, width: 120, height: 120))
+// Centre guides, like a design tool's smart guides. Dashed outward from the
+// centre in each direction, so both ends match exactly.
+let guide = rgb(0xFF4D6D, 0.85)
+ctx.setStrokeColor(guide)
+ctx.setLineWidth(4)
+ctx.setLineDash(phase: 0, lengths: [16, 16])
+for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] as [(CGFloat, CGFloat)] {
+  ctx.move(to: CGPoint(x: 512, y: 512))
+  ctx.addLine(to: CGPoint(x: 512 + dx * 352, y: 512 + dy * 352))
+}
+ctx.strokePath()
+ctx.setLineDash(phase: 0, lengths: [])
+
+// The "o": OpenCode's proportions, 10×12 cells with a 2-cell stroke, on the grid.
+let outer = CGRect(x: 512 - 5 * cell, y: 512 - 6 * cell, width: 10 * cell, height: 12 * cell)
+let stroke: CGFloat = 2 * cell
+let hole = outer.insetBy(dx: stroke, dy: stroke)
+ctx.setFillColor(rgb(0xFFFFFF))
+ctx.fill(outer)
+// The guides stop at the "o": nothing crosses into it.
+ctx.setFillColor(rgb(0x131010))
+ctx.fill(hole)
+
+// The hole's contents, sorted: three bars of exactly 2 cells, equal half-cell
+// gaps, darkest at the bottom (where OpenCode's grey block sits).
+let gap: CGFloat = cell / 2
+let barH = (hole.height - 4 * gap) / 3
+let shades: [UInt32] = [0x5A5858, 0x7A7878, 0x9C9A9A]
+for (i, shade) in shades.enumerated() {
+  let y = hole.minY + gap + CGFloat(i) * (barH + gap)
+  ctx.setFillColor(rgb(shade))
+  ctx.fill(CGRect(x: hole.minX + gap, y: y, width: hole.width - 2 * gap, height: barH))
 }
 
-// Hub: white disc with an indigo core.
-ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -6), blur: 18, color: rgb(0x000000, 0.3))
-ctx.setFillColor(rgb(0xFFFFFF))
-ctx.fillEllipse(in: CGRect(x: hub.x - 120, y: hub.y - 120, width: 240, height: 240))
+// Registration marks at the four corners of the "o".
+ctx.setStrokeColor(guide)
+ctx.setLineWidth(5)
+for corner in [
+  CGPoint(x: outer.minX, y: outer.minY), CGPoint(x: outer.maxX, y: outer.minY),
+  CGPoint(x: outer.minX, y: outer.maxY), CGPoint(x: outer.maxX, y: outer.maxY),
+] {
+  let dx: CGFloat = corner.x < 512 ? -1 : 1
+  let dy: CGFloat = corner.y < 512 ? -1 : 1
+  let c = CGPoint(x: corner.x + dx * cell, y: corner.y + dy * cell)
+  ctx.move(to: CGPoint(x: c.x - cell / 2, y: c.y))
+  ctx.addLine(to: CGPoint(x: c.x + cell / 2, y: c.y))
+  ctx.move(to: CGPoint(x: c.x, y: c.y - cell / 2))
+  ctx.addLine(to: CGPoint(x: c.x, y: c.y + cell / 2))
+}
+ctx.strokePath()
 ctx.restoreGState()
-ctx.setFillColor(rgb(0x4338CA))
-ctx.fillEllipse(in: CGRect(x: hub.x - 56, y: hub.y - 56, width: 112, height: 112))
 
 let out = URL(fileURLWithPath: CommandLine.arguments[1])
 let dest = CGImageDestinationCreateWithURL(out as CFURL, UTType.png.identifier as CFString, 1, nil)!
