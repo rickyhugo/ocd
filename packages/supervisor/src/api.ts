@@ -6,6 +6,7 @@ import {
   CleanupTaskInput,
   DiscardTaskInput,
   LandTaskInput,
+  RequestChangesInput,
   MergePullRequestInput,
   OpenPullRequestInput,
   PeekTaskInput,
@@ -298,6 +299,15 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     requireCaller(req);
     const { method } = MergePullRequestInput.parse(req.body ?? {});
     return supervisor.mergePullRequest(IdParams.parse(req.params).id, { method }, req.actor);
+  });
+  app.get("/v1/tasks/:id/diff", async (req) => {
+    requireCaller(req);
+    return supervisor.diff(IdParams.parse(req.params).id);
+  });
+  app.post("/v1/tasks/:id/request-changes", async (req) => {
+    requireCaller(req);
+    const { feedback } = RequestChangesInput.parse(req.body ?? {});
+    return supervisor.requestChanges(IdParams.parse(req.params).id, feedback, req.actor);
   });
   app.get("/v1/tasks/:id/land", async (req) => {
     requireCaller(req);

@@ -11,6 +11,7 @@ import {
   buildSpill,
   collectSpill,
   describeLandResult,
+  formatDiffStat,
   formatLandPlan,
   formatSpill,
   renderTranscript,
@@ -105,6 +106,10 @@ Tasks
                                     checks pass, clean up. Run again to continue; --wait polls while checks run
   ocd task land <id> --direct       Escape hatch: push straight to the base branch (mergeMethod from ocd.jsonc,
                                     squash by default) after you confirm the exact commits; never forces
+  ocd task diff <id> [--stat]       The task's changes against where its branch started (uncommitted ones too)
+  ocd task request-changes <id> <feedback>
+                                    Review feedback: the worker gets it as a follow-up and the task comes back
+                                    for review; recorded as a numbered review round
   ocd task cleanup <id> [--force]   Remove a finished task's worktree and branch (refuses to lose work; work that
                                     is already in the base branch, e.g. squash-merged, counts as landed)
   ocd task discard <id> [--reason TEXT]
@@ -222,6 +227,7 @@ async function main(argv: string[]): Promise<void> {
       draft: { type: "boolean" },
       commit: { type: "boolean" },
       direct: { type: "boolean" },
+      stat: { type: "boolean" },
       wait: { type: "boolean" },
       deny: { type: "boolean" },
       message: { type: "string" },
@@ -683,6 +689,9 @@ async function main(argv: string[]): Promise<void> {
             d.task.result?.verification
               ? `verified changed files: ${d.task.result.verification.changedFiles.join(", ") || "none"}`
               : "",
+            ((rounds) => (rounds ? `review: changes requested ${rounds}×` : ""))(
+              d.events.filter((e) => e.type === "review.changes_requested").length,
+            ),
             "",
             "attention:",
             ...d.attention.map((a) => `  ${attentionLine(a)}`),
@@ -749,6 +758,16 @@ async function main(argv: string[]): Promise<void> {
             ? `merged ${t.pullRequestUrl}; worktree and branches removed`
             : `merge requested for ${t.pullRequestUrl} (queued)`,
         );
+      } else if (sub === "diff") {
+        const d = await client.taskDiff(id);
+        print(d, json, () =>
+          flags.stat ? formatDiffStat(d) : `${formatDiffStat(d)}\n\n${d.patch}`,
+        );
+      } else if (sub === "request-changes") {
+        const feedback = rest.slice(1).join(" ");
+        if (!feedback) fail("usage: ocd task request-changes <id> <feedback>");
+        const t = await client.requestChanges(id, feedback);
+        print(t, json, () => `sent the feedback to ${id}; it is ${t.state} again`);
       } else if (sub === "land") {
         if (flags.direct) {
           const plan = await client.landPlan(id);
@@ -820,7 +839,7 @@ async function main(argv: string[]): Promise<void> {
         );
       } else
         fail(
-          "usage: ocd task list|show|peek|send|cancel|accept|land|pr|merge|cleanup|discard|resume|takeover|giveback",
+          "usage: ocd task list|show|peek|diff|send|request-changes|cancel|accept|land|pr|merge|cleanup|discard|resume|takeover|giveback",
         );
       return;
     }

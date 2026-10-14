@@ -25,6 +25,7 @@ import type {
   LandTaskInput,
   TakeOverResult,
   Task,
+  TaskDiff,
   TaskDetail,
   TaskFilter,
   TaskProgress,
@@ -229,6 +230,11 @@ export class OcdClient {
   ) => this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/pull-request`, options);
   mergePullRequest = (id: string, method?: "squash" | "merge" | "rebase") =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/merge`, method ? { method } : {});
+  /** The task's changes against where its branch started, uncommitted ones included. Read-only. */
+  taskDiff = (id: string) => this.call<TaskDiff>("GET", `/v1/tasks/${encodeURIComponent(id)}/diff`);
+  /** Sends review feedback to the worker and reopens the task; recorded as a review round. */
+  requestChanges = (id: string, feedback: string) =>
+    this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/request-changes`, { feedback });
   /** What a direct landing would push (fetches the base; changes nothing). */
   landPlan = (id: string) => this.call<LandPlan>("GET", `/v1/tasks/${encodeURIComponent(id)}/land`);
   /** Gets the work into its base branch: through a pull request, or directly once confirmed. */
