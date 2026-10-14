@@ -413,6 +413,26 @@ describe("pull request actions in the supervisor", () => {
     expect(prs.created).toHaveLength(1);
   });
 
+  it("leaves pull requests off until github.enabled turns them on", async () => {
+    const prs = new RecordingPullRequests();
+    const factory = ({ config }: { config: { github: { enabled: boolean } } }) =>
+      config.github.enabled ? prs : undefined;
+    h = await startHarness({ pullRequests: factory });
+    const off = await finishedTaskWithOrigin(h, "gh-disabled");
+    await expect(h.human.openPullRequest(off.id, { commit: true })).rejects.toMatchObject({
+      code: "pr_unavailable",
+      message: expect.stringContaining('"github": { "enabled": true }'),
+    });
+    expect((await h.human.status()).github ?? null).toBeNull();
+    await h.cleanup();
+
+    h = await startHarness({ pullRequests: factory, config: { github: { enabled: true } } });
+    const on = await finishedTaskWithOrigin(h, "gh-enabled");
+    expect((await h.human.openPullRequest(on.id, { commit: true })).pullRequestUrl).toBe(
+      "https://example.test/pr/1",
+    );
+  });
+
   it("adopts a PR that already exists for the branch instead of opening another", async () => {
     const prs = new RecordingPullRequests();
     h = await startHarness({ pullRequests: prs });

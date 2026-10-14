@@ -1735,8 +1735,13 @@ export class Supervisor {
       const ref = { sessionId: task.sessionId };
       // Already manual: just say again how to open the session.
       const env = workerOcdEnv(join(this.o.sandboxRoot, task.id));
-      if (task.state === "manual")
-        return { task, command: adapter.interactiveCommand(ref), cwd: task.workspacePath, env };
+      const opened = {
+        command: adapter.interactiveCommand(ref),
+        cwd: task.workspacePath,
+        env,
+        tmux: this.o.config.tmux.enabled,
+      };
+      if (task.state === "manual") return { task, ...opened };
       // Leave the live states first: an interrupted worker reports idle, which
       // must not be read as a finished turn.
       const manual = this.store.tx(() => {
@@ -1764,12 +1769,7 @@ export class Supervisor {
       }
       // A process-owned worker must be gone before the human resumes its session.
       await adapter.release?.(ref);
-      return {
-        task: manual,
-        command: adapter.interactiveCommand(ref),
-        cwd: task.workspacePath,
-        env,
-      };
+      return { task: manual, ...opened };
     });
   }
 
@@ -2037,7 +2037,7 @@ export class Supervisor {
         throw new ApiError(
           422,
           "pr_unavailable",
-          "Pull requests are not available (gh not configured)",
+          'Pull requests are off; set "github": { "enabled": true } in ocd.jsonc and restart the supervisor',
         );
       if (!task.workspacePath || !task.branch || !task.baseRef)
         throw conflict("no_workspace", "The task has no workspace to push");
@@ -2108,7 +2108,7 @@ export class Supervisor {
         throw new ApiError(
           422,
           "pr_unavailable",
-          "Pull requests are not available (gh not configured)",
+          'Pull requests are off; set "github": { "enabled": true } in ocd.jsonc and restart the supervisor',
         );
       const repo = this.store.requireRepo(task.repo, { includeRetired: true });
       const method = options.method ?? this.o.live.mergeMethod(task.repo);

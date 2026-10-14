@@ -50,9 +50,15 @@ export interface DaemonOptions {
   notifier?: Notifier;
   /**
    * Opens pull requests when a human or the manager asks; omit to disable. A
-   * function receives the live config (e.g. gh.binary, applied on save).
+   * function receives the config and may return undefined (e.g. github.enabled off).
    */
-  pullRequests?: PullRequestHost | ((ctx: { live: LiveConfig; logger: Logger }) => PullRequestHost);
+  pullRequests?:
+    | PullRequestHost
+    | ((ctx: {
+        config: SupervisorConfig;
+        live: LiveConfig;
+        logger: Logger;
+      }) => PullRequestHost | undefined);
   logger?: Logger;
   foreground?: boolean;
   clock?: Clock;
@@ -183,7 +189,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const managerChannel = options.managerChannel?.(adapters) ?? null;
     const pullRequests =
       typeof options.pullRequests === "function"
-        ? options.pullRequests({ live, logger })
+        ? options.pullRequests({ config, live, logger })
         : options.pullRequests;
     const outbox = new OutboxWorker(
       store,

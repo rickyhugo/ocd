@@ -41,6 +41,7 @@ describe("manual mode (take over / give back)", () => {
     expect(taken.task.state).toBe("manual");
     expect(taken.command).toEqual(["fake-harness", "--resume", taken.task.sessionId]);
     expect(taken.cwd).toBe(taken.task.workspacePath);
+    expect(taken.tmux).toBe(false);
     // The process-owned worker is stopped, its session kept for later.
     expect(h.fakeState.sessions.has(taken.task.sessionId!)).toBe(false);
     expect(h.fakeState.onDisk.has(taken.task.sessionId!)).toBe(true);
@@ -64,6 +65,14 @@ describe("manual mode (take over / give back)", () => {
       code: "human_only",
     });
     await expect(h.manager("mgr").sendToWorker(task.id, "more")).rejects.toBeDefined();
+  });
+
+  it("tells the TUI it may open a tmux window only when tmux.enabled is on", async () => {
+    h = await startHarness({ config: { tmux: { enabled: true } } });
+    await setupRepo(h, "app");
+    const task = await dispatch("work [fake:hang]", "manual-tmux");
+    await waitForState(h, task.id, "running");
+    expect((await h.human.takeOverTask(task.id)).tmux).toBe(true);
   });
 
   it("gives back to continue: refuses while the session is open elsewhere, then resumes with the note", async () => {

@@ -227,4 +227,18 @@ describe("ocd focus", () => {
     });
     expect(raised).toEqual(["org.wezfurlong.wezterm"]);
   });
+
+  it("runs nothing when tmux is off and no focusApp is set", async () => {
+    const { exec, calls } = recordingExec();
+    const steps = await focusManager({
+      directory: "/tmp/mgr",
+      tmux: null,
+      exec,
+      activate: async () => true,
+    });
+    expect(calls).toEqual([]);
+    expect(steps).toEqual([
+      "nothing to focus: turn on tmux.enabled or set notifications.focusApp in ocd.jsonc",
+    ]);
+  });
 });

@@ -56,18 +56,36 @@ export function buildManagerChannel(adapters: HarnessAdapter[]): ManagerChannel 
   return opencode ? { wake: (sessionId, text) => opencode.wakeManager(sessionId, text) } : null;
 }
 
-/** Read-only checks: binary versions, logins, and the OpenCode service. Never starts workers or spends tokens. */
-export async function probeHarnesses(): Promise<AdapterStatus[]> {
-  const opencode = await new OpenCodeAdapter({ connect: () => discoverOpenCode() }).probe();
-  return [
-    {
+/**
+ * Read-only checks of the enabled harnesses: binary versions, logins, and the
+ * OpenCode service. Never starts workers or spends tokens.
+ */
+export async function probeHarnesses(
+  config: Pick<SupervisorConfig, "opencode" | "claude" | "codex">,
+): Promise<AdapterStatus[]> {
+  const statuses: AdapterStatus[] = [];
+  if (config.opencode.enabled) {
+    const serviceFile = config.opencode.serviceFile;
+    const opencode = await new OpenCodeAdapter({
+      connect: () => discoverOpenCode(serviceFile ? { serviceFile } : {}),
+    }).probe();
+    statuses.push({
       ...opencode,
       problems: [
         `service ${opencode.available ? "reachable" : "not reachable"}`,
         ...opencode.problems,
       ],
-    },
-    await new ClaudeAdapter({ command: [findBinary("claude")] }).probe(),
-    await new CodexAdapter({ command: [findBinary("codex"), "app-server"] }).probe(),
-  ];
+    });
+  }
+  if (config.claude.enabled)
+    statuses.push(
+      await new ClaudeAdapter({ command: [findBinary("claude", config.claude.binary)] }).probe(),
+    );
+  if (config.codex.enabled)
+    statuses.push(
+      await new CodexAdapter({
+        command: [findBinary("codex", config.codex.binary), "app-server"],
+      }).probe(),
+    );
+  return statuses;
 }
