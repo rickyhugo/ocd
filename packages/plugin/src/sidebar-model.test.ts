@@ -1,7 +1,9 @@
 import type { Attention, Task } from "@ocd/core";
 import { describe, expect, it } from "vite-plus/test";
 
-import { actionsFor, age, buildSidebar } from "./sidebar-model.ts";
+import { actionsFor, age, buildSidebar, landable } from "./sidebar-model.ts";
+
+const PR_ON = { pullRequests: true };
 
 const NOW = Date.parse("2026-10-13T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
@@ -120,21 +122,26 @@ describe("sidebar model", () => {
 
   it("offers landing first for review, and clean up for kept worktrees", () => {
     const [review] = buildSidebar([task("c", "ready_for_review")], [], NOW).sections[0]!.rows;
-    expect(actionsFor(review!).slice(0, 4)).toEqual([
+    expect(actionsFor(review!, PR_ON).slice(0, 3)).toEqual([
       { label: "Land through a pull request", kind: "land" },
       { label: "Land directly on the base branch…", kind: "land_direct" },
       { label: "Accept (keep the worktree)", kind: "accept" },
-      { label: "Accept and clean up", kind: "accept_clean" },
     ]);
-    expect(actionsFor(review!).map((a) => a.label)).toContain("Discard the work…");
+    // Without pull requests (github.enabled off) only the direct route is offered.
+    expect(actionsFor(review!, { pullRequests: false }).slice(0, 2)).toEqual([
+      { label: "Land directly on the base branch…", kind: "land_direct" },
+      { label: "Accept (keep the worktree)", kind: "accept" },
+    ]);
+    expect(actionsFor(review!, PR_ON).map((a) => a.label)).not.toContain("Accept and clean up");
+    expect(actionsFor(review!, PR_ON).map((a) => a.label)).toContain("Discard the work…");
     const [kept, gone] = buildSidebar([], [], NOW, [
       task("f", "completed", { finishedAt: minutesAgo(5), workspacePath: "/ws/f" }),
       task("g", "completed", { finishedAt: minutesAgo(5), workspacePath: null }),
     ]).recent;
-    expect(actionsFor(kept!).map((a) => a.label)).toEqual(
+    expect(actionsFor(kept!, PR_ON).map((a) => a.label)).toEqual(
       expect.arrayContaining(["Land through a pull request", "Clean up the worktree"]),
     );
-    expect(actionsFor(gone!).map((a) => a.label)).not.toContain("Clean up the worktree");
+    expect(actionsFor(gone!, PR_ON).map((a) => a.label)).not.toContain("Clean up the worktree");
   });
 
   it("lists manual tasks right after Needs you, with take-over and give-back actions", () => {
@@ -150,7 +157,7 @@ describe("sidebar model", () => {
     expect(model.sections.map((s) => s.key)).toEqual(["manual", "running", "queued"]);
     const [manual] = model.sections[0]!.rows;
     expect(manual).toMatchObject({ glyph: "◆", meta: "you · 12m" });
-    expect(actionsFor(manual!).map((a) => a.label)).toEqual([
+    expect(actionsFor(manual!, PR_ON).map((a) => a.label)).toEqual([
       "Open the session",
       "Give back: let the worker continue",
       "Give back: ready for review",
@@ -158,9 +165,9 @@ describe("sidebar model", () => {
       "Details",
     ]);
     const running = model.sections[1]!.rows[0]!;
-    expect(actionsFor(running).map((a) => a.label)).toContain("Take over (manual mode)");
+    expect(actionsFor(running, PR_ON).map((a) => a.label)).toContain("Take over (manual mode)");
     const queued = model.sections[2]!.rows[0]!;
-    expect(actionsFor(queued).map((a) => a.label)).not.toContain("Take over (manual mode)");
+    expect(actionsFor(queued, PR_ON).map((a) => a.label)).not.toContain("Take over (manual mode)");
   });
 
   it("offers confirm and decline for a push the manager asked for", () => {
@@ -168,16 +175,24 @@ describe("sidebar model", () => {
       ...buildSidebar([task("c", "completed")], [], NOW).sections[0]?.rows[0],
       attention: { id: "a1", kind: "land" },
     } as unknown as Parameters<typeof actionsFor>[0];
-    expect(actionsFor(row).slice(0, 2)).toEqual([
+    expect(actionsFor(row, PR_ON).slice(0, 2)).toEqual([
       { label: "Review and confirm the push…", kind: "land_confirm" },
       { label: "Decline the push", kind: "land_decline" },
     ]);
   });
 
+  it("lands only finished work that still has a worktree", () => {
+    expect(landable(task("a", "ready_for_review"))).toBe(true);
+    expect(landable(task("b", "completed", { workspacePath: "/ws/b" }))).toBe(true);
+    expect(landable(task("c", "completed", { workspacePath: null }))).toBe(false);
+    expect(landable(task("d", "cancelled", { workspacePath: "/ws/d" }))).toBe(false);
+    expect(landable(task("e", "running"))).toBe(false);
+  });
+
   it("offers actions that fit the task's state", () => {
     const [review] = buildSidebar([task("c", "ready_for_review")], [], NOW).sections[0]!.rows;
-    expect(actionsFor(review!).map((a) => a.label)).toContain("Summarize the result");
+    expect(actionsFor(review!, PR_ON).map((a) => a.label)).toContain("Summarize the result");
     const [running] = buildSidebar([task("a", "running")], [], NOW).sections[0]!.rows;
-    expect(actionsFor(running!).map((a) => a.label)).toContain("Status update");
+    expect(actionsFor(running!, PR_ON).map((a) => a.label)).toContain("Status update");
   });
 });

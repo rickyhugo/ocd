@@ -286,10 +286,10 @@ plugin directory) adds:
   refresh), and checklists live in supervisor memory, so after a restart one
   reappears with the worker's next update. No transcripts or reasoning.
 - **Row actions** (click a row) fit the task's state:
-  - Ready for review: **Land through a pull request**, **Land directly on the
-    base branch…** (shows the commits and asks first), **Accept (keep the
-    worktree)**, **Accept and clean up**, Summarize the result, **Discard the
-    work…**.
+  - Ready for review: **Land through a pull request** (only with
+    `github.enabled`), **Land directly on the base branch…** (shows the commits
+    and asks first), **Accept (keep the worktree)**, Summarize the result,
+    **Discard the work…**.
   - Accepted with a kept worktree: the two Land actions, **Clean up the
     worktree**, **Discard the work…**.
   - A push the manager asked for: **Review and confirm the push…**, **Decline
@@ -299,9 +299,14 @@ plugin directory) adds:
   - Always: a free-form message to the manager, and Details.
 
   Bold actions call OCD directly as you. Cleanup never forces: a worktree with
-  uncommitted changes, or commits that exist on no other branch, is kept and
-  the toast says how to proceed (land it, or discard it). The other actions are messages to the manager, which acts on them
-  as your explicit instruction.
+  uncommitted changes, or commits that are not in the base branch yet, is kept and
+  the toast says how to proceed (land it, or discard it). The other actions
+  are messages to the manager, which acts on them as your explicit
+  instruction.
+
+- **`/land`:** pick a finished task, then a route: through a pull request
+  (only with `github.enabled`), or directly on the base branch after you
+  confirm the commits. The same as the row actions and `ocd task land`.
 
 - **`/task`:** reference a task when talking to the manager. `/task` opens a
   searchable picker, then asks for your message; `/task <id or words> <message>`

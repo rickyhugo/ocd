@@ -244,7 +244,6 @@ export type ActionKind =
   | "message"
   | "details"
   | "accept"
-  | "accept_clean"
   | "clean"
   | "takeover"
   | "open"
@@ -258,8 +257,28 @@ export type ActionKind =
 /** A message goes to the manager, which acts on it; a kind runs directly against OCD. */
 export type QuickAction = { label: string; message: string } | { label: string; kind: ActionKind };
 
-/** What clicking a row offers, for the row's current state. */
-export function actionsFor(row: Row): QuickAction[] {
+/** A task whose work can still land: done, with its worktree. */
+export function landable(task: Task): boolean {
+  return task.state === "ready_for_review" || (task.state === "completed" && !!task.workspacePath);
+}
+
+/** The landing routes on offer; the pull request route only when pull requests are on. */
+export function landingActions(options: {
+  pullRequests: boolean;
+}): { label: string; kind: "land" | "land_direct" }[] {
+  return [
+    ...(options.pullRequests
+      ? [{ label: "Land through a pull request", kind: "land" as const }]
+      : []),
+    { label: "Land directly on the base branch…", kind: "land_direct" },
+  ];
+}
+
+/**
+ * What clicking a row offers, for the row's current state. `pullRequests`:
+ * whether the supervisor has pull requests on (github.enabled).
+ */
+export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickAction[] {
   const message = { label: "Message the manager about it…", kind: "message" as const };
   const details = { label: "Details", kind: "details" as const };
   if (row.attention?.kind === "land") {
@@ -280,10 +299,7 @@ export function actionsFor(row: Row): QuickAction[] {
       details,
     ];
   }
-  const landing: QuickAction[] = [
-    { label: "Land through a pull request", kind: "land" },
-    { label: "Land directly on the base branch…", kind: "land_direct" },
-  ];
+  const landing = row.task && landable(row.task) ? landingActions(options) : [];
   const discard = { label: "Discard the work…", kind: "discard" as const };
   // Manual mode needs a worker session to open.
   const takeover = row.task?.sessionId
@@ -302,7 +318,6 @@ export function actionsFor(row: Row): QuickAction[] {
       return [
         ...landing,
         { label: "Accept (keep the worktree)", kind: "accept" },
-        { label: "Accept and clean up", kind: "accept_clean" },
         ...takeover,
         {
           label: "Summarize the result",
@@ -337,11 +352,7 @@ export function actionsFor(row: Row): QuickAction[] {
     case "cancelled":
       return [
         ...(row.task.workspacePath
-          ? [
-              ...(row.task.state === "completed" ? landing : []),
-              { label: "Clean up the worktree", kind: "clean" as const },
-              discard,
-            ]
+          ? [...landing, { label: "Clean up the worktree", kind: "clean" as const }, discard]
           : []),
         message,
         details,

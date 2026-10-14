@@ -424,9 +424,11 @@ describe("pull request actions in the supervisor", () => {
       message: expect.stringContaining('"github": { "enabled": true }'),
     });
     expect((await h.human.status()).github ?? null).toBeNull();
+    expect((await h.human.status()).pullRequests).toBe(false);
     await h.cleanup();
 
     h = await startHarness({ pullRequests: factory, config: { github: { enabled: true } } });
+    expect((await h.human.status()).pullRequests).toBe(true);
     const on = await finishedTaskWithOrigin(h, "gh-enabled");
     expect((await h.human.openPullRequest(on.id, { commit: true })).pullRequestUrl).toBe(
       "https://example.test/pr/1",

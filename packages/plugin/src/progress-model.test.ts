@@ -93,10 +93,10 @@ describe("progress panel model", () => {
   it("toggles expansion without touching the row's actions", () => {
     const [row] = buildSidebar([task("a", "running", { sessionId: "s" })], [], NOW).sections[0]!
       .rows;
-    const before = actionsFor(row!);
+    const before = actionsFor(row!, { pullRequests: true });
     let expanded = toggleExpanded(new Set(), "a");
     expect([...expanded]).toEqual(["a"]);
-    expect(actionsFor(row!)).toEqual(before);
+    expect(actionsFor(row!, { pullRequests: true })).toEqual(before);
     expanded = toggleExpanded(expanded, "a");
     expect(expanded.size).toBe(0);
   });
