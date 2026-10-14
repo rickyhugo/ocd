@@ -103,8 +103,10 @@ export const SupervisorConfig = z
       .object({
         enabled: z
           .boolean()
-          .default(true)
-          .describe("Offer Claude Code workers (profiles with harness claude)."),
+          .default(false)
+          .describe(
+            "Offer Claude Code workers (profiles with harness claude). Off by default; when off, claude is never run and dispatches to its profiles are refused. Restart to apply.",
+          ),
         binary: z
           .string()
           .optional()
@@ -118,8 +120,10 @@ export const SupervisorConfig = z
       .object({
         enabled: z
           .boolean()
-          .default(true)
-          .describe("Offer Codex workers (profiles with harness codex)."),
+          .default(false)
+          .describe(
+            "Offer Codex workers (profiles with harness codex). Off by default; when off, codex is never run and dispatches to its profiles are refused. Restart to apply.",
+          ),
         binary: z
           .string()
           .optional()

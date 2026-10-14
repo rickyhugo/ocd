@@ -153,19 +153,21 @@ supervisor, so wait until no Claude Code or Codex worker is running.
 
 ### Optional tools
 
-OCD needs Node, git and the harnesses your profiles use. gh and tmux are
-optional and off by default: until you turn one on in `ocd.jsonc`, OCD never
-runs it, checks for it or mentions it in warnings. Restart the supervisor
-after changing these.
+OCD needs Node, git and OpenCode. Everything else is optional and off by
+default: until you turn a tool on in `ocd.jsonc`, OCD never runs it, checks
+for it or mentions it in warnings. Restart the supervisor after changing
+these.
 
 ```jsonc
+"claude": { "enabled": true }, // Claude Code workers (profiles with harness claude)
+"codex": { "enabled": true },  // Codex workers (profiles with harness codex)
 "github": { "enabled": true }, // pull requests with gh: ocd task pr / merge
 "tmux": { "enabled": true },   // notification clicks and taken-over sessions use tmux
 ```
 
-`ocd doctor` shows each one as `off` until it is turned on, then checks it.
-Claude Code, Codex and OpenCode have their own `claude.enabled`,
-`codex.enabled` and `opencode.enabled` switches (on by default).
+`ocd doctor` shows each one as `off` until it is turned on, then checks it,
+and names any profile that uses a harness that is off. Dispatching to such a
+profile fails with `harness_disabled`, naming the setting.
 
 ### Finding your tools
 

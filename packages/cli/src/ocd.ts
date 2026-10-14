@@ -527,7 +527,13 @@ async function main(argv: string[]): Promise<void> {
         const off = (key: string) => `off (turn on with ${key}.enabled in ocd.jsonc)`;
         const harnessOff = (["opencode", "claude", "codex"] as const)
           .filter((h) => !config[h].enabled)
-          .map((h) => `${h.padEnd(9)} ${off(h)}`);
+          .map((h) => {
+            const users = Object.entries(config.profiles)
+              .filter(([, profile]) => profile.harness === h)
+              .map(([name]) => name);
+            const note = users.length ? `; profiles ${users.join(", ")} cannot run` : "";
+            return `${h.padEnd(9)} ${off(h)}${note}`;
+          });
         return [
           ...(configError ? [`${"config".padEnd(9)} INVALID ${configError}`] : []),
           ...harnesses.map(

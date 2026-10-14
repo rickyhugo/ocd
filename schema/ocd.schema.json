@@ -119,8 +119,8 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "default": true,
-          "description": "Offer Claude Code workers (profiles with harness claude).",
+          "default": false,
+          "description": "Offer Claude Code workers (profiles with harness claude). Off by default; when off, claude is never run and dispatches to its profiles are refused. Restart to apply.",
           "type": "boolean"
         },
         "binary": {
@@ -135,8 +135,8 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "default": true,
-          "description": "Offer Codex workers (profiles with harness codex).",
+          "default": false,
+          "description": "Offer Codex workers (profiles with harness codex). Off by default; when off, codex is never run and dispatches to its profiles are refused. Restart to apply.",
           "type": "boolean"
         },
         "binary": {

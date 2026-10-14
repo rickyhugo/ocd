@@ -76,6 +76,25 @@ describe("dispatch and review", () => {
     expect(da.task.branch).toBe(`ocd/${a.task.id}`);
   });
 
+  it("refuses an enabled harness that has no adapter in this build", async () => {
+    h = await startHarness({
+      config: {
+        codex: { enabled: true },
+        profiles: { "codex-default": { harness: "codex", model: "gpt-x" } },
+      },
+    });
+    await setupRepo(h, "app");
+    await expect(
+      h.human.dispatch({
+        repo: "app",
+        profile: "codex-default",
+        title: "t",
+        instructions: "i",
+        idempotencyKey: "k-12345678",
+      }),
+    ).rejects.toMatchObject({ code: "harness_unsupported" });
+  });
+
   it("rejects unsupported harness choices (AT2)", async () => {
     h = await startHarness({
       config: { profiles: { "codex-default": { harness: "codex", model: "gpt-x" } } },
@@ -89,7 +108,10 @@ describe("dispatch and review", () => {
         instructions: "i",
         idempotencyKey: "k-12345678",
       }),
-    ).rejects.toMatchObject({ code: "harness_unsupported" });
+    ).rejects.toMatchObject({
+      code: "harness_disabled",
+      message: expect.stringContaining('"codex": { "enabled": true }'),
+    });
     await expect(
       h.human.dispatch({
         repo: "app",

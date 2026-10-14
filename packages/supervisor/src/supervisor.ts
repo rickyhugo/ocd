@@ -343,9 +343,21 @@ export class Supervisor {
 
   private adapterFor(harness: HarnessName): HarnessAdapter {
     const adapter = this.adapters.get(harness);
-    if (!adapter)
+    if (!adapter) {
+      this.assertHarnessEnabled(harness);
       throw new ApiError(422, "harness_unavailable", `No ${harness} adapter is configured`);
+    }
     return adapter;
+  }
+
+  /** Claude Code and Codex are opt-in: name the setting when one is off. */
+  private assertHarnessEnabled(harness: HarnessName): void {
+    if ((harness === "claude" || harness === "codex") && !this.o.config[harness].enabled)
+      throw new ApiError(
+        422,
+        "harness_disabled",
+        `${harness === "claude" ? "Claude Code" : "Codex"} is off; set "${harness}": { "enabled": true } in ocd.jsonc and restart the supervisor`,
+      );
   }
 
   // ---------------------------------------------------------------------------
@@ -421,12 +433,14 @@ export class Supervisor {
       );
     }
     const adapter = this.adapters.get(harness);
-    if (!adapter)
+    if (!adapter) {
+      this.assertHarnessEnabled(harness);
       throw new ApiError(
         422,
         "harness_unsupported",
         `Harness ${harness} is not supported in this version`,
       );
+    }
     requireCapability(adapter, "start");
     const status = this.versions.get(harness);
     if (status && !status.available) {

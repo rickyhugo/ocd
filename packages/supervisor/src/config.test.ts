@@ -38,7 +38,12 @@ describe("ocd.jsonc", () => {
     expect(config.concurrency).toBe(2);
     expect(config.stallAfterMinutes).toBe(30);
     // Optional tools stay off unless turned on.
-    expect([config.github.enabled, config.tmux.enabled]).toEqual([false, false]);
+    expect([
+      config.github.enabled,
+      config.tmux.enabled,
+      config.claude.enabled,
+      config.codex.enabled,
+    ]).toEqual([false, false, false, false]);
     expect(toProfiles(config).map((p) => [p.name, p.permissionPolicy, p.description])).toEqual([
       ["oc", "deny", "Default"],
       ["oc-cheap", "ask", null],

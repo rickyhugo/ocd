@@ -7,6 +7,13 @@ normal CLI logins (`~/.claude`, `~/.codex`). Workers die with the supervisor;
 `ocd task resume <id> --mode reattach` continues the same session from the
 harness's own records.
 
+Both are off by default; turn on the ones you use (then restart the supervisor):
+
+```jsonc
+"claude": { "enabled": true },
+"codex": { "enabled": true },
+```
+
 Profiles:
 
 ```jsonc
