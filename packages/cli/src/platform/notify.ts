@@ -100,13 +100,17 @@ export class NotifySendNotifier implements DesktopNotifier {
   private readonly binary: string;
   private readonly onClick: readonly string[] | null;
   private readonly exec: Exec;
+  private readonly graceMs: number;
 
   constructor(options: {
     binary: string;
     onClick?: readonly string[] | undefined;
     supportsActions: boolean;
     exec?: Exec;
+    /** How long to wait for an immediate failure before calling it delivered. */
+    graceMs?: number;
   }) {
+    this.graceMs = options.graceMs ?? 750;
     this.binary = options.binary;
     this.onClick = options.supportsActions ? (options.onClick ?? null) : null;
     this.clickable = this.onClick !== null;
@@ -120,18 +124,40 @@ export class NotifySendNotifier implements DesktopNotifier {
     if (!onClick) return run(this.exec, this.binary, args);
     return new Promise((resolve, reject) => {
       const child = spawn(this.binary, ["--action=default=Open", "--wait", ...args], {
-        stdio: ["ignore", "pipe", "ignore"],
+        stdio: ["ignore", "pipe", "pipe"],
       });
       let output = "";
+      let errors = "";
+      let reported = false;
+      let grace: NodeJS.Timeout | undefined;
       child.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+        if (errors.length < 4000) errors += chunk;
+      });
       const timer = setTimeout(() => child.kill(), CLICK_WAIT_MS);
       child.once("error", (error) => {
         clearTimeout(timer);
+        clearTimeout(grace);
+        reported = true;
         reject(error);
       });
-      child.once("spawn", () => resolve());
-      child.once("exit", () => {
+      // Delivered once it has survived the grace period; a notify-send that
+      // fails right away (no daemon, bad option) must not look delivered.
+      child.once("spawn", () => {
+        grace = setTimeout(() => {
+          reported = true;
+          resolve();
+        }, this.graceMs);
+      });
+      child.once("exit", (code) => {
         clearTimeout(timer);
+        clearTimeout(grace);
+        if (!reported) {
+          reported = true;
+          if (code !== 0)
+            reject(new Error(`${this.binary} exited ${code}: ${errors.trim() || output.trim()}`));
+          else resolve();
+        }
         if (output.trim().split("\n").includes("default")) {
           const [cmd, ...rest] = onClick;
           if (cmd)
@@ -143,6 +169,7 @@ export class NotifySendNotifier implements DesktopNotifier {
       // A pending click must not keep the supervisor alive at shutdown.
       child.unref();
       (child.stdout as unknown as { unref?: () => void }).unref?.();
+      (child.stderr as unknown as { unref?: () => void }).unref?.();
     });
   }
 }
