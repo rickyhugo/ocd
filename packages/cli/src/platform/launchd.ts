@@ -100,9 +100,23 @@ export class LaunchdService implements ServiceManager {
     mkdirSync(dirname(this.plist), { recursive: true });
     mkdirSync(spec.logsDir, { recursive: true, mode: 0o700 });
     // Replace an older definition if one is loaded; a missing one is fine.
-    await this.exec("/bin/launchctl", ["bootout", `${this.target()}/${LAUNCH_AGENT_LABEL}`]);
+    const service = `${this.target()}/${LAUNCH_AGENT_LABEL}`;
+    const unloaded = await this.exec("/bin/launchctl", ["bootout", service]);
     writeFileSync(this.plist, renderPlist(spec), { mode: 0o644 });
-    const result = await this.exec("/bin/launchctl", ["bootstrap", this.target(), this.plist]);
+    // bootout returns before the old supervisor has finished stopping, and
+    // bootstrapping the label meanwhile fails with an I/O error: wait until
+    // launchd no longer knows the job (bounded), and retry that error briefly.
+    if (unloaded.code === 0) {
+      for (let waited = 0; waited < 30_000; waited += 250) {
+        if ((await this.exec("/bin/launchctl", ["print", service])).code !== 0) break;
+        await this.sleep(250);
+      }
+    }
+    let result = await this.exec("/bin/launchctl", ["bootstrap", this.target(), this.plist]);
+    for (let attempt = 1; result.code === 5 && attempt <= 4; attempt++) {
+      await this.sleep(1000);
+      result = await this.exec("/bin/launchctl", ["bootstrap", this.target(), this.plist]);
+    }
     if (result.code !== 0)
       throw new Error(
         `launchctl bootstrap failed: ${result.stderr.trim() || result.stdout.trim()}`,

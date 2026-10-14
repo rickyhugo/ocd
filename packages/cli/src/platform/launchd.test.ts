@@ -123,10 +123,48 @@ describe("LaunchAgent lifecycle", () => {
 
   it("reports bootstrap failures", async () => {
     const plist = join(temp(), `${LAUNCH_AGENT_LABEL}.plist`);
-    const { exec } = fakeExec({ bootstrap: { code: 5, stderr: "Input/output error" } });
+    const { exec, calls } = fakeExec({
+      bootout: { code: 3 },
+      bootstrap: { code: 5, stderr: "Input/output error" },
+    });
     await expect(
-      new LaunchdService({ exec, plist }).install({ ...spec, logsDir: temp() }),
+      new LaunchdService({ exec, plist, sleep: async () => undefined }).install({
+        ...spec,
+        logsDir: temp(),
+      }),
     ).rejects.toThrow(/Input\/output error/);
+    // Retried a few times before giving up.
+    expect(calls.filter((c) => c[1] === "bootstrap")).toHaveLength(5);
+  });
+
+  it("waits for a replaced supervisor to be gone before bootstrapping the new definition", async () => {
+    // As launchd does: bootout returns at once, the old job lingers while it
+    // stops, and bootstrapping meanwhile fails with an I/O error.
+    const plist = join(temp(), `${LAUNCH_AGENT_LABEL}.plist`);
+    const calls: string[][] = [];
+    let prints = 0;
+    let bootstraps = 0;
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (args[0] === "print") return { code: ++prints < 3 ? 0 : 113, stdout: "", stderr: "" };
+      if (args[0] === "bootstrap")
+        return ++bootstraps === 1
+          ? { code: 5, stdout: "", stderr: "Bootstrap failed: 5: Input/output error" }
+          : { code: 0, stdout: "", stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    await new LaunchdService({ exec, plist, sleep: async () => undefined }).install({
+      ...spec,
+      logsDir: temp(),
+    });
+    expect(calls.map((c) => c[1])).toEqual([
+      "bootout",
+      "print",
+      "print",
+      "print",
+      "bootstrap",
+      "bootstrap",
+    ]);
   });
 
   it("uninstalls only its own plist", async () => {
