@@ -32,7 +32,7 @@ const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
 const blocks = (message: ClaudeStreamMessage): Block[] => {
-  const content = message.message?.content;
+  const content = record(message.message)["content"];
   // Untrusted stream data: skip null and non-object blocks rather than throw.
   return Array.isArray(content)
     ? content.filter((b): b is Block => !!b && typeof b === "object")
@@ -45,10 +45,16 @@ export class ClaudeTodoTracker {
 
   /** Feeds one stream-json message; returns the whole checklist when it changed. */
   observe(message: ClaudeStreamMessage): TodoItem[] | null {
-    if (message.parent_tool_use_id) return null;
+    // Untrusted stream data: anything but an object is not a message.
+    if (!message || typeof message !== "object" || message.parent_tool_use_id) return null;
     if (message.type === "assistant") {
       for (const block of blocks(message)) {
-        if (block.type !== "tool_use" || !block.id || !TOOLS.has(block.name ?? "")) continue;
+        if (
+          block.type !== "tool_use" ||
+          typeof block.id !== "string" ||
+          !TOOLS.has(block.name ?? "")
+        )
+          continue;
         if (this.calls.size >= MAX_CALLS) this.calls.clear();
         this.calls.set(block.id, { name: block.name!, input: record(block.input) });
       }
@@ -58,9 +64,10 @@ export class ClaudeTodoTracker {
     const results = blocks(message).filter((b) => b.type === "tool_result");
     let changed = false;
     for (const block of results) {
-      const call = block.tool_use_id ? this.calls.get(block.tool_use_id) : undefined;
-      if (!call) continue;
-      this.calls.delete(block.tool_use_id!);
+      const callId = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
+      const call = callId ? this.calls.get(callId) : undefined;
+      if (!call || !callId) continue;
+      this.calls.delete(callId);
       if (block.is_error) continue;
       // The structured result is per message; it is unambiguous with one result.
       const output = results.length === 1 ? record(message.tool_use_result) : {};

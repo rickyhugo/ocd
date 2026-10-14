@@ -184,6 +184,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     );
     return result(`Working on it.\n${report}`);
   }
+  if (text.includes("[perm-die]")) {
+    send({
+      type: "control_request",
+      request_id: "req-die",
+      request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "x" } },
+    });
+    return void setTimeout(() => process.exit(1), 100);
+  }
   if (text.includes("[perm]")) {
     waiting = `req-${Date.now()}`;
     return send({

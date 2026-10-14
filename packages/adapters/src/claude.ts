@@ -113,6 +113,8 @@ interface ClaudeSession {
   limitSeen: boolean;
   /** The process was stopped while idle; the session resumes on the next prompt. */
   parked: boolean;
+  /** The in-flight stop of an idle worker; a prompt waits for it, then restarts. */
+  stopping: Promise<void> | null;
   idleTimer: NodeJS.Timeout | null;
   todos: ClaudeTodoTracker;
   /** Fallback transcript keys for messages without uuid or id. */
@@ -204,6 +206,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       quotaLimited: false,
       limitSeen: false,
       parked: false,
+      stopping: null,
       idleTimer: null,
       todos: new ClaudeTodoTracker(),
       observed: 0,
@@ -244,6 +247,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       cwd: spec.directory,
       env: spec.env,
       onMessage: (m) => this.onMessage(state, m as ClaudeMessage),
+      onError: (error) => this.options.onError?.(error, "claude message"),
       onInvalidLine: (line) =>
         this.options.onError?.(new Error(line.slice(0, 200)), "claude stdout"),
     });
@@ -272,13 +276,23 @@ export class ClaudeAdapter implements HarnessAdapter {
     this.clearIdleStop(session);
     if (!session.proc.running || session.status === "busy" || session.status === "waiting") return;
     session.parked = true;
-    await session.proc.stop(2000);
+    // Tracked so a prompt arriving while the process winds down waits for it
+    // and restarts, instead of writing to a closed stdin.
+    const stopping = session.proc.stop(2000).finally(() => {
+      if (session.stopping === stopping) session.stopping = null;
+    });
+    session.stopping = stopping;
+    await stopping;
   }
 
   private onMessage(session: ClaudeSession, message: ClaudeMessage): void {
     const sessionId = session.sessionId;
-    const todos = session.todos.observe(message);
-    if (todos) this.emit({ type: "todos", sessionId, todos });
+    try {
+      const todos = session.todos.observe(message);
+      if (todos) this.emit({ type: "todos", sessionId, todos });
+    } catch (error) {
+      this.options.onError?.(error, "claude todos");
+    }
     switch (message.type) {
       case "control_request": {
         if (message.request?.subtype !== "can_use_tool" || !message.request_id) return;
@@ -434,6 +448,8 @@ export class ClaudeAdapter implements HarnessAdapter {
     session: ClaudeSession,
     exit: { code: number | null; signal: NodeJS.Signals | null },
   ): void {
+    // Whatever the dead process was waiting on will never be answered.
+    session.pending.clear();
     if (this.sessions.get(session.sessionId) !== session || session.parked) return;
     if (session.status === "busy" || session.status === "waiting") {
       session.error = `claude exited (${exit.signal ?? exit.code}): ${session.proc.stderr().slice(-500)}`;
@@ -457,6 +473,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     ]);
     if (early) {
       this.sessions.delete(id);
+      if (this.byMarker.get(spec.marker) === id) this.byMarker.delete(spec.marker);
       throw new HarnessUnavailableError(
         `claude did not start: ${session.proc.stderr().trim() || `exit ${early.code}`}`,
       );
@@ -521,7 +538,11 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   async prompt(ref: SessionRef, text: string): Promise<void> {
-    const parked = this.sessions.get(ref.sessionId);
+    let parked = this.sessions.get(ref.sessionId);
+    if (parked?.stopping) {
+      await parked.stopping;
+      parked = this.sessions.get(ref.sessionId); // may have been released meanwhile
+    }
     if (parked && !parked.proc.running && (parked.parked || parked.status !== "busy")) {
       this.startProcess(parked, true);
     }

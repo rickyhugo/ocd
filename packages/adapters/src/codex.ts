@@ -87,7 +87,11 @@ interface CodexSession {
   quotaLimited: boolean;
   /** The process was stopped while idle; the thread resumes on the next prompt. */
   parked: boolean;
+  /** The in-flight stop of an idle app-server; a prompt waits for it, then resumes. */
+  stopping: Promise<void> | null;
   idleTimer: NodeJS.Timeout | null;
+  /** An agent message completed during the current turn (the final answer so far). */
+  turnTextSet: boolean;
   /** Turns that already completed; their turn/start reply may arrive late. */
   finishedTurns: Set<string>;
 }
@@ -160,7 +164,7 @@ export class CodexAdapter implements HarnessAdapter {
 
   private async spawn(spec: SessionSpec): Promise<CodexSession> {
     // Partially initialised until thread/start or thread/resume returns an id.
-    const session = { parked: false, idleTimer: null } as unknown as CodexSession;
+    const session = { parked: false, stopping: null, idleTimer: null } as unknown as CodexSession;
     await this.startProcess(session, spec);
     return session;
   }
@@ -169,6 +173,8 @@ export class CodexAdapter implements HarnessAdapter {
   private async startProcess(session: CodexSession, spec: SessionSpec): Promise<void> {
     session.calls = new Map();
     session.nextId = 0;
+    // A new process knows nothing of the old one's turn or requests.
+    if (session.pending) this.resetProcessState(session);
     const [cmd, ...args] = this.command;
     const proc = new JsonLineProcess(cmd, args, {
       cwd: spec.directory,
@@ -176,6 +182,7 @@ export class CodexAdapter implements HarnessAdapter {
       onMessage: (m) => this.onMessage(session, m as RpcMessage),
       onInvalidLine: (line) =>
         this.options.onError?.(new Error(line.slice(0, 200)), "codex stdout"),
+      onError: (error) => this.options.onError?.(error, "codex message"),
     });
     session.proc = proc;
     session.parked = false;
@@ -202,10 +209,17 @@ export class CodexAdapter implements HarnessAdapter {
       );
     }
     proc.send({ method: "initialized" });
-    const account = (await this.call(session, "account/read", { refreshToken: false })) as {
-      account: unknown;
-    };
-    if (!account.account) {
+    let account: { account: unknown } | null;
+    try {
+      account = (await this.call(session, "account/read", { refreshToken: false })) as {
+        account: unknown;
+      } | null;
+    } catch (error) {
+      session.parked = true;
+      await proc.stop(500);
+      throw error;
+    }
+    if (!account?.account) {
       await proc.stop(500);
       throw new HarnessUnavailableError("Codex is not logged in. Run `codex login`.");
     }
@@ -236,16 +250,39 @@ export class CodexAdapter implements HarnessAdapter {
     )
       return;
     session.parked = true;
-    await session.proc.stop(2000);
+    const stopping = session.proc.stop(2000).finally(() => {
+      if (session.stopping === stopping) session.stopping = null;
+    });
+    session.stopping = stopping;
+    await stopping;
+  }
+
+  /** Forgets the turn, requests and file changes of a process that is gone or replaced. */
+  private resetProcessState(session: CodexSession): void {
+    session.activeTurnId = null;
+    session.pending.clear();
+    session.fileChanges.clear();
   }
 
   /** Restarts a parked session's app-server and resumes its thread. */
   private async resumeThread(session: CodexSession): Promise<void> {
     await this.startProcess(session, session.spec);
-    await this.call(session, "thread/resume", {
-      threadId: session.threadId,
-      ...this.threadParams(session.spec),
-    });
+    await this.resumeOn(session, session.spec, session.threadId);
+  }
+
+  /** thread/resume on the session's current process; the process is stopped if it fails. */
+  private async resumeOn(
+    session: CodexSession,
+    spec: SessionSpec,
+    threadId: string,
+  ): Promise<void> {
+    try {
+      await this.call(session, "thread/resume", { threadId, ...this.threadParams(spec) });
+    } catch (error) {
+      session.parked = true;
+      await session.proc.stop(500);
+      throw error;
+    }
   }
 
   private call(
@@ -361,26 +398,36 @@ export class CodexAdapter implements HarnessAdapter {
     if (!sessionId) return;
     switch (method) {
       case "turn/started": {
-        const turn = params["turn"] as { id: string };
-        session.activeTurnId = turn.id;
+        const turn = params["turn"] as { id?: unknown } | undefined;
+        if (typeof turn?.id === "string") session.activeTurnId = turn.id;
+        session.turnTextSet = false;
         session.status = "busy";
         this.emit({ type: "status", sessionId, status: "busy" });
         return;
       }
       case "item/started": {
-        const item = params["item"] as { type?: string; id?: string; changes?: { path: string }[] };
+        const item = (params["item"] ?? {}) as {
+          type?: string;
+          id?: string;
+          changes?: ({ path?: unknown } | null)[];
+        };
         if (item.type === "fileChange" && item.id)
           session.fileChanges.set(
             item.id,
-            (item.changes ?? []).map((c) => c.path),
+            (Array.isArray(item.changes) ? item.changes : []).flatMap((c) =>
+              typeof c?.path === "string" ? [c.path] : [],
+            ),
           );
         this.record(session, params["item"], params["startedAtMs"]);
         this.emit({ type: "activity", sessionId });
         return;
       }
       case "item/completed": {
-        const item = params["item"] as { type?: string; text?: string };
-        if (item.type === "agentMessage" && item.text) session.lastAssistantText = item.text;
+        const item = (params["item"] ?? {}) as { type?: string; text?: unknown };
+        if (item.type === "agentMessage" && typeof item.text === "string" && item.text) {
+          session.lastAssistantText = item.text;
+          session.turnTextSet = true;
+        }
         this.record(session, params["item"], params["completedAtMs"]);
         this.emit({ type: "activity", sessionId });
         return;
@@ -417,15 +464,23 @@ export class CodexAdapter implements HarnessAdapter {
         return;
       }
       case "turn/completed": {
-        const turn = params["turn"] as {
-          id: string;
-          status: "completed" | "interrupted" | "failed";
-          error: { message?: string; codexErrorInfo?: unknown } | null;
-          items?: { type?: string; text?: string }[];
+        const turn = (params["turn"] ?? {}) as {
+          id?: unknown;
+          status?: "completed" | "interrupted" | "failed";
+          error?: { message?: string; codexErrorInfo?: unknown } | null;
+          items?: ({ type?: string; text?: unknown } | null)[];
         };
-        const final = turn.items?.find((i) => i.type === "agentMessage")?.text;
-        if (final) session.lastAssistantText = final;
-        session.finishedTurns.add(turn.id);
+        // item/completed already set the final message; fall back to the turn's
+        // own items only when none was seen, and then take the last one.
+        if (!session.turnTextSet && Array.isArray(turn.items)) {
+          const messages = turn.items.filter(
+            (i) => i?.type === "agentMessage" && typeof i.text === "string" && i.text,
+          );
+          const final = messages[messages.length - 1]?.text;
+          if (typeof final === "string") session.lastAssistantText = final;
+        }
+        session.turnTextSet = false;
+        if (typeof turn.id === "string") session.finishedTurns.add(turn.id);
         session.activeTurnId = null;
         session.pending.clear();
         if (turn.status === "failed") {
@@ -462,6 +517,8 @@ export class CodexAdapter implements HarnessAdapter {
       call.reject(new Error("codex app-server exited"));
     }
     session.calls.clear();
+    // Whatever the dead process was doing or waiting on is gone with it.
+    if (session.pending) this.resetProcessState(session);
     if (!session.threadId || this.sessions.get(session.threadId) !== session || session.parked)
       return;
     // An unexpected exit while working is an error; the session can be revived from disk.
@@ -509,7 +566,9 @@ export class CodexAdapter implements HarnessAdapter {
       error: null,
       quotaLimited: false,
       parked: false,
+      stopping: null,
       idleTimer: null,
+      turnTextSet: false,
       finishedTurns: session.finishedTurns ?? new Set(),
     } satisfies Partial<CodexSession>);
     this.sessions.set(threadId, session);
@@ -521,13 +580,24 @@ export class CodexAdapter implements HarnessAdapter {
   async createSession(spec: SessionSpec): Promise<SessionRef> {
     const session = await this.spawn(spec);
     const { model } = parseCodexModel(spec.model);
-    const result = (await this.call(session, "thread/start", {
-      ...this.threadParams(spec),
-      model,
-      serviceName: "ocd",
-    })) as { thread: { id: string } };
-    this.register(session, result.thread.id, spec);
-    return { sessionId: result.thread.id };
+    let threadId: string;
+    try {
+      const result = (await this.call(session, "thread/start", {
+        ...this.threadParams(spec),
+        model,
+        serviceName: "ocd",
+      })) as { thread?: { id?: unknown } } | null;
+      if (typeof result?.thread?.id !== "string")
+        throw new Error("thread/start returned no thread");
+      threadId = result.thread.id;
+    } catch (error) {
+      // The session is not registered yet; nothing else would ever stop this process.
+      session.parked = true;
+      await session.proc.stop(500);
+      throw error;
+    }
+    this.register(session, threadId, spec);
+    return { sessionId: threadId };
   }
 
   async findSession(spec: SessionSpec): Promise<SessionRef | null> {
@@ -543,10 +613,7 @@ export class CodexAdapter implements HarnessAdapter {
       return;
     }
     const session = await this.spawn(spec);
-    await this.call(session, "thread/resume", {
-      threadId: ref.sessionId,
-      ...this.threadParams(spec),
-    });
+    await this.resumeOn(session, spec, ref.sessionId);
     session.prompted = true;
     this.register(session, ref.sessionId, spec);
   }
@@ -618,7 +685,11 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   async prompt(ref: SessionRef, text: string): Promise<void> {
-    const parked = this.sessions.get(ref.sessionId);
+    let parked = this.sessions.get(ref.sessionId);
+    if (parked?.stopping) {
+      await parked.stopping;
+      parked = this.sessions.get(ref.sessionId); // may have been released meanwhile
+    }
     if (parked && !parked.proc.running && (parked.parked || parked.status !== "busy"))
       await this.resumeThread(parked);
     const session = this.live(ref);
@@ -634,15 +705,29 @@ export class CodexAdapter implements HarnessAdapter {
       const { effort } = parseCodexModel(session.spec.model);
       // Busy before the request: the turn's notifications can arrive before its
       // reply, and a turn that already completed must not be marked busy again.
+      const before = {
+        status: session.status,
+        error: session.error,
+        quotaLimited: session.quotaLimited,
+      };
       session.status = "busy";
       session.error = null;
       session.quotaLimited = false;
-      const result = (await this.call(session, "turn/start", {
-        threadId: session.threadId,
-        input,
-        ...(effort ? { effort } : {}),
-      })) as { turn: { id: string } };
-      if (!session.finishedTurns.has(result.turn.id)) session.activeTurnId = result.turn.id;
+      let result: { turn?: { id?: unknown } } | null;
+      try {
+        result = (await this.call(session, "turn/start", {
+          threadId: session.threadId,
+          input,
+          ...(effort ? { effort } : {}),
+        })) as { turn?: { id?: unknown } } | null;
+      } catch (error) {
+        // No turn started: do not leave the session busy forever.
+        if (session.status === "busy" && !session.activeTurnId) Object.assign(session, before);
+        throw error;
+      }
+      const turnId = result?.turn?.id;
+      if (typeof turnId === "string" && !session.finishedTurns.has(turnId))
+        session.activeTurnId = turnId;
     }
     session.prompted = true;
   }
