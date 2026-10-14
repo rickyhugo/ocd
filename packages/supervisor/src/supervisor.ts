@@ -98,6 +98,8 @@ export interface SupervisorOptions {
   pullRequests?: PullRequestHost;
   /** Called when a simulated crash fires; the daemon tears down without cleanup. */
   onCrash?: (error: SimulatedCrash) => void;
+  /** A task's work reached its repository's base branch (direct push or merged PR). */
+  onLanded?: (repo: string) => void;
 }
 
 const INTERACTION_KINDS = ["permission", "question"] as const;
@@ -169,6 +171,9 @@ export class Supervisor {
   private schedulerTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
   private syncTimer: NodeJS.Timeout | null = null;
+  private cleanupTimer: NodeJS.Timeout | null = null;
+  /** Worktrees automatic cleanup kept because work would be lost; not retried until restart. */
+  private readonly keptByAutoCleanup = new Set<string>();
   private syncing: Promise<void> | null = null;
   private readonly branchSync: BranchSyncer;
   private lastReconcileTick = 0;
@@ -233,6 +238,9 @@ export class Supervisor {
       () => void this.syncBranches(),
       this.o.config.branchSync.intervalMs,
     );
+    // Finished tasks' worktrees, when autoCleanup is on: hourly, never forced.
+    this.cleanupTimer = setInterval(() => void this.autoCleanup(), 3_600_000);
+    this.cleanupTimer.unref();
     this.o.outbox.start();
     void this.tick();
     // Diagnostics only: startup never waits for gh or the network.
@@ -269,6 +277,8 @@ export class Supervisor {
     if (this.schedulerTimer) clearInterval(this.schedulerTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     if (this.syncTimer) clearInterval(this.syncTimer);
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    this.cleanupTimer = null;
     this.schedulerTimer = null;
     this.reconcileTimer = null;
     this.syncTimer = null;
@@ -2043,7 +2053,55 @@ export class Supervisor {
    * lose work (uncommitted files, or commits that exist on no other branch or
    * remote) unless forced; only a human may force.
    */
-  async cleanup(taskId: string, force: boolean, actor: Actor): Promise<Task> {
+  /** Live Claude Code / Codex workers: they die with the supervisor, so a restart interrupts them. */
+  processOwnedWorkers(): { taskId: string; title: string; harness: string }[] {
+    return this.store
+      .listTasks({ state: [...LIVE_STATES], limit: 500 })
+      .filter((t) => this.adapters.get(t.harness)?.sessionsSurviveSupervisor === false)
+      .map((t) => ({ taskId: t.id, title: t.title, harness: t.harness }));
+  }
+
+  /**
+   * autoCleanup: removes the worktrees of tasks finished more than afterHours
+   * ago the way `ocd task cleanup` does, never forced; one whose work would be
+   * lost is kept (and not retried until the next start).
+   */
+  async autoCleanup(): Promise<string[]> {
+    const settings = this.o.config.autoCleanup;
+    if (!settings.enabled || this.stopped) return [];
+    const cutoff = this.o.clock() - settings.afterHours * 3_600_000;
+    const due = this.store
+      .listTasks({ state: ["completed", "cancelled"], limit: 500 })
+      .filter(
+        (t) =>
+          t.workspacePath &&
+          !this.keptByAutoCleanup.has(t.id) &&
+          Date.parse(t.finishedAt ?? t.updatedAt) <= cutoff,
+      );
+    const cleaned: string[] = [];
+    for (const task of due) {
+      if (this.stopped) break;
+      try {
+        await this.cleanup(task.id, false, "manager", { auto: true });
+        cleaned.push(task.id);
+      } catch (error) {
+        this.keptByAutoCleanup.add(task.id);
+        this.log.info(
+          { taskId: task.id, reason: error instanceof Error ? error.message : String(error) },
+          "automatic cleanup kept a worktree",
+        );
+      }
+    }
+    if (cleaned.length) this.log.info({ tasks: cleaned }, "automatic cleanup removed worktrees");
+    return cleaned;
+  }
+
+  async cleanup(
+    taskId: string,
+    force: boolean,
+    actor: Actor,
+    options: { auto?: boolean } = {},
+  ): Promise<Task> {
     if (force && actor !== "human")
       throw forbidden("human_only", "Only a human can force a cleanup that discards work");
     return this.withTaskLock(taskId, async () => {
@@ -2105,6 +2163,7 @@ export class Supervisor {
             actor,
             discarded: force ? safety : null,
             landedIn,
+            ...(options.auto ? { auto: true } : {}),
           },
         },
       );
@@ -2264,6 +2323,7 @@ export class Supervisor {
           return { task: this.store.requireTask(taskId), merged: false, keptReason: null };
         }
       }
+      this.o.onLanded?.(task.repo);
       // Merged on GitHub. Local copies go only if nothing exists beyond what GitHub merged:
       // commits added after the push and uncommitted edits stay.
       const branch = task.branch ?? this.o.workspaces.branchFor(taskId);
@@ -2694,6 +2754,7 @@ export class Supervisor {
       },
     });
     const landed = this.store.requireTask(taskId);
+    this.o.onLanded?.(landed.repo);
     this.store.enqueue([
       this.wake(
         landed,

@@ -223,6 +223,61 @@
       },
       "additionalProperties": false
     },
+    "selfUpdate": {
+      "description": "Keeping OCD itself up to date from its own repository.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "OCD updates itself: new commits on the repository's branch are built into ~/.ocd/install, smoke-tested, and switched to by restarting the background service once no Claude Code or Codex worker is running. Off by default. Restart to apply.",
+          "type": "boolean"
+        },
+        "repo": {
+          "default": "ocd",
+          "description": "The declared repository (under repos) that holds OCD's own source.",
+          "type": "string"
+        },
+        "branch": {
+          "description": "Branch to follow on origin; defaults to the remote's default branch.",
+          "type": "string"
+        },
+        "intervalMinutes": {
+          "default": 10,
+          "description": "How often origin is checked for a new version (also right after a task lands in that repository).",
+          "type": "number",
+          "minimum": 1
+        },
+        "build": {
+          "default": ["pnpm install --frozen-lockfile", "pnpm run build"],
+          "description": "Shell commands that build a checkout, run in order in the new build directory.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "autoCleanup": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Remove the worktrees of finished (accepted or cancelled) tasks after afterHours, the way `ocd task cleanup` does: never forced, so a worktree whose work would be lost is kept. Off by default.",
+          "type": "boolean"
+        },
+        "afterHours": {
+          "default": 72,
+          "description": "How long a finished task's worktree is kept before automatic cleanup.",
+          "type": "number",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "mergeMethod": {
       "default": "squash",
       "description": "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod. Applies on save.",

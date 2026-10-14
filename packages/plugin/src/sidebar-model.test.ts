@@ -1,7 +1,7 @@
 import type { Attention, Task } from "@ocd/core";
 import { describe, expect, it } from "vite-plus/test";
 
-import { actionsFor, age, buildSidebar, landable } from "./sidebar-model.ts";
+import { actionsFor, age, buildSidebar, landable, updateBanner } from "./sidebar-model.ts";
 
 const PR_ON = { pullRequests: true };
 
@@ -215,5 +215,41 @@ describe("sidebar model", () => {
     expect(actionsFor(review!, PR_ON).map((a) => a.label)).toContain("Summarize the result");
     const [running] = buildSidebar([task("a", "running")], [], NOW).sections[0]!.rows;
     expect(actionsFor(running!, PR_ON).map((a) => a.label)).toContain("Status update");
+  });
+
+  it("shows an update banner only when there is something to act on or know", () => {
+    const base = {
+      enabled: true,
+      current: "aaaaaaaaaaaa",
+      previous: null,
+      pending: null,
+      blockedBy: [],
+      building: null,
+      lastError: null,
+      cannotApply: null,
+      checkedAt: null,
+    };
+    expect(updateBanner(null)).toBeNull();
+    expect(updateBanner({ ...base, enabled: false })).toBeNull();
+    expect(updateBanner(base)).toBeNull();
+    const pending = { sha: "bbbbbbbbbbbb", subjects: ["feat: x"], builtAt: "t" };
+    expect(updateBanner({ ...base, pending })).toMatchObject({
+      text: "Update ready · bbbbbbb",
+      meta: "applying",
+      tone: "accent",
+    });
+    expect(
+      updateBanner({
+        ...base,
+        pending,
+        blockedBy: [{ taskId: "t1", title: "Fix", harness: "claude" }],
+      }),
+    ).toMatchObject({ meta: "waits for 1 worker", tone: "warning" });
+    expect(updateBanner({ ...base, building: "cccccccccccc" })).toMatchObject({
+      text: "Building an update",
+    });
+    expect(
+      updateBanner({ ...base, lastError: { sha: "dddddddddddd", message: "boom", at: "t" } }),
+    ).toMatchObject({ text: "Update failed", tone: "error" });
   });
 });
