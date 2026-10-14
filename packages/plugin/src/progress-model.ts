@@ -72,6 +72,7 @@ const ATTENTION: Record<Attention["kind"], string> = {
   stall: "Looks stalled",
   review: "Ready for review",
   ambiguous_launch: "Launch unclear",
+  land: "Push waiting for your confirmation",
 };
 
 const MILESTONE: Record<string, string> = {
@@ -104,6 +105,9 @@ const MILESTONE: Record<string, string> = {
   "pull_request.opened": "PR opened",
   "pull_request.merge_requested": "PR merge requested",
   "pull_request.merged": "PR merged",
+  "land.requested": "Push awaiting confirmation",
+  "land.failed": "Push failed",
+  "task.landed": "Landed",
 };
 
 const field = (data: unknown, key: string): unknown =>

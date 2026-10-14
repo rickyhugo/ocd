@@ -286,16 +286,21 @@ plugin directory) adds:
   refresh), and checklists live in supervisor memory, so after a restart one
   reappears with the worker's next update. No transcripts or reasoning.
 - **Row actions** (click a row) fit the task's state:
-  - Ready for review: **Accept and clean up**, **Accept (keep the worktree)**,
-    Summarize the result, Accept and open a PR.
-  - Finished with a kept worktree: **Clean up the worktree**.
-  - Running: Status update, Cancel it. Failed: What happened?, Retry it.
+  - Ready for review: **Land through a pull request**, **Land directly on the
+    base branch…** (shows the commits and asks first), **Accept (keep the
+    worktree)**, **Accept and clean up**, Summarize the result, **Discard the
+    work…**.
+  - Accepted with a kept worktree: the two Land actions, **Clean up the
+    worktree**, **Discard the work…**.
+  - A push the manager asked for: **Review and confirm the push…**, **Decline
+    the push**.
+  - Running: Status update, Cancel it. Failed: What happened?, Retry it,
+    **Discard the work…**.
   - Always: a free-form message to the manager, and Details.
 
   Bold actions call OCD directly as you. Cleanup never forces: a worktree with
   uncommitted changes, or commits that exist on no other branch, is kept and
-  the toast says how to proceed (open a PR, or `ocd task cleanup <id>
-  --force`). The other actions are messages to the manager, which acts on them
+  the toast says how to proceed (land it, or discard it). The other actions are messages to the manager, which acts on them
   as your explicit instruction.
 
 - **`/task`:** reference a task when talking to the manager. `/task` opens a
@@ -423,20 +428,45 @@ says why (`available: false` with notes) instead of guessing.
 4. When the worker goes idle, OCD collects its `ocd-report` and independently
    checks the worktree with git (changed files, commits, uncommitted changes).
    A valid report makes the task `ready_for_review`.
-5. Workers commit to `ocd/<task>` (never push). You accept with
-   `ocd task accept <id>`, or tell the manager to accept it (`ocd_accept_task`).
-   Nothing is merged automatically.
-6. Optionally, `ocd task pr <id> [--draft] [--commit]` (or `ocd_open_pull_request`)
-   pushes the branch and opens a GitHub pull request with `gh` (with
-   `github.enabled`); you merge it.
-7. `ocd task merge <id> [--method squash|merge|rebase]` (or
-   `ocd_merge_pull_request`) merges an accepted task's PR once GitHub reports it
-   open, not a draft, conflict-free, unblocked, and with all checks passed; it
-   never uses admin overrides. The method defaults to `squash` (per repo:
-   `"mergeMethod"`). Afterwards the worktree and both branches are removed.
-8. `ocd task cleanup <id>` (or `ocd_cleanup_task`) removes a finished task's
-   worktree and branch. It refuses while that would lose work (uncommitted
-   changes, or commits on no other branch or remote) unless you pass `--force`.
+5. Workers commit to `ocd/<task>` (never push). Nothing is merged
+   automatically. You decide what happens next:
+
+   | Command (manager tool)                                     | What it does                                                                                                                |
+   | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+   | `ocd task accept <id>` (`ocd_accept_task`)                 | Approve the work; the worktree is kept.                                                                                     |
+   | `ocd task land <id> [--commit] [--wait]` (`ocd_land_task`) | Accept, open or reuse a pull request, merge it once GitHub allows, remove the worktree and branches. Run again to continue. |
+   | `ocd task land <id> --direct`                              | Escape hatch: push straight to the base branch, after you confirm the exact commits.                                        |
+   | `ocd task cleanup <id>` (`ocd_cleanup_task`)               | Remove a finished task's worktree and branch, refusing while that would lose work.                                          |
+   | `ocd task discard <id>`                                    | Cancel if needed and delete the worktree and branch, work included (asks first).                                            |
+
+6. **Landing through a pull request** (needs `github.enabled`) goes as far as
+   it safely can and says what is left: "checks still running", a failing
+   check, a draft, branch protection. Run it again later, or pass `--wait` to
+   poll while checks run. It merges only once GitHub reports the PR open, not
+   a draft, conflict-free, unblocked, and with all checks passed, and never
+   uses admin overrides. `ocd task pr` and `ocd task merge` remain as the
+   separate steps.
+7. **Landing directly** (`--direct`) shows what will be pushed (base branch,
+   commits, files) and asks you to type `approve`. It then fetches the base
+   branch and builds the landing commit in git's object store (your checkout
+   and the worktree are not touched): one squashed commit by default, a merge
+   commit, or the task's commits replayed with their authors. It pushes that as
+   a plain fast-forward: never `--force`, never `--no-verify`, and branch
+   protection applies. If the base moved in a conflicting way or the push is
+   rejected, nothing changes and the worktree is kept. It refuses uncommitted
+   changes and tasks that already have a pull request. The manager cannot push
+   directly: `ocd_land_task` with `direct` puts a confirmation in your inbox
+   (`ocd attention resolve <id> --approve`, or the row in the sidebar), bound
+   to the exact commits it showed you. If the branch moves before you approve,
+   the approval is refused.
+8. **Merge method**: `"mergeMethod"` in `ocd.jsonc` (`squash` by default;
+   `merge` or `rebase`), per repo under `repos.<name>.mergeMethod`. Both routes
+   use it.
+9. **Cleanup** refuses while it would lose work: uncommitted changes, or
+   commits that exist on no other branch or remote and whose changes are not
+   in the base branch. A branch that was squash-merged on GitHub counts as
+   landed, so no `--force` is needed. `--force` (or `discard`) is for throwing
+   work away.
 
 Crashes, restarts, lost event streams and sleep are reconciled conservatively:
 uncertain launches become `needs_attention` instead of being retried, and

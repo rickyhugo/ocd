@@ -21,6 +21,8 @@ import {
   type AttentionResponse,
   type GitHubCliStatus,
   type HarnessName,
+  type LandPlan,
+  type LandResult,
   type ShutdownReport,
   type SupervisorStatus,
   type TakeOverResult,
@@ -98,6 +100,15 @@ export interface SupervisorOptions {
 
 const INTERACTION_KINDS = ["permission", "question"] as const;
 const PEEK_TIMEOUT_MS = 10_000;
+/** Pull request merge refusals that `land` reports as what is left, not as failures. */
+const PR_WAITING = new Set([
+  "pr_checks_pending",
+  "pr_not_ready",
+  "pr_checks_failed",
+  "pr_blocked",
+  "pr_draft",
+  "pr_conflicts",
+]);
 
 interface PeekCursor {
   /** Task and session the cursor was issued for. */
@@ -1702,30 +1713,33 @@ export class Supervisor {
    * human approves in conversation) may accept; nothing is merged either way.
    */
   async accept(taskId: string, actor: Actor): Promise<Task> {
-    const done = await this.withTaskLock(taskId, async () => {
-      const task = this.store.requireTask(taskId);
-      if (task.state !== "ready_for_review")
-        throw conflict("not_reviewable", `Task is ${task.state}, not ready_for_review`);
-      return this.store.tx(() => {
-        for (const a of this.store.listAttention({ taskId, status: "open", kinds: ["review"] })) {
-          this.store.settleAttention(a.id, {
-            status: "resolved",
-            response: { type: "approve" },
-            resolvedBy: actor,
-          });
-        }
-        // Accepted work is never refreshed, so an open conflict report is moot.
-        this.store.settleOpenAttention(branchSyncAttentionKey(taskId), "expired");
-        return this.store.transition(taskId, "completed", {
-          from: ["ready_for_review"],
-          patch: { finishedAt: this.store.now() },
-          event: { type: "task.accepted", data: { actor } },
-        });
-      });
-    });
+    const done = await this.withTaskLock(taskId, async () => this.acceptLocked(taskId, actor));
     this.releaseWorker(done);
     void this.tick();
     return done;
+  }
+
+  /** accept() inside the task lock. */
+  private acceptLocked(taskId: string, actor: Actor): Task {
+    const task = this.store.requireTask(taskId);
+    if (task.state !== "ready_for_review")
+      throw conflict("not_reviewable", `Task is ${task.state}, not ready_for_review`);
+    return this.store.tx(() => {
+      for (const a of this.store.listAttention({ taskId, status: "open", kinds: ["review"] })) {
+        this.store.settleAttention(a.id, {
+          status: "resolved",
+          response: { type: "approve" },
+          resolvedBy: actor,
+        });
+      }
+      // Accepted work is never refreshed, so an open conflict report is moot.
+      this.store.settleOpenAttention(branchSyncAttentionKey(taskId), "expired");
+      return this.store.transition(taskId, "completed", {
+        from: ["ready_for_review"],
+        patch: { finishedAt: this.store.now() },
+        event: { type: "task.accepted", data: { actor } },
+      });
+    });
   }
 
   /**
@@ -2004,13 +2018,23 @@ export class Supervisor {
           },
         );
       }
+      // A squash or rebase merge leaves the branch's own commits unmerged even
+      // though its changes are in the base branch; that counts as landed.
+      let landedIn: string | null = null;
       if (!force && safety.unmergedCommits > 0) {
-        throw conflict(
-          "unmerged_commits",
-          `${safety.unmergedCommits} commit(s) on ${branch} exist on no other branch or remote; merge or push them (e.g. open a PR), or force`,
-        );
+        landedIn = await this.landedBase(repo.path, branch, task.baseRef);
+        if (!landedIn)
+          throw conflict(
+            "unmerged_commits",
+            `${safety.unmergedCommits} commit(s) on ${branch} exist on no other branch or remote and are not in the base branch; land them (ocd task land), or force`,
+          );
       }
-      await this.o.workspaces.remove(repo.path, task.workspacePath, branch, force);
+      await this.o.workspaces.remove(
+        repo.path,
+        task.workspacePath,
+        branch,
+        force || landedIn !== null,
+      );
       this.store.patchTask(
         taskId,
         { workspacePath: null },
@@ -2022,6 +2046,7 @@ export class Supervisor {
             forced: force,
             actor,
             discarded: force ? safety : null,
+            landedIn,
           },
         },
       );
@@ -2185,6 +2210,299 @@ export class Supervisor {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Landing
+
+  /** What a direct landing would push. Fetches the base branch; changes nothing. */
+  async landPlan(taskId: string): Promise<LandPlan> {
+    return this.planLanding(this.store.requireTask(taskId));
+  }
+
+  private async planLanding(task: Task): Promise<LandPlan> {
+    if (task.state !== "ready_for_review" && task.state !== "completed")
+      throw conflict("not_reviewable", `Land a task once its work is done (task is ${task.state})`);
+    if (!task.workspacePath || !task.branch)
+      throw conflict("no_workspace", "The task has no worktree to land");
+    const repo = this.store.requireRepo(task.repo, { includeRetired: true });
+    const remote = "origin";
+    const base = await this.o.workspaces.defaultBranch(repo.path, remote);
+    if (!(await this.o.workspaces.fetchBranch(task.workspacePath, remote, base)))
+      throw conflict(
+        "fetch_failed",
+        `Could not fetch ${remote}/${base}; check the network and your git credentials`,
+      );
+    const onto = `${remote}/${base}`;
+    const [head, commits, files, facts] = await Promise.all([
+      this.o.workspaces.head(task.workspacePath),
+      this.o.workspaces.commitsBetween(task.workspacePath, onto, "HEAD"),
+      this.o.workspaces.filesChangedSince(task.workspacePath, onto),
+      this.o.workspaces.verify({ path: task.workspacePath, baseRef: onto }),
+    ]);
+    const plan: LandPlan = {
+      taskId: task.id,
+      title: task.title,
+      repo: task.repo,
+      remote,
+      base,
+      method: this.o.live.mergeMethod(task.repo),
+      head,
+      commits: commits.map(({ sha, subject }) => ({ sha, subject })),
+      files,
+      dirty: facts.dirty,
+      pullRequestUrl: task.pullRequestUrl,
+      blocker: null,
+    };
+    try {
+      this.assertDirectLandable(plan);
+    } catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+      plan.blocker = { code: error.code, message: error.message };
+    }
+    return plan;
+  }
+
+  /**
+   * Gets a finished task's work into its base branch, as far as is safe right
+   * now, and says what is left. Through a pull request (default): accept, open
+   * or reuse the PR, merge it once GitHub allows, clean up; run it again to
+   * continue. Directly: push one landing commit to the base branch, only after
+   * the human confirmed exactly that push.
+   */
+  async land(
+    taskId: string,
+    input: { direct: boolean; commit: boolean; confirm?: string | undefined },
+    actor: Actor,
+  ): Promise<LandResult> {
+    return input.direct
+      ? this.landDirect(taskId, input.confirm, actor)
+      : this.landThroughPullRequest(taskId, input.commit, actor);
+  }
+
+  private async landThroughPullRequest(
+    taskId: string,
+    commit: boolean,
+    actor: Actor,
+  ): Promise<LandResult> {
+    const steps: string[] = [];
+    const result = (task: Task, waiting: LandResult["waiting"]): LandResult => ({
+      task,
+      landed: waiting === null,
+      steps,
+      waiting,
+      attentionId: null,
+      commit: null,
+    });
+    let task = this.store.requireTask(taskId);
+    // Already merged and cleaned up: nothing left to do.
+    if (task.state === "completed" && task.pullRequestUrl && !task.workspacePath)
+      return result(task, null);
+    if (!this.o.pullRequests)
+      throw new ApiError(
+        422,
+        "pr_unavailable",
+        'Landing through a pull request needs "github": { "enabled": true } in ocd.jsonc (then restart the supervisor); or push directly with ocd task land --direct',
+      );
+    if (task.state === "ready_for_review") {
+      task = await this.accept(taskId, actor);
+      steps.push("accepted");
+    }
+    if (!task.pullRequestUrl) {
+      task = await this.openPullRequest(taskId, { draft: false, commit }, actor);
+      steps.push(`opened ${task.pullRequestUrl}`);
+    }
+    try {
+      task = await this.mergePullRequest(taskId, {}, actor);
+    } catch (error) {
+      if (error instanceof ApiError && PR_WAITING.has(error.code))
+        return result(task, { code: error.code, message: error.message });
+      throw error;
+    }
+    if (task.workspacePath)
+      return result(task, {
+        code: "merge_queued",
+        message: `GitHub accepted the merge of ${task.pullRequestUrl} but has not merged it yet`,
+      });
+    steps.push(`merged ${task.pullRequestUrl}`, "removed the worktree and branches");
+    return result(task, null);
+  }
+
+  private async landDirect(
+    taskId: string,
+    confirm: string | undefined,
+    actor: Actor,
+  ): Promise<LandResult> {
+    const plan = await this.planLanding(this.store.requireTask(taskId));
+    this.assertDirectLandable(plan);
+    if (actor !== "human") {
+      // The manager may only ask: the human confirms this exact push.
+      const commits = `${plan.commits.length} commit${plan.commits.length === 1 ? "" : "s"}`;
+      const { attention, created } = this.store.raiseAttention(
+        {
+          taskId,
+          kind: "land",
+          dedupeKey: `land:${taskId}:${plan.head}`,
+          reason: `Push ${commits} of "${truncate(plan.title, 80)}" to ${plan.remote}/${plan.base} (${plan.method})`,
+          operation: plan,
+          resolvableBy: "human",
+          expiresAt: iso(this.o.clock() + this.o.config.attentionExpiryMinutes * 60_000),
+        },
+        {
+          notify: true,
+          wake: false,
+          notice: {
+            headline: `Confirm push to ${plan.base}`,
+            detail: `${commits}, ${plan.method}`,
+          },
+        },
+      );
+      if (created)
+        this.store.appendEvent(taskId, "land.requested", {
+          actor,
+          base: plan.base,
+          head: plan.head,
+          attention: attention.id,
+        });
+      return {
+        task: this.store.requireTask(taskId),
+        landed: false,
+        steps: [created ? "asked the human to confirm the push" : "already waiting for the human"],
+        waiting: {
+          code: "confirmation_requested",
+          message: `The human must confirm the push: ocd attention resolve ${attention.id} --approve (or the task's row in the sidebar)`,
+        },
+        attentionId: attention.id,
+        commit: null,
+      };
+    }
+    if (!confirm || confirm.length < 7 || !plan.head.startsWith(confirm))
+      throw conflict(
+        "confirmation_required",
+        `Confirm the push to ${plan.remote}/${plan.base} first (ocd task land ${taskId} --direct asks)`,
+        { plan },
+      );
+    return this.withTaskLock(taskId, () => this.pushLanding(taskId, plan.head, actor, null));
+  }
+
+  private assertDirectLandable(plan: Omit<LandPlan, "blocker">): void {
+    if (plan.pullRequestUrl)
+      throw conflict(
+        "has_pull_request",
+        `The task already has a pull request (${plan.pullRequestUrl}); land it through the pull request`,
+      );
+    if (plan.dirty)
+      throw conflict(
+        "workspace_dirty",
+        "The worktree has uncommitted changes; have the worker commit them, or commit them yourself, then land",
+      );
+    if (!plan.commits.length)
+      throw conflict(
+        "nothing_to_push",
+        `The task branch has no commits that ${plan.remote}/${plan.base} does not already have`,
+      );
+  }
+
+  /**
+   * Inside the task lock: plans again, refuses if the branch moved since the
+   * human confirmed `confirmedHead`, then pushes the landing commit (a plain
+   * fast-forward push: never forced, hooks and branch protection apply),
+   * accepts the task and removes its worktree and branch.
+   */
+  private async pushLanding(
+    taskId: string,
+    confirmedHead: string,
+    actor: Actor,
+    attentionId: string | null,
+  ): Promise<LandResult> {
+    const short = (sha: string) => sha.slice(0, 7);
+    const plan = await this.planLanding(this.store.requireTask(taskId));
+    this.assertDirectLandable(plan);
+    if (plan.head !== confirmedHead)
+      throw conflict(
+        "plan_changed",
+        `The task branch moved since the push was confirmed (${short(confirmedHead)} is now ${short(plan.head)}); confirm again`,
+      );
+    const task = this.store.requireTask(taskId);
+    const workspacePath = task.workspacePath!;
+    const target = `${plan.remote}/${plan.base}`;
+    let commit: string;
+    try {
+      commit = await this.o.workspaces.landingCommit(workspacePath, {
+        onto: target,
+        head: plan.head,
+        method: plan.method,
+        message:
+          plan.method === "merge"
+            ? `Merge OCD task ${task.id}: ${task.title}`
+            : `${task.title}\n\nOCD task ${task.id}`,
+      });
+      await this.o.workspaces.pushCommit(workspacePath, plan.remote, commit, plan.base);
+    } catch (error) {
+      const e = error as Error & { code?: unknown };
+      this.store.appendEvent(taskId, "land.failed", {
+        via: "direct",
+        base: plan.base,
+        head: plan.head,
+        actor,
+        code: typeof e.code === "string" ? e.code : "internal",
+        message: truncate(redact(e.message ?? String(error)), 2000),
+      });
+      throw error;
+    }
+    const steps: string[] = [];
+    if (task.state === "ready_for_review") {
+      this.acceptLocked(taskId, actor);
+      steps.push("accepted");
+    }
+    steps.push(`pushed ${short(commit)} to ${target} (${plan.method})`);
+    // The work is on the remote base branch now, so the local copies can go.
+    const repo = this.store.requireRepo(task.repo, { includeRetired: true });
+    let removed = true;
+    try {
+      await this.o.workspaces.remove(repo.path, workspacePath, task.branch!, true);
+      steps.push("removed the worktree and branch");
+    } catch (error) {
+      removed = false;
+      steps.push(`kept the worktree: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    this.store.patchTask(taskId, removed ? { workspacePath: null } : {}, {
+      type: "task.landed",
+      data: {
+        via: "direct",
+        remote: plan.remote,
+        base: plan.base,
+        method: plan.method,
+        commit,
+        head: plan.head,
+        commits: plan.commits.length,
+        actor,
+        attention: attentionId,
+      },
+    });
+    const landed = this.store.requireTask(taskId);
+    this.store.enqueue([
+      this.wake(
+        landed,
+        `landed:${commit}`,
+        `[landed] Task ${landed.id} ("${landed.title}", repo ${landed.repo}) was pushed to ${target} as ${short(commit)} (${plan.method}), confirmed by the human.${removed ? " Its worktree and branch are removed." : ""}`,
+      ),
+    ]);
+    this.releaseWorker(landed);
+    void this.tick();
+    return { task: landed, landed: true, steps, waiting: null, attentionId, commit };
+  }
+
+  /**
+   * Cancels the task if it is still open, then removes its worktree and
+   * branch even if that loses uncommitted changes or unpushed commits.
+   */
+  async discard(taskId: string, reason: string | undefined, actor: Actor): Promise<Task> {
+    if (actor !== "human") throw forbidden("human_only", "Only a human can discard a task's work");
+    const task = this.store.requireTask(taskId);
+    if (task.state !== "completed" && task.state !== "cancelled")
+      await this.cancel(taskId, reason ?? "discarded");
+    return this.cleanup(taskId, true, actor);
+  }
+
   /**
    * Runs one GitHub step; a failure is recorded on the task (redacted) so an
    * interrupted PR operation is visible later, then rethrown unchanged.
@@ -2225,6 +2543,21 @@ export class Supervisor {
     ]
       .filter(Boolean)
       .join("\n\n");
+  }
+
+  /** The base branch that already contains all of `branch`'s changes, if any (fetches first). */
+  private async landedBase(
+    repoPath: string,
+    branch: string,
+    baseRef: string | null,
+  ): Promise<string | null> {
+    const remote = "origin";
+    const base = await this.o.workspaces.defaultBranch(repoPath, remote);
+    await this.o.workspaces.fetchBranch(repoPath, remote, base);
+    return this.o.workspaces.landedIn(repoPath, branch, [
+      `${remote}/${base}`,
+      ...(baseRef ? [baseRef] : []),
+    ]);
   }
 
   /** Finished tasks need no live worker; process-owned harnesses stop theirs. */
@@ -2318,6 +2651,26 @@ export class Supervisor {
       });
       this.unblockIfClear(task!.id);
       return settled;
+    }
+
+    if (attention.kind === "land" && attention.taskId) {
+      if (response.type !== "approve" && response.type !== "deny")
+        throw badRequest("bad_response", "Approve or deny this push");
+      const task = this.store.requireTask(attention.taskId);
+      if (response.type === "approve") {
+        // Pushes exactly what was asked for, or refuses (the request stays open).
+        const head = (attention.operation as { head?: unknown } | null)?.head;
+        if (typeof head !== "string") throw conflict("stale_request", "The request has no plan");
+        await this.pushLanding(task.id, head, actor, id);
+      } else {
+        this.store.enqueue([
+          this.wake(
+            task,
+            `land-declined:${id}`,
+            `[land] The human declined pushing task ${task.id} ("${task.title}") directly${response.message ? `: ${response.message}` : ""}. Do not ask again unless they say so.`,
+          ),
+        ]);
+      }
     }
 
     const settled = this.store.settleAttention(id, {

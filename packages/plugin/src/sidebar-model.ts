@@ -63,6 +63,7 @@ const ATTENTION_LABEL: Record<Attention["kind"], string> = {
   stall: "stalled",
   review: "review",
   ambiguous_launch: "unclear",
+  land: "confirm push",
 };
 
 /** Attention kinds that stop work until the human answers. */
@@ -248,7 +249,12 @@ export type ActionKind =
   | "takeover"
   | "open"
   | "giveback_continue"
-  | "giveback_review";
+  | "giveback_review"
+  | "land"
+  | "land_direct"
+  | "land_confirm"
+  | "land_decline"
+  | "discard";
 /** A message goes to the manager, which acts on it; a kind runs directly against OCD. */
 export type QuickAction = { label: string; message: string } | { label: string; kind: ActionKind };
 
@@ -256,6 +262,14 @@ export type QuickAction = { label: string; message: string } | { label: string; 
 export function actionsFor(row: Row): QuickAction[] {
   const message = { label: "Message the manager about it…", kind: "message" as const };
   const details = { label: "Details", kind: "details" as const };
+  if (row.attention?.kind === "land") {
+    return [
+      { label: "Review and confirm the push…", kind: "land_confirm" },
+      { label: "Decline the push", kind: "land_decline" },
+      message,
+      details,
+    ];
+  }
   if (row.attention) {
     return [
       {
@@ -266,6 +280,11 @@ export function actionsFor(row: Row): QuickAction[] {
       details,
     ];
   }
+  const landing: QuickAction[] = [
+    { label: "Land through a pull request", kind: "land" },
+    { label: "Land directly on the base branch…", kind: "land_direct" },
+  ];
+  const discard = { label: "Discard the work…", kind: "discard" as const };
   // Manual mode needs a worker session to open.
   const takeover = row.task?.sessionId
     ? [{ label: "Take over (manual mode)", kind: "takeover" as const }]
@@ -281,15 +300,16 @@ export function actionsFor(row: Row): QuickAction[] {
       ];
     case "ready_for_review":
       return [
-        { label: "Accept and clean up", kind: "accept_clean" },
+        ...landing,
         { label: "Accept (keep the worktree)", kind: "accept" },
+        { label: "Accept and clean up", kind: "accept_clean" },
         ...takeover,
         {
           label: "Summarize the result",
           message: "Summarize the result and anything I should check before accepting.",
         },
-        { label: "Accept and open a PR", message: "Accept it and open a pull request." },
         message,
+        discard,
         details,
       ];
     case "running":
@@ -310,13 +330,18 @@ export function actionsFor(row: Row): QuickAction[] {
         { label: "Retry it", message: "Look at what went wrong and retry it if that is safe." },
         ...takeover,
         message,
+        discard,
         details,
       ];
     case "completed":
     case "cancelled":
       return [
         ...(row.task.workspacePath
-          ? [{ label: "Clean up the worktree", kind: "clean" as const }]
+          ? [
+              ...(row.task.state === "completed" ? landing : []),
+              { label: "Clean up the worktree", kind: "clean" as const },
+              discard,
+            ]
           : []),
         message,
         details,

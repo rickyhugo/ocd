@@ -45,7 +45,9 @@ export const RepoConfig = z
     mergeMethod: z
       .enum(["squash", "merge", "rebase"])
       .optional()
-      .describe("How OCD merges this repository's pull requests when asked (default squash)."),
+      .describe(
+        "How this repository's work lands (pull request merges and direct pushes); defaults to the top-level mergeMethod.",
+      ),
     branchSync: BranchSyncMode.optional().describe(
       "Branch-sync mode for this repository's tasks, overriding branchSync.mode. Tracks baseRef, which must be set. See docs/branch-sync.md.",
     ),
@@ -306,12 +308,61 @@ export const CleanupTaskInput = z.object({ force: z.boolean().default(false) });
 export const MergePullRequestInput = z.object({
   method: z.enum(["squash", "merge", "rebase"]).optional(),
 });
+export const DiscardTaskInput = z.object({ reason: z.string().max(1000).optional() });
 export const OpenPullRequestInput = z.object({
   draft: z.boolean().default(false),
   base: z.string().min(1).max(200).optional(),
   /** Commit uncommitted worker changes before pushing. */
   commit: z.boolean().default(false),
 });
+export const MergeMethod = z.enum(["squash", "merge", "rebase"]);
+export type MergeMethod = z.infer<typeof MergeMethod>;
+
+export const LandTaskInput = z.object({
+  /** Push straight to the base branch instead of going through a pull request. */
+  direct: z.boolean().default(false),
+  /** Pull request route only: commit uncommitted worker changes before pushing. */
+  commit: z.boolean().default(false),
+  /** Direct route, human: the plan's head commit, proving the push was confirmed. */
+  confirm: z.string().min(7).max(64).optional(),
+});
+export type LandTaskInput = z.input<typeof LandTaskInput>;
+
+/** What a direct landing would push; shown for confirmation before anything happens. */
+export interface LandPlan {
+  taskId: string;
+  title: string;
+  repo: string;
+  remote: string;
+  /** Branch on the remote that receives the work, e.g. main. */
+  base: string;
+  method: MergeMethod;
+  /** The task branch's head commit; a confirmation is bound to it. */
+  head: string;
+  /** Commits on the task branch that the base does not have, oldest first. */
+  commits: { sha: string; subject: string }[];
+  files: string[];
+  /** Uncommitted changes in the worktree; a direct landing refuses them. */
+  dirty: boolean;
+  pullRequestUrl: string | null;
+  /** Why a direct landing would be refused right now; null when it can go ahead. */
+  blocker: { code: string; message: string } | null;
+}
+
+export interface LandResult {
+  task: Task;
+  /** The work is in the base branch and the worktree is gone. */
+  landed: boolean;
+  /** What this call did, in order. */
+  steps: string[];
+  /** Why it stopped short, e.g. pr_checks_pending or confirmation_requested. */
+  waiting: { code: string; message: string } | null;
+  /** The confirmation request raised for the human (manager, direct route). */
+  attentionId: string | null;
+  /** The commit pushed to the base branch (direct route). */
+  commit: string | null;
+}
+
 export const GiveBackInput = z.object({
   /** continue: the worker resumes headless; review: the human is done, the task goes to review. */
   mode: z.enum(["continue", "review"]),
@@ -347,6 +398,7 @@ export const AttentionKind = z.enum([
   "stall",
   "review",
   "ambiguous_launch",
+  "land",
 ]);
 export type AttentionKind = z.infer<typeof AttentionKind>;
 

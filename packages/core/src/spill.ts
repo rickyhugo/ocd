@@ -75,6 +75,7 @@ const ATTENTION_LABEL: Record<AttentionKind, string> = {
   stall: "stalled",
   review: "review",
   ambiguous_launch: "unclear launch",
+  land: "confirm landing",
 };
 
 /**
