@@ -223,6 +223,12 @@
       },
       "additionalProperties": false
     },
+    "mergeMethod": {
+      "default": "squash",
+      "description": "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod.",
+      "type": "string",
+      "enum": ["squash", "merge", "rebase"]
+    },
     "log": {
       "default": {},
       "type": "object",
@@ -283,7 +289,7 @@
             "maxLength": 200
           },
           "mergeMethod": {
-            "description": "How OCD merges this repository's pull requests when asked (default squash).",
+            "description": "How this repository's work lands (pull request merges and direct pushes); defaults to the top-level mergeMethod.",
             "type": "string",
             "enum": ["squash", "merge", "rebase"]
           },

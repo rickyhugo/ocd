@@ -10,11 +10,14 @@ import {
   SupervisorUnavailableError,
   buildSpill,
   collectSpill,
+  describeLandResult,
+  formatLandPlan,
   formatSpill,
   renderTranscript,
   resolveOcdPaths,
   type Attention,
   type AttentionResponse,
+  type LandPlan,
   type MemoryScope,
   type Task,
 } from "@ocd/core";
@@ -97,7 +100,15 @@ Tasks
                                     Push the task branch and open a pull request (optional; never merges)
   ocd task merge <id> [--method squash|merge|rebase]
                                     Merge an accepted task's PR once checks pass (never overrides protection)
-  ocd task cleanup <id> [--force]   Remove a finished task's worktree and branch (refuses to lose work)
+  ocd task land <id> [--commit] [--wait]
+                                    Get the work into its base branch: accept, open or reuse the PR, merge it once
+                                    checks pass, clean up. Run again to continue; --wait polls while checks run
+  ocd task land <id> --direct       Escape hatch: push straight to the base branch (mergeMethod from ocd.jsonc,
+                                    squash by default) after you confirm the exact commits; never forces
+  ocd task cleanup <id> [--force]   Remove a finished task's worktree and branch (refuses to lose work; work that
+                                    is already in the base branch, e.g. squash-merged, counts as landed)
+  ocd task discard <id> [--reason TEXT]
+                                    Cancel if needed and delete the worktree and branch, losing their work (asks first)
 
 Attention
   ocd attention list [--all]
@@ -210,6 +221,8 @@ async function main(argv: string[]): Promise<void> {
       method: { type: "string" },
       draft: { type: "boolean" },
       commit: { type: "boolean" },
+      direct: { type: "boolean" },
+      wait: { type: "boolean" },
       deny: { type: "boolean" },
       message: { type: "string" },
       answer: { type: "string" },
@@ -736,6 +749,39 @@ async function main(argv: string[]): Promise<void> {
             ? `merged ${t.pullRequestUrl}; worktree and branches removed`
             : `merge requested for ${t.pullRequestUrl} (queued)`,
         );
+      } else if (sub === "land") {
+        if (flags.direct) {
+          const plan = await client.landPlan(id);
+          if (plan.blocker) fail(`${plan.blocker.message} (${plan.blocker.code})`);
+          console.log(formatLandPlan(plan));
+          if (!(await confirmInteractive("Push it?")))
+            fail("not pushed (confirming needs an interactive terminal)");
+          const r = await client.landTask(id, { direct: true, confirm: plan.head });
+          print(r, json, () => describeLandResult(r));
+          return;
+        }
+        let r = await client.landTask(id, { commit: flags.commit ?? false });
+        if (!json) console.log(describeLandResult(r));
+        // Only states that resolve on their own are worth waiting for.
+        const waitable = new Set(["pr_checks_pending", "pr_not_ready", "merge_queued"]);
+        while (flags.wait && r.waiting && waitable.has(r.waiting.code)) {
+          await new Promise((resolve) => setTimeout(resolve, 30_000));
+          const before = r.waiting.message;
+          r = await client.landTask(id);
+          if (!json && (r.landed || r.waiting?.message !== before))
+            console.log(describeLandResult(r));
+        }
+        if (json) print(r, json);
+        if (!r.landed) process.exitCode = 2;
+      } else if (sub === "discard") {
+        const t = (await client.inspectTask(id)).task;
+        console.log(
+          `Discard "${t.title}" (${t.id}, ${t.state})? ${t.state === "completed" || t.state === "cancelled" ? "Its" : "It is cancelled, then its"} worktree and branch are deleted, including uncommitted changes and commits that exist nowhere else.${t.workspacePath ? `\n  ${t.workspacePath}` : ""}`,
+        );
+        if (!(await confirmInteractive("Discard it?")))
+          fail("not discarded (confirming needs an interactive terminal)");
+        const d = await client.discardTask(id, flags.reason);
+        print(d, json, () => `discarded ${id}`);
       } else if (sub === "cleanup") {
         const t = await client.cleanupTask(id, flags.force ?? false);
         print(t, json, () => `removed the worktree and branch of ${id}`);
@@ -772,7 +818,10 @@ async function main(argv: string[]): Promise<void> {
             ? `handed ${id} back; the worker continues`
             : `handed ${id} back; it is ready for review`,
         );
-      } else fail("usage: ocd task list|show|peek|send|cancel|accept|resume|takeover|giveback");
+      } else
+        fail(
+          "usage: ocd task list|show|peek|send|cancel|accept|land|pr|merge|cleanup|discard|resume|takeover|giveback",
+        );
       return;
     }
     case "attention": {
@@ -792,6 +841,15 @@ async function main(argv: string[]): Promise<void> {
             console.log(`Permission request from ${item.taskId}: ${item.reason}`);
             console.log(`Operation: ${JSON.stringify(item.operation)}`);
             if (!(await confirmInteractive("Approve this operation?")))
+              fail("not approved (an interactive terminal is required)");
+          } else if (item?.kind === "land" && item.taskId) {
+            const plan = await client.landPlan(item.taskId);
+            const asked = item.operation as LandPlan;
+            if (plan.blocker) fail(`${plan.blocker.message} (${plan.blocker.code})`);
+            if (plan.head !== asked.head)
+              fail("the task branch moved since the manager asked; deny this and ask again");
+            console.log(`The manager asks to push directly:\n${formatLandPlan(asked)}`);
+            if (!(await confirmInteractive("Push it?")))
               fail("not approved (an interactive terminal is required)");
           }
           response = { type: "approve" };

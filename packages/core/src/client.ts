@@ -20,6 +20,9 @@ import type {
   Repository,
   ShutdownReport,
   SupervisorStatus,
+  LandPlan,
+  LandResult,
+  LandTaskInput,
   TakeOverResult,
   Task,
   TaskDetail,
@@ -226,6 +229,18 @@ export class OcdClient {
   ) => this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/pull-request`, options);
   mergePullRequest = (id: string, method?: "squash" | "merge" | "rebase") =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/merge`, method ? { method } : {});
+  /** What a direct landing would push (fetches the base; changes nothing). */
+  landPlan = (id: string) => this.call<LandPlan>("GET", `/v1/tasks/${encodeURIComponent(id)}/land`);
+  /** Gets the work into its base branch: through a pull request, or directly once confirmed. */
+  landTask = (id: string, input: LandTaskInput = {}) =>
+    this.call<LandResult>("POST", `/v1/tasks/${encodeURIComponent(id)}/land`, input);
+  /** Cancels the task if needed and removes its worktree and branch, losing their work. Human only. */
+  discardTask = (id: string, reason?: string) =>
+    this.call<Task>(
+      "POST",
+      `/v1/tasks/${encodeURIComponent(id)}/discard`,
+      reason === undefined ? {} : { reason },
+    );
   acceptTask = (id: string) =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/accept`);
   /** Manual mode: stops OCD driving the worker and returns the command to open the session. Human only. */

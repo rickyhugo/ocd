@@ -340,6 +340,166 @@ export class WorkspaceManager {
     return result.code === 0;
   }
 
+  /** The commit a worktree's HEAD points at. */
+  async head(path: string): Promise<string> {
+    return git(path, ["rev-parse", "--verify", "HEAD^{commit}"]);
+  }
+
+  /** Files that differ between `from` and HEAD's changes since their merge base. */
+  async filesChangedSince(path: string, from: string): Promise<string[]> {
+    return (await git(path, ["diff", "--name-only", `${from}...HEAD`])).split("\n").filter(Boolean);
+  }
+
+  /** Fetches one branch of the remote with the user's credentials; false when it fails. */
+  async fetchBranch(path: string, remote: string, branch: string): Promise<boolean> {
+    const result = await run("git", ["fetch", "--quiet", remote, branch], {
+      cwd: path,
+      env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
+      timeoutMs: 120_000,
+    });
+    return result.code === 0;
+  }
+
+  /** Commits in `from..to`, oldest first; merge commits are flagged. */
+  async commitsBetween(
+    path: string,
+    from: string,
+    to: string,
+  ): Promise<{ sha: string; subject: string; merge: boolean }[]> {
+    const out = await git(path, ["log", "--reverse", "--format=%H%x09%P%x09%s", `${from}..${to}`]);
+    return out
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [sha = "", parents = "", ...subject] = line.split("\t");
+        return { sha, subject: subject.join("\t"), merge: parents.split(" ").length > 1 };
+      });
+  }
+
+  /**
+   * The tree of merging `theirs` into `ours` (with an optional explicit merge
+   * base), computed in the object database: no working tree or index is
+   * touched. Null when the merge conflicts.
+   */
+  private async mergeTree(
+    path: string,
+    ours: string,
+    theirs: string,
+    mergeBase?: string,
+  ): Promise<string | null> {
+    const result = await run(
+      "git",
+      [
+        "merge-tree",
+        "--write-tree",
+        ...(mergeBase ? [`--merge-base=${mergeBase}`] : []),
+        ours,
+        theirs,
+      ],
+      { cwd: path },
+    );
+    if (result.code === 1) return null;
+    if (result.code !== 0)
+      throw new Error(
+        `git merge-tree failed (git 2.40 or newer is needed): ${(result.stderr || result.stdout).trim()}`,
+      );
+    return result.stdout.split("\n")[0]!.trim();
+  }
+
+  /**
+   * Builds the commit that lands `head` on top of `onto` the way `method`
+   * says, without touching the worktree or any branch: squash makes one commit
+   * with `message`, merge a merge commit, rebase replays each commit (keeping
+   * its author) or reuses `head` when it already sits on `onto`. Throws
+   * `land_conflict` when the work no longer applies cleanly.
+   */
+  async landingCommit(
+    path: string,
+    options: { onto: string; head: string; method: "squash" | "merge" | "rebase"; message: string },
+  ): Promise<string> {
+    const { onto, head, method } = options;
+    const conflict = () =>
+      new WorkspaceError(
+        "land_conflict",
+        `The task's changes conflict with the current ${onto}; bring the branch up to date first`,
+      );
+    const commitTree = async (tree: string, parents: string[], message: string, env = {}) => {
+      const result = await run(
+        "git",
+        ["commit-tree", tree, ...parents.flatMap((p) => ["-p", p]), "-m", message],
+        { cwd: path, env: { ...(process.env as Record<string, string>), ...env } },
+      );
+      if (result.code !== 0)
+        throw new Error(`git commit-tree failed: ${(result.stderr || result.stdout).trim()}`);
+      return result.stdout.trim();
+    };
+    if (method !== "rebase") {
+      const tree = await this.mergeTree(path, onto, head);
+      if (!tree) throw conflict();
+      return commitTree(tree, method === "squash" ? [onto] : [onto, head], options.message);
+    }
+    const ontoSha = await git(path, ["rev-parse", "--verify", `${onto}^{commit}`]);
+    const isAncestor =
+      (await run("git", ["merge-base", "--is-ancestor", ontoSha, head], { cwd: path })).code === 0;
+    if (isAncestor) return git(path, ["rev-parse", "--verify", `${head}^{commit}`]);
+    const commits = await this.commitsBetween(path, onto, head);
+    if (commits.some((c) => c.merge))
+      throw new WorkspaceError(
+        "land_unsupported",
+        "The task branch contains merge commits, which rebase cannot replay; use squash or merge",
+      );
+    let tip = ontoSha;
+    for (const commit of commits) {
+      const tree = await this.mergeTree(path, tip, commit.sha, `${commit.sha}^`);
+      if (!tree) throw conflict();
+      const [name, email, date, ...body] = (
+        await git(path, ["log", "-1", "--format=%an%x00%ae%x00%aI%x00%B", commit.sha], {
+          trim: false,
+        })
+      ).split("\0");
+      tip = await commitTree(tree, [tip], body.join("\0").trimEnd(), {
+        GIT_AUTHOR_NAME: name ?? "",
+        GIT_AUTHOR_EMAIL: email ?? "",
+        GIT_AUTHOR_DATE: date ?? "",
+      });
+    }
+    return tip;
+  }
+
+  /**
+   * Pushes `commit` to the remote branch as a fast-forward with the user's
+   * credentials. Never forces and never skips hooks; a rejection (the branch
+   * moved, branch protection) is reported as `push_rejected`.
+   */
+  async pushCommit(path: string, remote: string, commit: string, branch: string): Promise<void> {
+    const result = await run("git", ["push", remote, `${commit}:refs/heads/${branch}`], {
+      cwd: path,
+      env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
+      timeoutMs: 300_000,
+    });
+    if (result.code !== 0)
+      throw new WorkspaceError(
+        "push_rejected",
+        `git push to ${remote}/${branch} was rejected: ${(result.stderr || result.stdout).trim()}`,
+      );
+  }
+
+  /**
+   * True when everything on `branch` is already in one of `bases`: merging the
+   * branch into it would change nothing (e.g. after a squash merge on GitHub).
+   */
+  async landedIn(repoPath: string, branch: string, bases: string[]): Promise<string | null> {
+    for (const base of bases) {
+      const baseTree = await run("git", ["rev-parse", "--verify", "--quiet", `${base}^{tree}`], {
+        cwd: repoPath,
+      });
+      if (baseTree.code !== 0) continue;
+      const merged = await this.mergeTree(repoPath, base, `refs/heads/${branch}`).catch(() => null);
+      if (merged === baseTree.stdout.trim()) return base;
+    }
+    return null;
+  }
+
   /** The remote's default branch (e.g. main), falling back to "main". */
   async defaultBranch(repoPath: string, remote: string): Promise<string> {
     const result = await run("git", ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], {

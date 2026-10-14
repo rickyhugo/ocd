@@ -2,7 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync, watch, type FSWatcher
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { BranchSyncMode, ProfilesConfig, ReposConfig, type Profile } from "@ocd/core";
+import { BranchSyncMode, MergeMethod, ProfilesConfig, ReposConfig, type Profile } from "@ocd/core";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { z } from "zod";
 
@@ -201,6 +201,9 @@ export const SupervisorConfig = z
       .describe(
         "The branch-sync watchdog: keeps task branches near their repository's baseRef to reduce drift. Off by default.",
       ),
+    mergeMethod: MergeMethod.default("squash").describe(
+      "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod.",
+    ),
     log: z
       .object({ maxBytes: z.number().int().default(5_000_000), keep: z.number().int().default(3) })
       .strict()
@@ -317,7 +320,8 @@ export function normalizeDirectory(directory: string): string {
 export class LiveConfig {
   private profiles = new Map<string, Profile>();
   managerDirectory: string | null = null;
-  private mergeMethods = new Map<string, "squash" | "merge" | "rebase">();
+  private mergeMethods = new Map<string, MergeMethod>();
+  private mergeMethodDefault: MergeMethod = "squash";
   private branchSyncDefault: BranchSyncMode = "off";
   private branchSyncModes = new Map<string, BranchSyncMode>();
 
@@ -328,6 +332,7 @@ export class LiveConfig {
   apply(config: SupervisorConfig): void {
     this.profiles = new Map(toProfiles(config).map((p) => [p.name, p]));
     this.managerDirectory = config.manager ? normalizeDirectory(config.manager.directory) : null;
+    this.mergeMethodDefault = config.mergeMethod;
     this.mergeMethods = new Map(
       Object.entries(config.repos).flatMap(([name, repo]) =>
         repo.mergeMethod ? [[name, repo.mergeMethod] as const] : [],
@@ -347,8 +352,9 @@ export class LiveConfig {
     return this.branchSyncModes.get(repo) ?? this.branchSyncDefault;
   }
 
-  mergeMethod(repo: string): "squash" | "merge" | "rebase" {
-    return this.mergeMethods.get(repo) ?? "squash";
+  /** The repository's mergeMethod, else the top-level one (squash by default). */
+  mergeMethod(repo: string): MergeMethod {
+    return this.mergeMethods.get(repo) ?? this.mergeMethodDefault;
   }
 
   getProfile(name: string): Profile | null {

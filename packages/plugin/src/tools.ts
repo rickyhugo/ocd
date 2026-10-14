@@ -1,4 +1,10 @@
-import { renderTranscript, truncate, type OcdClient, type Task } from "@ocd/core";
+import {
+  describeLandResult,
+  renderTranscript,
+  truncate,
+  type OcdClient,
+  type Task,
+} from "@ocd/core";
 import { z } from "zod";
 
 // Manager tools. They are thin: every call goes to the supervisor, which owns
@@ -269,6 +275,39 @@ export function buildTools(
           .parse(input);
         const t = await clientFor(ctx.sessionID, ctx.directory).mergePullRequest(i.id, i.method);
         return `Merge done or queued for ${t.pullRequestUrl}. Check ocd_inspect_task for the pull_request.merged event.`;
+      },
+    },
+    {
+      name: "land_task",
+      description:
+        "Get a finished task's work into its base branch, only when the human asks. Default route: accepts it, opens (or reuses) a pull request, merges it once GitHub allows, and removes the worktree; if checks are still running it says so, and calling it again later continues. direct=true asks the human to confirm a push straight to the base branch (their escape hatch): nothing is pushed until they approve, and you are woken with the outcome; use it only when they ask for a direct push. Never retries a declined push.",
+      input: obj(
+        {
+          id: str("Task ID"),
+          direct: {
+            type: "boolean",
+            description: "Ask the human to confirm a push straight to the base branch",
+          },
+          commit: {
+            type: "boolean",
+            description: "Pull request route: commit uncommitted changes first",
+          },
+        },
+        ["id"],
+      ),
+      run: async (input, ctx) => {
+        const i = z
+          .object({
+            id: z.string(),
+            direct: z.boolean().optional(),
+            commit: z.boolean().optional(),
+          })
+          .parse(input);
+        const r = await clientFor(ctx.sessionID, ctx.directory).landTask(i.id, {
+          direct: i.direct ?? false,
+          commit: i.commit ?? false,
+        });
+        return describeLandResult(r);
       },
     },
     {

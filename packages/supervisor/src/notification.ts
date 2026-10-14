@@ -29,6 +29,7 @@ const HEADLINES: Record<AttentionKind, string> = {
   failure: "Task failed",
   stall: "Task stalled",
   ambiguous_launch: "Launch uncertain",
+  land: "Confirm landing",
 };
 
 const HEADLINE_MAX = 40;

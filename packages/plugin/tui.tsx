@@ -18,8 +18,13 @@ import {
   TAKEOVER_STATES,
   buildSpill,
   collectSpill,
+  describeLandResult,
+  formatLandPlan,
   formatSpill,
   resolveOcdPaths,
+  type Attention,
+  type LandPlan,
+  type LandResult,
   type OcdApiError,
   type TakeOverResult,
   type Task,
@@ -199,7 +204,8 @@ export default Plugin.define({
         title: row.title,
         message: [
           item ? `${item.kind}: ${item.reason}` : "",
-          item?.kind === "permission"
+          item?.kind === "land" ? formatLandPlan(item.operation as LandPlan) : "",
+          item?.kind === "permission" || item?.kind === "land"
             ? `Approve or deny from a terminal:\n  ocd attention resolve ${item.id} --approve\n  ocd attention resolve ${item.id} --deny`
             : "",
           task ? `${task.state} · ${task.repo} · ${task.harness} ${task.model}` : "",
@@ -215,14 +221,13 @@ export default Plugin.define({
     };
 
     /** Why OCD refused to remove a worktree, short enough for a toast. */
-    const keptReason = (error: unknown, task: Task) => {
+    const keptReason = (error: unknown) => {
       // Duck-typed: the host may load @ocd/core more than once.
       const code = (error as Partial<OcdApiError> | null)?.code;
-      const force = `or discard it: ocd task cleanup ${task.id} --force`;
       if (code === "workspace_dirty")
-        return `it has uncommitted changes. Open a PR first, ${force}`;
+        return "it has uncommitted changes. Commit and land them, or discard the work";
       if (code === "unmerged_commits")
-        return `its commits exist on no other branch. Open a PR first, ${force}`;
+        return "its commits are not in the base branch yet. Land them, or discard the work";
       return message(error);
     };
 
@@ -245,11 +250,63 @@ export default Plugin.define({
           );
         } catch (error) {
           toast(
-            `${kind === "clean" ? "Kept" : "Accepted, but kept"} the worktree: ${keptReason(error, task)}`,
+            `${kind === "clean" ? "Kept" : "Accepted, but kept"} the worktree: ${keptReason(error)}`,
             "warning",
           );
         }
       }
+      await refresh();
+    };
+
+    const landed = (task: Task, r: LandResult) =>
+      toast(
+        `“${clip(task.title, 40)}”: ${describeLandResult(r)}`,
+        r.landed ? "success" : "warning",
+      );
+
+    /** Through a pull request: each run goes as far as GitHub allows. */
+    const land = async (task: Task) => {
+      landed(task, await client.landTask(task.id));
+      await refresh();
+    };
+
+    /** A push straight to the base branch, only after the human confirms this exact plan. */
+    const confirmPush = (plan: LandPlan) =>
+      ctx.ui.dialog.confirm({
+        title: `Push to ${plan.remote}/${plan.base}?`,
+        message: formatLandPlan(plan),
+        label: { confirm: "Push" },
+      });
+
+    const landDirect = async (task: Task) => {
+      const plan = await client.landPlan(task.id);
+      if (plan.blocker) return toast(plan.blocker.message, "warning");
+      if (!(await confirmPush(plan))) return;
+      landed(task, await client.landTask(task.id, { direct: true, confirm: plan.head }));
+      await refresh();
+    };
+
+    /** The manager asked to push directly; the human confirms or declines. */
+    const answerPush = async (attention: Attention, task: Task | null, approve: boolean) => {
+      if (approve && !(await confirmPush(attention.operation as LandPlan))) return;
+      await client.resolveAttention(attention.id, approve ? { type: "approve" } : { type: "deny" });
+      toast(
+        approve
+          ? `Pushed “${clip(task?.title ?? attention.reason, 40)}”`
+          : "Declined the push; the manager was told",
+      );
+      await refresh();
+    };
+
+    const discard = async (task: Task) => {
+      const ok = await ctx.ui.dialog.confirm({
+        title: `Discard “${clip(task.title, 40)}”?`,
+        message: `${task.state === "completed" || task.state === "cancelled" ? "" : "The task is cancelled, then its "}worktree and branch are deleted, including uncommitted changes and commits that exist nowhere else.${task.workspacePath ? `\n\n${task.workspacePath}` : ""}`,
+        label: { confirm: "Discard" },
+      });
+      if (!ok) return;
+      await client.discardTask(task.id);
+      toast(`Discarded “${clip(task.title, 40)}”`);
       await refresh();
     };
 
@@ -336,6 +393,20 @@ export default Plugin.define({
             return;
           case "giveback_review":
             if (task) await giveBack(task, "review");
+            return;
+          case "land":
+            if (task) await land(task);
+            return;
+          case "land_direct":
+            if (task) await landDirect(task);
+            return;
+          case "land_confirm":
+          case "land_decline":
+            if (row.attention)
+              await answerPush(row.attention, task, action.kind === "land_confirm");
+            return;
+          case "discard":
+            if (task) await discard(task);
             return;
           default:
             if (task) await runDirect(task, action.kind);

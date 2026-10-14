@@ -118,17 +118,22 @@ describe("sidebar model", () => {
     ]);
   });
 
-  it("offers accept and clean up for review, and clean up for kept worktrees", () => {
+  it("offers landing first for review, and clean up for kept worktrees", () => {
     const [review] = buildSidebar([task("c", "ready_for_review")], [], NOW).sections[0]!.rows;
-    expect(actionsFor(review!).slice(0, 2)).toEqual([
-      { label: "Accept and clean up", kind: "accept_clean" },
+    expect(actionsFor(review!).slice(0, 4)).toEqual([
+      { label: "Land through a pull request", kind: "land" },
+      { label: "Land directly on the base branch…", kind: "land_direct" },
       { label: "Accept (keep the worktree)", kind: "accept" },
+      { label: "Accept and clean up", kind: "accept_clean" },
     ]);
+    expect(actionsFor(review!).map((a) => a.label)).toContain("Discard the work…");
     const [kept, gone] = buildSidebar([], [], NOW, [
       task("f", "completed", { finishedAt: minutesAgo(5), workspacePath: "/ws/f" }),
       task("g", "completed", { finishedAt: minutesAgo(5), workspacePath: null }),
     ]).recent;
-    expect(actionsFor(kept!).map((a) => a.label)).toContain("Clean up the worktree");
+    expect(actionsFor(kept!).map((a) => a.label)).toEqual(
+      expect.arrayContaining(["Land through a pull request", "Clean up the worktree"]),
+    );
     expect(actionsFor(gone!).map((a) => a.label)).not.toContain("Clean up the worktree");
   });
 
@@ -158,9 +163,20 @@ describe("sidebar model", () => {
     expect(actionsFor(queued).map((a) => a.label)).not.toContain("Take over (manual mode)");
   });
 
+  it("offers confirm and decline for a push the manager asked for", () => {
+    const row = {
+      ...buildSidebar([task("c", "completed")], [], NOW).sections[0]?.rows[0],
+      attention: { id: "a1", kind: "land" },
+    } as unknown as Parameters<typeof actionsFor>[0];
+    expect(actionsFor(row).slice(0, 2)).toEqual([
+      { label: "Review and confirm the push…", kind: "land_confirm" },
+      { label: "Decline the push", kind: "land_decline" },
+    ]);
+  });
+
   it("offers actions that fit the task's state", () => {
     const [review] = buildSidebar([task("c", "ready_for_review")], [], NOW).sections[0]!.rows;
-    expect(actionsFor(review!).map((a) => a.label)).toContain("Accept and open a PR");
+    expect(actionsFor(review!).map((a) => a.label)).toContain("Summarize the result");
     const [running] = buildSidebar([task("a", "running")], [], NOW).sections[0]!.rows;
     expect(actionsFor(running!).map((a) => a.label)).toContain("Status update");
   });
