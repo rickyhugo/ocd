@@ -14,8 +14,9 @@ Build a small, local-first control plane for personal agentic coding workflows:
 Keep Gas Town's delegation idea, not its organizational machinery. The manager's
 conversation is an interface, **not the source of truth**.
 
-This document describes planned behavior. Milestones 1–5 are implemented (see
-`README.md` for the current status and known gaps).
+This is the original plan. Milestones 1–5 are implemented; [Where the plan
+moved](#where-the-plan-moved) records what was built beyond it and where its
+boundaries now sit. `README.md` has the current status and known gaps.
 
 ## First-iteration boundaries
 
@@ -62,19 +63,19 @@ manager's dispatch tool returns a task ID.
 
 ## Technology and package boundaries
 
-| Concern         | Decision                                                              |
-| --------------- | --------------------------------------------------------------------- |
-| Runtime         | Node.js 24; retain the existing mise pin                              |
-| Language        | TypeScript 7.0.2, strict ESM, NodeNext resolution; built-in `tsc` LSP |
-| Toolchain       | Vite+ 1.1.0 and pnpm workspaces; retain existing pins                 |
-| Local API       | Fastify over a restrictive Unix-domain socket                         |
-| Validation      | Zod at tool, API, configuration, and adapter boundaries               |
-| Persistence     | SQLite + `better-sqlite3` + **Drizzle ORM**, not Kysely               |
-| Migrations      | Drizzle Kit generates checked-in, reviewed SQL migrations             |
-| Logging         | Pino, with secret redaction and bounded log retention                 |
-| Tests           | Vitest through `vite-plus/test`, fake adapters, temporary databases   |
-| Packaging       | `vp pack`; externalize native drivers and host SDK dependencies       |
-| macOS lifecycle | User LaunchAgent running a pinned Node binary and built JS            |
+| Concern         | Decision                                                                                                                   |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Runtime         | Node.js 24; retain the existing mise pin                                                                                   |
+| Language        | TypeScript 7.0.2, strict ESM, NodeNext resolution; built-in `tsc` LSP                                                      |
+| Toolchain       | Vite+ 1.1.0 and pnpm workspaces; retain existing pins                                                                      |
+| Local API       | Fastify over a restrictive Unix-domain socket                                                                              |
+| Validation      | Zod at tool, API, configuration, and adapter boundaries                                                                    |
+| Persistence     | SQLite + `better-sqlite3` + **Drizzle ORM**, not Kysely                                                                    |
+| Migrations      | Drizzle Kit generates checked-in, reviewed SQL migrations                                                                  |
+| Logging         | Pino, with secret redaction and bounded log retention                                                                      |
+| Tests           | Vitest through `vite-plus/test`, fake adapters, temporary databases                                                        |
+| Packaging       | `vp pack`; externalize native drivers and host SDK dependencies                                                            |
+| macOS lifecycle | User LaunchAgent running a pinned Node binary and built JS (optionally the self-updated build in `~/.ocd/install/current`) |
 
 Use a compatible, pinned Drizzle ORM/Kit pair when implementation begins. Do not
 adopt an RC automatically because current documentation demonstrates one. Apply
@@ -265,7 +266,8 @@ Distinguish human workflow decisions from native harness permission checks. If
 the first adapter version cannot forward a permission safely, deny it and surface
 the block; never substitute `approve-all` by default. (Implemented: a profile may
 explicitly opt in to `"permissionPolicy": "allow"`, which approves each request
-once and records it.) Quota limits, permission waits, and
+once and records it, or `"yolo"`, which turns the harness's permission checks
+and sandbox off. Neither is ever a default.) Quota limits, permission waits, and
 healthy idle sessions are not hangs. Inactivity requests inspection, not killing.
 
 ## Workspace and authority boundaries
@@ -285,7 +287,7 @@ Usage estimates are not hard billing caps; document harness-specific limits.
 
 ## Milestones
 
-### 0. Repository preparation (this change)
+### 0. Repository preparation (done)
 
 - Remove the browser template and retain pinned Node/pnpm/Vite+ tooling.
 - Add strict Node ESM checking and Node packaging configuration.
@@ -321,7 +323,48 @@ Usage estimates are not hard billing caps; document harness-specific limits.
 
 - Add user LaunchAgent install/status/uninstall with explicit worker-stop semantics.
 - Validate sleep/wake, log rotation, DB backup/restore, and low concurrency.
-- Keep automatic merging and destructive cleanup out of scope.
+  (Backup and restore are tested. Sleep/wake has not been tried across a real
+  sleep, and logs rotate only at startup; see the README's known gaps.)
+- Keep automatic merging and destructive cleanup out of scope. (Still true; see
+  below for what changed around it.)
+
+## Where the plan moved
+
+Built after milestones 1–5. A human still decides what reaches a base branch
+and what work is thrown away.
+
+- **Review and landing.** `ocd task diff` (and a diff panel in the TUI) shows a
+  task's changes; request changes sends feedback to the same worker session.
+  `ocd task land` accepts a task, opens or reuses a pull request, and merges it
+  only once GitHub reports it mergeable with every check passed, never with
+  admin overrides and only at the commit GitHub checked. The manager has the
+  same tool (`ocd_land_task`), told to use it only when the human asks. That
+  is an instruction to the model, not a check in the supervisor: the gates the
+  supervisor relies on are pull requests being opt-in (`github.enabled`), the
+  repository's checks and branch protection. A direct push to the base branch
+  is different: the human must type `approve` for the exact commits shown, and
+  the manager can only ask for it through the inbox. Merging on request is in
+  scope; merging nobody asked for is still out.
+- **Cleanup.** Throwing work away (`ocd task discard`, `cleanup --force`) asks
+  for a typed `approve`. Opt-in automatic cleanup (`autoCleanup`) removes only
+  worktrees of finished tasks whose work is safe elsewhere (landed, or in
+  another branch or remote) and never forces, so it is not destructive cleanup.
+- **Self-update** (opt-in, `selfUpdate`). OCD follows its own repository and
+  installs what reaches its default branch: it builds in a separate worktree,
+  boots the build once against a throwaway home, switches
+  `~/.ocd/install/current` and restarts. It waits while Claude Code or Codex
+  workers run unless the human applies it, and keeps the previous build for
+  `ocd update rollback`. It installs only commits someone already merged; it
+  never merges them.
+- **Manual mode, peek and branch sync.** A human can take over a worker session
+  and give it back; `ocd task peek` reads recent worker activity without
+  touching it; an opt-in watchdog reports drift from the base branch and, in
+  `refresh` mode, merges the base into clean, idle task branches (never
+  pushing, rebasing or resolving conflicts).
+- **Optional tools.** GitHub CLI, tmux, Claude Code and Codex are off until
+  turned on in `ocd.jsonc`; only OpenCode and git are required.
+- **Notifications** come from OCD's own copy of terminal-notifier, so they carry
+  OCD's name and icon, and arrive batched into short digests.
 
 ## Acceptance tests
 

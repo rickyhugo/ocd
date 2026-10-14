@@ -10,9 +10,10 @@ untested, but are not refused.
 | ----------------------------------------------------------- | ----------------------------------- | ----------- |
 | Request/response shapes compile against the 2.0.27 client   | `vp check` (types)                  | Done        |
 | Service discovery and Basic auth                            | `ocd doctor` (`GET /api/info` only) | Done (real) |
-| Session create, prompt, inspect, interrupt, reply, wake-ups | `FakeOpenCodeService` tests         | Fakes only  |
+| Session create, prompt, inspect, interrupt, reply, wake-ups | Fakes, and real tasks               | In use      |
 | Event stream mapping and reconnect + reconciliation         | `FakeOpenCodeService` tests         | Fakes only  |
-| One real worker task end to end                             | Real manager dispatch on 2.0.28     | Done        |
+| Real worker tasks end to end                                | Real manager dispatch on 2.0.28     | In use      |
+| Busy right after a follow-up (no early idle)                | Real adapter probe on 2.0.28        | Done (real) |
 | Plugin loading in a real OpenCode host                      | Package directory with `server.js`  | Done        |
 | Transcript history mapping and paging                       | `FakeOpenCodeService` tests         | Fakes only  |
 
