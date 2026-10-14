@@ -201,17 +201,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     let report: ShutdownReport | null = null;
     let crashed = false;
 
-    // Saved changes to ocd.jsonc apply to profiles immediately. An invalid file
-    // keeps the last good profiles and raises one inbox item until it is fixed.
     // Saved changes to ocd.jsonc apply immediately. An invalid file keeps the
     // last good configuration and raises one inbox item until it is fixed.
     const reloadConfig = async () => {
       try {
         const next = loadConfig(paths.config, options.config);
         const repos = await resolveRepos(next, workspaces);
-        const ghBefore = live.ghBinary;
         live.apply(next);
-        if (live.ghBinary !== ghBefore) void supervisor.probeGithub();
         store.syncRepos(repos);
         // A manager session outside a changed manager directory stops receiving updates.
         const active = store.activeManager();

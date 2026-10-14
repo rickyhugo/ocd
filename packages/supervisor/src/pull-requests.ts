@@ -75,15 +75,13 @@ export function classifyChecks(rollup: CheckEntry[]): { failing: string[]; pendi
 }
 
 export interface GhPullRequestsOptions {
-  /** gh.binary from ocd.jsonc, read on every call so saved changes apply live. */
-  binary?: () => string | null | undefined;
-  /** Searched after PATH when no binary is configured. */
-  extraDirs?: readonly string[];
+  /** PATH to find gh on; defaults to this process's, read on every call. */
+  pathEnv?: string;
   /** Per gh call; a stuck network call fails instead of hanging the task lock. */
   timeoutMs?: number;
 }
 
-/** GitHub via the `gh` CLI, using the user's own `gh auth` login. */
+/** GitHub via the `gh` CLI found on PATH, using the user's own `gh auth` login. */
 export class GhPullRequests implements PullRequestHost {
   private readonly options: GhPullRequestsOptions;
 
@@ -91,16 +89,9 @@ export class GhPullRequests implements PullRequestHost {
     this.options = options;
   }
 
-  private resolveOptions() {
-    return {
-      configured: this.options.binary?.(),
-      ...(this.options.extraDirs ? { extraDirs: this.options.extraDirs } : {}),
-    };
-  }
-
-  /** Resolved on every call: a fixed gh.binary or a newly installed gh needs no restart. */
+  /** Looked up on every call: a gh installed after startup needs no restart. */
   private gh(args: string[], cwd: string, input?: string): Promise<string> {
-    return runGh(resolveGh(this.resolveOptions()), args, {
+    return runGh(resolveGh({ pathEnv: this.options.pathEnv }), args, {
       cwd,
       ...(input !== undefined ? { input } : {}),
       ...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
@@ -108,7 +99,7 @@ export class GhPullRequests implements PullRequestHost {
   }
 
   probe(): Promise<GitHubCliStatus> {
-    return probeGh({ ...this.resolveOptions(), timeoutMs: 10_000 });
+    return probeGh({ pathEnv: this.options.pathEnv, timeoutMs: 10_000 });
   }
 
   async create(input: PullRequestInput): Promise<{ url: string; existing?: boolean }> {
@@ -234,7 +225,6 @@ export class RecordingPullRequests implements PullRequestHost {
       this.probeResult ?? {
         available: true,
         path: "/test/gh",
-        source: "path",
         version: "0.0.0",
         auth: "ok",
         problem: null,

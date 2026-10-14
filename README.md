@@ -139,8 +139,7 @@ ocd restart             # restart the service, e.g. after `pnpm run build`
 macOS gets a user LaunchAgent (`~/Library/LaunchAgents/dev.ocd.supervisor.plist`),
 Linux a systemd user unit (`~/.config/systemd/user/ocd-supervisor.service`).
 Either runs `ocd daemon --background` with absolute paths to the Node binary
-and CLI that installed it (service managers do not use your shell's PATH or
-mise), and restarts it after a crash, not after `ocd stop`. If it cannot
+and CLI that installed it, and restarts it after a crash, not after `ocd stop`. If it cannot
 start (another daemon running, pending migration, invalid config) it sends a
 notification and exits instead of restarting in a loop. Logs: `~/.ocd/logs`.
 `ocd restart` refuses while Claude Code or Codex workers are running (they
@@ -148,42 +147,41 @@ are processes of the supervisor and would be interrupted) unless you pass
 `--force`; OpenCode workers survive it. A restart never resumes coding runs automatically; OpenCode workers are
 reattached and anything uncertain shows up in `ocd attention list`.
 
-Because the service PATH is fixed when it is installed (the pinned Node's
-directory, `~/.local/bin`, Homebrew's and the system directories), tools that
-your shell finds through mise activation, asdf or a profile script are not on
-it. Re-run `ocd service install` after moving Node or the build; it rewrites
+Re-run `ocd service install` after moving Node or the build; it rewrites
 the definition with the current paths. Like `ocd restart`, it restarts the
 supervisor, so wait until no Claude Code or Codex worker is running.
 
+### Finding your tools
+
+Service managers start programs with a bare PATH, not your shell's. So when it
+starts, the supervisor asks your login shell for its PATH, the way GUI editors
+do: it runs the shell once as an interactive login shell, without a terminal
+and with a 10-second limit, and runs gh, git, tmux and the harnesses with the
+result. Whatever puts tools on your PATH (Homebrew, a version manager, a
+profile script) applies, with no OCD configuration. Claude Code and Codex
+workers and notification clicks get the same PATH. Common install locations
+(`~/.local/bin`, Homebrew, Nix) are added as a fallback, and used alone when
+the shell cannot be read (`ocd doctor` says which). The shell runs with
+`OCD_RESOLVING_SHELL_ENV=1`, so rc files can skip anything slow or
+interactive.
+
+A tool installed into a directory that is already on that PATH is picked up
+right away; after changing your shell's PATH itself, run `ocd restart`.
+`ocd doctor` checks everything with the PATH the supervisor would use.
+
 ### GitHub CLI (pull requests)
 
-`ocd task pr` / `ocd task merge` (and the manager's PR tools) run `gh` with
-your own `gh auth` login. The supervisor finds it with:
-
-1. `gh.binary` in `ocd.jsonc`, when set: an absolute path (or `~/…`) to the
-   executable. It is used as written; a wrong path is reported, never silently
-   replaced by a PATH lookup. Saved changes apply without a restart.
-2. Otherwise the first executable `gh` on the supervisor's own PATH, then
-   `~/.local/bin` and Homebrew's directories.
-
-```jsonc
-// e.g. the output of `command -v gh` or `mise which gh` in your shell.
-// With mise, its shim (~/.local/share/mise/shims/gh) keeps working after gh upgrades.
-"gh": { "binary": "/opt/homebrew/bin/gh" }
-```
-
-`ocd doctor` shows where your shell finds gh, whether the background service
-would find it, and whether gh is logged in; it prints the exact `gh.binary`
-line to add when the two differ (`ocd service install` warns about it too).
-At startup the supervisor runs the same read-only check (`gh --version`,
+`ocd task pr` / `ocd task merge` (and the manager's PR tools) run the `gh` on
+the supervisor's PATH (see above) with your own `gh auth` login. `ocd doctor`
+shows which gh that is and whether it is logged in. At startup the supervisor
+runs the same read-only check (`gh --version`,
 `gh auth status`, each bounded by a timeout, never a login prompt) in the
 background and logs it; `ocd status` shows the result. Startup never waits for
 it and a failed check is not fatal.
 
-PR actions fail with a code that says what to fix: `gh_not_found` (set
-`gh.binary` or put gh on the service PATH), `gh_invalid_path` (fix
-`gh.binary`), `gh_auth_required` (run `gh auth login` / `gh auth refresh` in a
-terminal), `gh_unreachable` (network, proxy or GitHub outage, or gh timed out;
+PR actions fail with a code that says what to fix: `gh_not_found` (install
+gh so a new terminal finds it, then `ocd restart`), `gh_auth_required` (run
+`gh auth login` / `gh auth refresh` in a terminal), `gh_unreachable` (network, proxy or GitHub outage, or gh timed out;
 the login may be fine, so retry later) and `gh_failed` (anything else, with
 gh's message). gh output is redacted before it reaches errors, events or logs.
 Each failure is recorded on the task as a `pull_request.failed` event (with

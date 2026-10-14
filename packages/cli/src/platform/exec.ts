@@ -22,25 +22,32 @@ export const execCommand: Exec = (cmd, args) =>
   });
 
 /**
- * Directories that service managers (launchd, systemd) leave off their minimal
- * PATH but where user tools live: installers for Claude Code and Codex use
- * ~/.local/bin, Homebrew uses /opt/homebrew/bin or /usr/local/bin.
+ * Where user tools are commonly installed (standalone installers, Homebrew,
+ * Nix): the fallback when the login shell's PATH could not be read.
  */
-export function extraBinDirs(platform: NodeJS.Platform = process.platform): string[] {
-  const dirs = [join(homedir(), ".local", "bin")];
+export function commonBinDirs(
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+): string[] {
+  const dirs = [join(home, ".local", "bin"), join(home, "bin")];
   if (platform === "darwin") dirs.push("/opt/homebrew/bin", "/usr/local/bin");
-  else dirs.push("/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin");
+  else dirs.push("/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin", "/snap/bin");
+  dirs.push(join(home, ".nix-profile", "bin"), "/nix/var/nix/profiles/default/bin");
+  if (platform !== "darwin") dirs.push("/run/current-system/sw/bin");
   return dirs;
 }
 
-/** The PATH a background service runs with: the pinned Node's directory first. */
+/**
+ * The base PATH a background service starts with: the pinned Node's directory
+ * first. The supervisor extends it with the login shell's PATH at startup.
+ */
 export function servicePath(
   nodePath: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const dirs = [
     join(nodePath, ".."),
-    ...extraBinDirs(platform),
+    ...commonBinDirs(platform),
     "/usr/bin",
     "/bin",
     "/usr/sbin",
@@ -50,12 +57,12 @@ export function servicePath(
 }
 
 /**
- * Absolute path of a binary: the configured one, else PATH plus the platform's
- * usual user bin directories. Returns null when it is nowhere to be found.
+ * Absolute path of a binary: the configured one, else PATH plus the common
+ * install locations. Returns null when it is nowhere to be found.
  */
 export function locateBinary(name: string, configured?: string): string | null {
   if (configured) return configured;
-  const dirs = [...(process.env["PATH"] ?? "").split(delimiter), ...extraBinDirs()];
+  const dirs = [...(process.env["PATH"] ?? "").split(delimiter), ...commonBinDirs()];
   for (const dir of dirs) {
     if (!dir) continue;
     const candidate = join(dir, name);

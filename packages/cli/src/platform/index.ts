@@ -17,6 +17,7 @@ export * from "./focus.ts";
 export * from "./launchd.ts";
 export * from "./notify.ts";
 export * from "./service.ts";
+export * from "./shell-env.ts";
 export * from "./systemd.ts";
 export * from "./terminal.ts";
 

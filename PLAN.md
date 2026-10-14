@@ -135,8 +135,9 @@ durably and reconcile delivery against the selected API's actual capabilities.
 
 Provide a foreground mode for development and a separate macOS install command
 that creates a user LaunchAgent. Use absolute executable paths: launchd does not
-inherit an interactive shell's mise activation or PATH. No sudo, shell profile
-changes, or browser server is required.
+inherit an interactive shell's PATH, so the supervisor reads the login shell's
+PATH at startup for the tools it runs. No sudo, shell profile changes, or
+browser server is required.
 
 Only one daemon may own the state directory. Acquire an OS-held singleton lock
 before accepting requests or dispatching. PID files alone are not sufficient;
