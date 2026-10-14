@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 
 import { OpenCodeAdapter } from "@ocd/adapters";
@@ -229,5 +230,70 @@ describe("peek_task", () => {
     expect(service.calls.slice(calls).map((c) => c.method)).toEqual(["message.list"]);
     expect((await call({ id: taskId }, workerId)).toString()).toMatch(/worker_session/);
     expect(await call({ id: taskId, before: "bogus" })).toMatch(/invalid_cursor/);
+  });
+});
+
+describe("tool input and output guards", () => {
+  const calls: unknown[] = [];
+  const fake = {
+    resolveAttention: async (id: string, response: unknown) => {
+      calls.push(response);
+      return { id, status: "resolved" };
+    },
+    listTasks: async () => [
+      { id: "t_1", state: "running", repo: "r", harness: "h", model: "m", title: "evil title" },
+    ],
+  } as unknown as OcdClient;
+  const tools = new Map(buildTools(() => fake).map((t) => [t.name, t]));
+  const ctx = { sessionID: "s", callID: "c", directory: "/d" };
+
+  it("rejects an answer without text", async () => {
+    const out = await runTool(
+      tools.get("resolve_attention")!,
+      { id: "a", response: "answer" },
+      ctx,
+    );
+    expect(out).toMatch(/OCD error|text/);
+    expect(calls).toHaveLength(0);
+    await runTool(
+      tools.get("resolve_attention")!,
+      { id: "a", response: "answer", text: "yes" },
+      ctx,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("marks task lists as untrusted", async () => {
+    expect(await runTool(tools.get("list_tasks")!, {}, ctx)).toMatch(/untrusted/);
+  });
+});
+
+describe("BriefingCache under a failing supervisor", () => {
+  it("caches errors briefly and prunes old entries", async () => {
+    const dir = tempDir();
+    const socket = join(dir, "s.sock");
+    let hits = 0;
+    const server = createServer((_req, res) => {
+      hits += 1;
+      res.statusCode = 500;
+      res.end("{}");
+    });
+    await new Promise<void>((r) => server.listen(socket, r));
+    try {
+      let now = 1_000_000;
+      const cache = new BriefingCache(socket, dir, () => now);
+      expect(await cache.forSession("a")).toBeNull();
+      expect(await cache.forSession("a")).toBeNull();
+      expect(hits).toBe(1);
+      now += 11_000;
+      await cache.forSession("a");
+      expect(hits).toBe(2);
+      now += 11 * 60_000;
+      await cache.forSession("b");
+      expect((cache as unknown as { cache: Map<string, unknown> }).cache.has("a")).toBe(false);
+    } finally {
+      await new Promise((r) => server.close(r));
+      rmrf(dir);
+    }
   });
 });

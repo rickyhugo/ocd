@@ -98,6 +98,27 @@ describe("/spill snapshot", () => {
     expect(spill({ paused: true })).toMatch(/^OCD · 0 running · dispatch paused\n/);
   });
 
+  it("shows a pending push confirmation and the landing milestones", () => {
+    const review = task({
+      id: "t_l",
+      title: "Landing",
+      state: "ready_for_review",
+      finishedAt: at(9),
+    });
+    const out = spill({
+      tasks: [review],
+      attention: [attention({ kind: "land", taskId: "t_l", reason: "Push to main" })],
+      events: { t_l: [event("t_l", "land.requested", 3)] },
+    });
+    expect(out).toMatch(/confirm landing/);
+    expect(out).toMatch(/Blocked \/ waiting/);
+    const again = spill({
+      tasks: [task({ id: "t_r2", title: "Reworked" })],
+      events: { t_r2: [event("t_r2", "review.changes_requested", 1)] },
+    });
+    expect(again).toMatch(/latest: changes requested/);
+  });
+
   it("separates running, blocked, manual, stuck, queued and review work across repos", () => {
     const running = task({ id: "t_run", title: "Add /spill", repo: "ocd" });
     const blocked = task({ id: "t_blk", title: "Fix login", repo: "web", state: "blocked" });
