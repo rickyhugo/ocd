@@ -408,7 +408,7 @@ export function buildTools(
     {
       name: "remember",
       description:
-        "Store durable memory. Use source=human only for something the human explicitly stated (stored as confirmed); use source=inferred for your own lessons (stored as a proposal for the human to confirm). Never store secrets.",
+        "Store durable memory. Use source=human only for something the human explicitly stated (stored as confirmed); use source=inferred for your own lessons (stored as a proposal for the human to confirm). Superseding a confirmed memory is human-only; you may only supersede your own proposals. Never store secrets.",
       input: obj(
         {
           scope: { type: "string", enum: ["global", "repo", "task"] },
@@ -481,7 +481,8 @@ export function buildTools(
     },
     {
       name: "forget",
-      description: "Delete a memory entry permanently.",
+      description:
+        "Delete a memory entry permanently. Only unconfirmed (proposed) memory can be forgotten from here; confirmed memory is removed by the human with `ocd memory forget`.",
       input: obj({ id: str("Memory ID") }, ["id"]),
       run: async (input, ctx) => {
         const { id } = z.object({ id: z.string() }).parse(input);

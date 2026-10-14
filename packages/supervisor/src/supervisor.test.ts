@@ -136,6 +136,23 @@ describe("dispatch and review", () => {
     await expect(dispatch(h.human, "app", "different", "dup-key-1")).rejects.toMatchObject({
       code: "idempotency_mismatch",
     });
+    await expect(
+      h.human.dispatch({
+        repo: "app",
+        title: "another title",
+        instructions: "same",
+        idempotencyKey: "dup-key-1",
+      }),
+    ).rejects.toMatchObject({ code: "idempotency_mismatch" });
+    await expect(
+      h.human.dispatch({
+        repo: "app",
+        title: first.task.title,
+        instructions: "same",
+        acceptanceCriteria: ["new criterion"],
+        idempotencyKey: "dup-key-1",
+      }),
+    ).rejects.toMatchObject({ code: "idempotency_mismatch" });
   });
 
   it("never treats idle without a valid report as completion (AT10)", async () => {
@@ -335,6 +352,19 @@ describe("API boundaries", () => {
       }),
     ).toBe(400);
     expect((await raw.status()).apiVersion).toBe(1);
+  });
+
+  it("answers a malformed percent-encoded directory header with 400, not 500", async () => {
+    h = await startHarness();
+    const token = readFileSync(h.paths.token, "utf8").trim();
+    expect(
+      await rawStatus(h.paths.socket, {
+        authorization: `Bearer ${token}`,
+        "x-ocd-api-version": "1",
+        "x-ocd-actor": "human",
+        "x-ocd-directory": "%E0%A4%A",
+      }),
+    ).toBe(400);
   });
 
   it("only serves clients that present the API token; claiming to be the human is not enough", async () => {

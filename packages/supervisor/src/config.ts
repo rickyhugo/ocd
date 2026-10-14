@@ -150,7 +150,7 @@ export const SupervisorConfig = z
           .boolean()
           .default(false)
           .describe(
-            "Use tmux: a notification click (ocd focus) switches to the manager's tmux pane and raises its terminal, and a taken-over session opens in its own tmux window when the TUI runs in tmux. Off by default; when off, tmux is never run.",
+            "Use tmux: a notification click (ocd focus) switches to the manager's tmux pane and raises its terminal, and a taken-over session opens in its own tmux window when the TUI runs in tmux. Off by default; when off, tmux is never run. `ocd focus` reads this on every call; the taken-over-session window needs a restart to apply.",
           ),
       })
       .strict()
@@ -178,7 +178,7 @@ export const SupervisorConfig = z
     branchSync: z
       .object({
         mode: BranchSyncMode.default("off").describe(
-          "off: nothing runs. detect: read-only; tasks show how far their branch is behind the repo's baseRef and whether merging it would conflict. refresh: detect, and also fast-forward or merge the baseRef into clean, idle task branches at safe boundaries (never pushes, rebases, stashes or resolves conflicts). Per repo: repos.<name>.branchSync. See docs/branch-sync.md.",
+          "off: nothing runs. detect: read-only; tasks show how far their branch is behind the repo's baseRef and whether merging it would conflict. refresh: detect, and also fast-forward or merge the baseRef into clean, idle task branches at safe boundaries (never pushes, rebases, stashes or resolves conflicts). Per repo: repos.<name>.branchSync. Applies on save. See docs/branch-sync.md.",
         ),
         intervalMs: z
           .number()
@@ -202,7 +202,7 @@ export const SupervisorConfig = z
         "The branch-sync watchdog: keeps task branches near their repository's baseRef to reduce drift. Off by default.",
       ),
     mergeMethod: MergeMethod.default("squash").describe(
-      "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod.",
+      "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod. Applies on save.",
     ),
     log: z
       .object({ maxBytes: z.number().int().default(5_000_000), keep: z.number().int().default(3) })

@@ -15,10 +15,25 @@ const SECRET_PATTERNS: ReadonlyArray<{ name: string; pattern: RegExp }> = [
   { name: "Slack token", pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g },
   { name: "JWT", pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
   { name: "bearer token", pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/gi },
+  { name: "npm token", pattern: /\bnpm_[A-Za-z0-9]{30,}/g },
+  { name: "Google API key", pattern: /\bAIza[A-Za-z0-9_-]{30,}/g },
+  { name: "Stripe key", pattern: /\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}/g },
   {
+    name: "basic auth",
+    pattern: /\bauthori[sz]ation\b["']?\s*[:=]\s*["']?Basic\s+[A-Za-z0-9+/]{8,}={0,2}/gi,
+  },
+  { name: "URL credentials", pattern: /(?<=:\/\/)[^\s/:@]+:[^\s/@]+(?=@)/g },
+  {
+    name: "secret flag",
+    pattern:
+      /--(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|auth[_-]?token)\s+["']?[^\s"'-][^\s"']{5,}/gi,
+  },
+  {
+    // The key may carry a prefix (GITHUB_TOKEN, MY_API_KEY, AWS_SECRET_ACCESS_KEY)
+    // and be quoted (JSON), but must end with the secret word ("max_tokens" is not one).
     name: "credential assignment",
     pattern:
-      /\b(?:password|passwd|secret|token|api[_-]?key|access[_-]?key)\b\s*[:=]\s*["']?[^\s"']{6,}/gi,
+      /(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|private[_-]?key)["']?\s*[:=]\s*["']?(?!\[REDACTED\])[^\s"']{6,}/gi,
   },
 ];
 
