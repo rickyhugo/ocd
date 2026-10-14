@@ -311,16 +311,26 @@ describe("GhPullRequests (every gh call site)", () => {
         mergeable: "MERGEABLE",
         mergeStateStatus: "CLEAN",
         statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }],
+        headRefOid: "abc123def456",
       }),
     );
     const prs = new GhPullRequests({ pathEnv: join(gh, "..") });
-    expect(await prs.status("https://github.com/o/r/pull/7", root)).toMatchObject({
+    const status = await prs.status("https://github.com/o/r/pull/7", root);
+    expect(status).toMatchObject({
       state: "open",
       mergeable: "mergeable",
       failingChecks: [],
+      headSha: "abc123def456",
     });
-    await prs.merge("https://github.com/o/r/pull/7", root, "squash");
-    expect(calls(gh).at(-1)).toEqual(["pr", "merge", "https://github.com/o/r/pull/7", "--squash"]);
+    await prs.merge("https://github.com/o/r/pull/7", root, "squash", status.headSha);
+    expect(calls(gh).at(-1)).toEqual([
+      "pr",
+      "merge",
+      "https://github.com/o/r/pull/7",
+      "--squash",
+      "--match-head-commit",
+      "abc123def456",
+    ]);
   });
 
   it("looks gh up on every call, so a gh installed after startup is used", async () => {
