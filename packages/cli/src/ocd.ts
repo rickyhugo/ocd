@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync, realpathSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -11,12 +13,14 @@ import {
   buildSpill,
   collectSpill,
   describeLandResult,
+  describePendingUpdate,
   formatDiffStat,
   formatLandPlan,
   formatSpill,
   plainText,
   renderTranscript,
   resolveOcdPaths,
+  updateLine,
   type Attention,
   type AttentionResponse,
   type LandPlan,
@@ -67,6 +71,10 @@ Supervisor
                                     Claude Code / Codex workers are running unless --force
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
+  ocd update [status|check|apply [--force]|rollback]
+                                    OCD updating itself (selfUpdate in ocd.jsonc): show the state, look for and
+                                    build a new version now, switch to the built one (--force interrupts Claude
+                                    Code / Codex workers; asks first), or go back to the previous version
   ocd doctor [--notify]             Check harnesses, the OpenCode service, notifications, the service manager and
                                     the tools (git; gh and tmux when enabled) on the supervisor's PATH (your login shell's);
                                     --notify sends a test notification (click it to try \`ocd focus\`)
@@ -141,6 +149,8 @@ Environment: OCD_HOME (default ~/.ocd), OCD_SOCKET, OCD_CONFIG (default $OCD_HOM
 
 /** How long `task land --wait` polls before giving up. */
 const LAND_WAIT_LIMIT_MS = 60 * 60_000;
+/** Exit status that tells launchd / systemd to start the service again (EX_TEMPFAIL). */
+const EXIT_RESTART = 75;
 
 const paths = resolveOcdPaths();
 const client = new OcdClient({ socketPath: paths.socket, actor: "human" });
@@ -152,6 +162,30 @@ function cliPath(): string {
 }
 
 /**
+ * The CLI path for things that outlive this process (the service definition,
+ * notification clicks). Run from a self-update build, that is the stable
+ * ~/.ocd/install/current link, so a switch to a new version takes effect on
+ * the next start without rewriting them.
+ */
+function stableCliPath(home: string): string {
+  const real = cliPath();
+  const builds = join(home, "install", "builds") + sep;
+  const current = join(home, "install", "current", "packages", "cli", "dist", "ocd.mjs");
+  return real.startsWith(builds) && existsSync(current) ? current : real;
+}
+
+/** After a switch to a new version: OpenCode reloads its plugins (the OCD plugin runs from the install). */
+function reloadOpenCode(): Promise<void> {
+  return new Promise((resolve, reject) =>
+    execFile("opencode", ["reload"], { timeout: 30_000 }, (error, _out, stderr) =>
+      error
+        ? reject(new Error(`opencode reload: ${String(stderr).trim() || error.message}`))
+        : resolve(),
+    ),
+  );
+}
+
+/**
  * What a notification click runs: `ocd focus` with this process's Node, state
  * directory and PATH (so it finds tmux). Notification daemons start it with a
  * bare environment, so they are passed explicitly.
@@ -160,7 +194,7 @@ function focusCommand(): string[] {
   const env = (["OCD_HOME", "OCD_CONFIG", "PATH"] as const).flatMap((k) =>
     process.env[k] ? [`${k}=${process.env[k]}`] : [],
   );
-  return ["/usr/bin/env", ...env, process.execPath, cliPath(), "focus"];
+  return ["/usr/bin/env", ...env, process.execPath, stableCliPath(paths.home), "focus"];
 }
 
 /**
@@ -351,6 +385,7 @@ async function run(
           managerChannel: buildManagerChannel,
           pullRequests: ({ config }) => (config.github.enabled ? new GhPullRequests() : undefined),
           notifier: await platform.notifier({ onClick: focusCommand() }),
+          selfUpdate: { runningFrom: cliPath(), service: background, afterApplied: reloadOpenCode },
         });
       } catch (error) {
         if (
@@ -385,7 +420,9 @@ async function run(
         console.error(`ocd: stopped. ${report.workerPolicy}`);
         for (const w of report.workers) console.error(`  ${w.taskId} (${w.harness}): ${w.outcome}`);
       }
-      process.exit(0);
+      // A non-zero exit makes launchd / systemd start the service again, now on the new version.
+      if (daemon.restartRequested) console.error("ocd: restarting for an update");
+      process.exit(daemon.restartRequested ? EXIT_RESTART : 0);
       return;
     }
     case "service":
@@ -410,7 +447,7 @@ async function run(
           refuseInterrupting(interrupted, "reinstalling the service");
         const { definition } = await service.install({
           nodePath: process.execPath,
-          cliPath: cliPath(),
+          cliPath: stableCliPath(paths.home),
           logsDir: paths.logs,
           env: { OCD_HOME: process.env["OCD_HOME"], OCD_CONFIG: process.env["OCD_CONFIG"] },
         });
@@ -532,6 +569,7 @@ async function run(
               `harness ${a.harness}: ${a.available ? `ok ${a.version ?? ""}` : `UNAVAILABLE ${a.problems.join("; ")}`}`,
           ),
           ...(s.github ? [`github (gh): ${describeGh(s.github)}`] : []),
+          ...(updateLine(s.update) ? [`update: ${updateLine(s.update)}`] : []),
         ].join("\n"),
       );
       return;
@@ -539,6 +577,39 @@ async function run(
     case "spill": {
       const snapshot = buildSpill(await collectSpill(client));
       print(snapshot, json, () => formatSpill(snapshot));
+      return;
+    }
+    case "update": {
+      if (sub === "status" || sub === undefined) {
+        const u = await client.updateStatus();
+        print(u, json, () =>
+          u?.enabled
+            ? describePendingUpdate(u)
+            : "Self-update is off (selfUpdate.enabled in ocd.jsonc)",
+        );
+      } else if (sub === "check") {
+        const u = await client.checkUpdate();
+        print(u, json, () => describePendingUpdate(u));
+      } else if (sub === "apply") {
+        const before = await client.updateStatus();
+        if (!before?.pending) fail("no update is pending (`ocd update check` looks for one)");
+        if (before.blockedBy.length && !flags.force)
+          fail(
+            `${describePendingUpdate(before)}\nIt is applied automatically once they finish; --force applies it now.`,
+          );
+        if (before.blockedBy.length) {
+          console.error(describePendingUpdate(before));
+          if (!(await confirmInteractive("Interrupt them and update now?")))
+            fail("not applied (confirming needs an interactive terminal)");
+        }
+        const u = await client.applyUpdate(flags.force ?? false);
+        print(u, json, () =>
+          u.pending ? describePendingUpdate(u) : "switching versions; the supervisor restarts",
+        );
+      } else if (sub === "rollback") {
+        const u = await client.rollbackUpdate();
+        print(u, json, () => `going back to ${u.current?.slice(0, 7)}; the supervisor restarts`);
+      } else fail("usage: ocd update [status|check|apply [--force]|rollback]");
       return;
     }
     case "pause":

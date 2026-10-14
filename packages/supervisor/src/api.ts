@@ -43,10 +43,11 @@ import Fastify, {
 import { z, ZodError } from "zod";
 
 import { normalizeDirectory, type LiveConfig } from "./config.ts";
-import { ApiError, forbidden } from "./errors.ts";
+import { ApiError, conflict, forbidden } from "./errors.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
 import type { Store } from "./store.ts";
+import type { SelfUpdater } from "./self-update.ts";
 import type { Supervisor } from "./supervisor.ts";
 
 declare module "fastify" {
@@ -67,8 +68,11 @@ export interface ApiDeps {
   /** Invoked after the shutdown response is sent. */
   requestShutdown: () => Promise<ShutdownReport>;
   live: LiveConfig;
+  /** Self-update; null when this daemon does not manage OCD's own installs. */
+  updater: SelfUpdater | null;
 }
 
+const UpdateApplyInput = z.object({ force: z.boolean().default(false) });
 const IdParams = z.object({ id: z.string().min(1).max(100) });
 
 const csv = (value: unknown) => (typeof value === "string" && value ? value.split(",") : undefined);
@@ -189,7 +193,32 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   });
 
   // -- status and lifecycle --------------------------------------------------
-  app.get("/v1/status", async () => supervisor.status());
+  app.get("/v1/status", async () => ({
+    ...supervisor.status(),
+    update: deps.updater?.status() ?? null,
+  }));
+  const updater = () => {
+    if (!deps.updater)
+      throw conflict("update_unavailable", "This supervisor does not manage OCD's own updates");
+    return deps.updater;
+  };
+  app.get("/v1/update", async () => deps.updater?.status() ?? null);
+  app.post("/v1/update/check", async (req) => {
+    requireCaller(req);
+    return updater().check();
+  });
+  /** Switch to the pending version now; `force` interrupts Claude Code / Codex workers. Human only. */
+  app.post("/v1/update/apply", async (req) => {
+    requireCaller(req);
+    if (req.actor !== "human") throw forbidden("human_only", "Only a human can apply an update");
+    const { force } = UpdateApplyInput.parse(req.body ?? {});
+    return updater().tryApply(force);
+  });
+  app.post("/v1/update/rollback", async (req) => {
+    requireCaller(req);
+    if (req.actor !== "human") throw forbidden("human_only", "Only a human can roll back");
+    return updater().rollback();
+  });
   app.post("/v1/pause", async (req) => {
     requireCaller(req);
     supervisor.setPaused(true);

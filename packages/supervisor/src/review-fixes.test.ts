@@ -9,6 +9,7 @@ import { RecordingPullRequests } from "./pull-requests.ts";
 import {
   declareRepos,
   makeRepo,
+  setupRepo,
   startHarness,
   waitForState,
   type Harness,
@@ -302,4 +303,52 @@ describe("cleanup", () => {
     },
     SLOW,
   );
+});
+
+describe("automatic cleanup", () => {
+  it("removes old finished worktrees without forcing, and keeps ones whose work would be lost", async () => {
+    let now = Date.parse("2026-10-14T10:00:00Z");
+    const harness = await startHarness({
+      clock: () => now,
+      config: { autoCleanup: { enabled: true, afterHours: 24 } },
+    });
+    try {
+      await setupRepo(harness, "app");
+      const dispatchOne = async (key: string) => {
+        const { task } = await harness.manager("mgr").dispatch({
+          repo: "app",
+          title: key,
+          instructions: "x",
+          idempotencyKey: `auto-cleanup-${key}`,
+        });
+        return (await waitForState(harness, task.id, "ready_for_review")).task;
+      };
+      // Nothing of value: the worker's file is discarded with the cancel.
+      const empty = await dispatchOne("empty");
+      execFileSync("git", ["checkout", "--", "."], { cwd: empty.workspacePath! });
+      execFileSync("git", ["clean", "-fdq"], { cwd: empty.workspacePath! });
+      await harness.human.cancelTask(empty.id);
+      // A commit that exists nowhere else.
+      const work = await dispatchOne("work");
+      execFileSync("git", ["add", "-A"], { cwd: work.workspacePath! });
+      execFileSync("git", ["commit", "-qm", "unlanded"], { cwd: work.workspacePath! });
+      await harness.human.cancelTask(work.id);
+
+      // Too recent: nothing happens.
+      expect(await harness.daemon.supervisor.autoCleanup()).toEqual([]);
+      now += 25 * 3_600_000;
+      expect(await harness.daemon.supervisor.autoCleanup()).toEqual([empty.id]);
+      const cleaned = await harness.human.inspectTask(empty.id);
+      expect(cleaned.task.workspacePath).toBeNull();
+      expect(cleaned.events.find((e) => e.type === "workspace.cleaned")?.data).toMatchObject({
+        forced: false,
+        auto: true,
+      });
+      expect((await harness.human.inspectTask(work.id)).task.workspacePath).not.toBeNull();
+      // Kept ones are not retried every hour.
+      expect(await harness.daemon.supervisor.autoCleanup()).toEqual([]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
 });

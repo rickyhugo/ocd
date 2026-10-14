@@ -38,11 +38,23 @@ import { NullNotifier, type ManagerChannel, type Notifier } from "./notify.ts";
 import { OutboxWorker } from "./outbox.ts";
 import { Store } from "./store.ts";
 import type { PullRequestHost } from "./pull-requests.ts";
+import { SelfUpdater } from "./self-update.ts";
 import { Supervisor, type SupervisorHooks } from "./supervisor.ts";
 import { WorkspaceManager } from "./workspace.ts";
 
 export interface DaemonOptions {
   paths?: OcdPaths;
+  /**
+   * Self-update (selfUpdate in ocd.jsonc). `runningFrom` is the real path of
+   * the CLI this daemon runs; `service` says a service manager restarts it
+   * after it exits for an update.
+   */
+  selfUpdate?: {
+    runningFrom: string;
+    service: boolean;
+    smokeTest?: (buildDir: string) => Promise<void>;
+    afterApplied?: () => Promise<void>;
+  };
   config?: Partial<SupervisorConfigInput>;
   /** Builds adapters once config is known. */
   adapters: (ctx: {
@@ -118,6 +130,9 @@ export interface Daemon {
   kill(): Promise<void>;
   /** Re-reads ocd.jsonc now (the file watcher does this on save). */
   reload(): Promise<void>;
+  /** The daemon stopped to switch to a new version; the service manager should start it again. */
+  readonly restartRequested: boolean;
+  readonly updater: SelfUpdater | null;
 }
 
 /** Opens the database, creating it on first use and refusing silent upgrades. */
@@ -299,7 +314,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       resolveClosed(null);
     };
 
+    let updater: SelfUpdater | null = null;
+    let restartRequested = false;
     const supervisor = new Supervisor({
+      onLanded: (repo) => updater?.landed(repo),
       sandboxRoot: join(paths.home, "sandbox"),
       store,
       config,
@@ -319,8 +337,33 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       },
     });
 
+    if (options.selfUpdate) {
+      const su = options.selfUpdate;
+      updater = new SelfUpdater({
+        installDir: join(paths.home, "install"),
+        settings: () => config.selfUpdate,
+        repoPath: (name) => store.getRepo(name)?.path ?? null,
+        blockers: () => supervisor.processOwnedWorkers(),
+        notify: (key, title, body) =>
+          store.enqueue([{ kind: "notify", dedupeKey: `notify:${key}`, payload: { title, body } }]),
+        restart: su.service
+          ? () => {
+              restartRequested = true;
+              void stop();
+            }
+          : null,
+        runningFrom: su.runningFrom,
+        logger: logger.child({ component: "self-update" }),
+        clock,
+        ...(su.smokeTest ? { smokeTest: su.smokeTest } : {}),
+        // Reloading OpenCode's plugins only matters when OCD works with OpenCode.
+        ...(su.afterApplied && config.opencode.enabled ? { afterApplied: su.afterApplied } : {}),
+      });
+    }
+
     const stop = (): Promise<ShutdownReport> => {
       stopping ??= (async () => {
+        updater?.stop();
         if (!crashed) report ??= await supervisor.stop();
         await release();
         resolveClosed(report);
@@ -335,6 +378,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       apiToken,
       store,
       supervisor,
+      updater,
       memory,
       logger,
       live,
@@ -374,7 +418,21 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     backupTimer.unref();
     logger.info({ socket: paths.socket, instanceId, pid: process.pid }, "supervisor started");
 
-    return { paths, store, supervisor, instanceId, closed, stop, kill, reload: reloadConfig };
+    updater?.start();
+    return {
+      paths,
+      store,
+      supervisor,
+      instanceId,
+      closed,
+      stop,
+      kill,
+      reload: reloadConfig,
+      get restartRequested() {
+        return restartRequested;
+      },
+      updater,
+    };
   } catch (error) {
     await app?.close().catch(() => undefined);
     if (db?.$client.open) db.$client.close();

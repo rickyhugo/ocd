@@ -20,6 +20,8 @@ import {
   collectSpill,
   baseLabel,
   describeLandResult,
+  describePendingUpdate,
+  updateLine,
   diffTotals,
   fileCounts,
   formatDiffStat,
@@ -34,6 +36,7 @@ import {
   type TakeOverResult,
   type Task,
   type TaskDiff,
+  type UpdateStatus,
 } from "@ocd/core";
 import { Plugin } from "@opencode/plugin/tui";
 import type { ScrollBoxRenderable } from "@opentui/core";
@@ -55,6 +58,7 @@ import {
   buildSidebar,
   landable,
   landingActions,
+  updateBanner,
   type Row,
   type Section,
   type SectionKey,
@@ -114,6 +118,8 @@ export default Plugin.define({
     // Reconciled by key, so rows (and an open panel's scroll position) survive refreshes.
     const [model, setModel] = createStore<SidebarModel>(buildSidebar([], [], now()));
     const [online, setOnline] = createSignal(true);
+    // OCD's own update state (selfUpdate), shown as one line above the tasks.
+    const [update, setUpdate] = createSignal<UpdateStatus | null>(null);
     const [hovered, setHovered] = createSignal<string | null>(null);
     // Session-only: which running tasks show their progress panel.
     const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set());
@@ -138,11 +144,13 @@ export default Plugin.define({
     };
     const refreshOnce = async () => {
       try {
-        const [open, done, items] = await Promise.all([
+        const [open, done, items, status] = await Promise.all([
           client.listTasks({ open: true, limit: 100 }),
           client.listTasks({ state: ["completed", "cancelled"], limit: 20 }),
           client.listAttention({ status: "open", limit: 100 }),
+          client.status(),
         ]);
+        setUpdate(status.update ?? null);
         setNow(Date.now());
         setModel(reconcile(buildSidebar(open, items, now(), done), { key: "key" }));
         setExpanded((e) =>
@@ -773,6 +781,69 @@ export default Plugin.define({
       );
     };
 
+    /** The pending update: apply it now (asking first when it interrupts workers), see what changed, or wait. */
+    const updateMenu = async () => {
+      const u = await client.updateStatus();
+      setUpdate(u);
+      if (!u?.enabled) return;
+      if (!u.pending) {
+        await ctx.ui.dialog.alert({ title: "OCD update", message: updateLine(u) ?? "" });
+        return;
+      }
+      const n = u.blockedBy.length;
+      const pick = await ctx.ui.dialog.select<"apply" | "changes" | "later">({
+        title: `OCD update ${u.pending.sha.slice(0, 7)}`,
+        options: [
+          ...(u.cannotApply
+            ? []
+            : [
+                {
+                  title: n
+                    ? `Apply now (interrupts ${n} worker${n === 1 ? "" : "s"})`
+                    : "Apply now",
+                  value: "apply" as const,
+                },
+              ]),
+          { title: "What changed", value: "changes" as const },
+          { title: n ? "Later: applies when they finish" : "Later", value: "later" as const },
+        ],
+      });
+      if (pick === "changes") {
+        await ctx.ui.dialog.alert({ title: "OCD update", message: describePendingUpdate(u) });
+      } else if (pick === "apply") {
+        if (
+          n &&
+          !(await ctx.ui.dialog.confirm({
+            title: "Interrupt workers and update?",
+            message: describePendingUpdate(u),
+            label: { confirm: "Update now" },
+          }))
+        )
+          return;
+        await client.applyUpdate(n > 0);
+        toast("Updating OCD: the supervisor restarts on the new version");
+      }
+    };
+
+    const UpdateBanner = () => {
+      const banner = createMemo(() => updateBanner(update()));
+      return (
+        <Show when={banner()}>
+          {(b: () => NonNullable<ReturnType<typeof updateBanner>>) => (
+            <box flexDirection="row" onMouseDown={() => void updateMenu().catch(fail)}>
+              <text fg={tone(b().tone)}>{`${b().glyph} `}</text>
+              <text fg={color("text")} wrapMode="none">
+                {b().text}
+              </text>
+              <text fg={muted()} wrapMode="none">
+                {b().meta ? `  ${b().meta}` : ""}
+              </text>
+            </box>
+          )}
+        </Show>
+      );
+    };
+
     const removeDiffPanel = ctx.ui.slot({
       append: "session.panel",
       render: (input) => (
@@ -808,6 +879,7 @@ export default Plugin.define({
               </box>
             }
           >
+            <UpdateBanner />
             <Show
               when={!model.idle}
               fallback={
@@ -937,6 +1009,20 @@ export default Plugin.define({
             try {
               const task = await pickTask("Land which task?", landable);
               if (task) await chooseLanding(task);
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.update",
+          title: "OCD: update OCD (apply a pending version, see what changed)",
+          group: "OCD",
+          palette: true,
+          slash: { name: "update" },
+          run: async () => {
+            try {
+              await updateMenu();
             } catch (error) {
               fail(error);
             }

@@ -611,6 +611,23 @@ export interface GitHubCliStatus {
   checkedAt: string;
 }
 
+/** OCD updating itself from its own repository (selfUpdate in ocd.jsonc). */
+export interface UpdateStatus {
+  enabled: boolean;
+  /** The build the supervisor runs from (~/.ocd/install/current), if any. */
+  current: string | null;
+  previous: string | null;
+  /** A built and smoke-tested version waiting to be switched to. */
+  pending: { sha: string; subjects: string[]; builtAt: string } | null;
+  /** Claude Code / Codex workers that a restart would interrupt; the update waits for them. */
+  blockedBy: { taskId: string; title: string; harness: string }[];
+  building: string | null;
+  lastError: { sha: string; message: string; at: string } | null;
+  /** Why an update cannot be switched to automatically, if it cannot. */
+  cannotApply: string | null;
+  checkedAt: string | null;
+}
+
 export interface SupervisorStatus {
   apiVersion: number;
   pid: number;
@@ -627,6 +644,7 @@ export interface SupervisorStatus {
   github?: GitHubCliStatus | null;
   /** Pull requests are on (github.enabled): tasks can land through a PR. */
   pullRequests?: boolean;
+  update?: UpdateStatus | null;
 }
 
 export interface OutboxEntry {

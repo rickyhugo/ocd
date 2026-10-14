@@ -155,6 +155,52 @@ service commands (`install`, `uninstall`, `restart`) only act from the home
 the service runs with: never from a worker's sandbox, and not with another
 `OCD_HOME` unless the installed service uses that home.
 
+### Updating itself (optional)
+
+```jsonc
+"selfUpdate": { "enabled": true }, // repo "ocd" (repos.ocd), its remote's default branch
+```
+
+With `selfUpdate` on, OCD follows its own repository: when a new commit
+reaches `origin/<branch>` (a task landed there, or a PR merged on GitHub; it
+also checks every `intervalMinutes`), the supervisor:
+
+1. builds it into `~/.ocd/install/builds/<sha>`, a detached worktree of the
+   repository, so your checkout is never touched (`pnpm install
+   --frozen-lockfile`, `pnpm run build`; see `selfUpdate.build`);
+2. boots the build's supervisor once against a throwaway `OCD_HOME` (a smoke
+   test);
+3. points `~/.ocd/install/current` at it and restarts the background service,
+   which runs the CLI through that link, then runs `opencode reload` so the
+   plugin and TUI pick it up, and notifies you ("OCD: Updated").
+
+A restart interrupts Claude Code and Codex workers, so while any run the
+update waits: you get one notification ("OCD: Update ready"), and the
+sidebar shows `⬆ Update ready · <sha>  waits for N workers`. Click it (or
+`/update`) to see what changed or apply it now (it asks first, since that
+interrupts them; they can be resumed), or leave it: it applies on its own
+once they finish. OpenCode workers survive the restart.
+
+A build or smoke test that fails leaves the running version alone and
+notifies you; the same commit is not retried. `ocd update` shows the state;
+`ocd update check` looks for a new version now; `ocd update apply [--force]`
+switches to a built one; `ocd update rollback` goes back to the previous
+build (refused when the newer one migrated the database further than the
+older one can read). Only the current and previous builds are kept.
+
+To run from the install, point the service, the `ocd` command and the
+manager's plugin at `~/.ocd/install/current` once:
+
+```sh
+ocd update check                                  # builds and installs the first version
+~/.ocd/install/current/packages/cli/dist/ocd.mjs service install
+ln -sf ~/.ocd/install/current/packages/cli/dist/ocd.mjs ~/.local/bin/ocd
+# manager directory's .opencode/opencode.jsonc:
+#   "plugins": ["<home>/.ocd/install/current/packages/plugin"]
+```
+
+Until then OCD only installs new versions and tells you how to switch.
+
 ### Optional tools
 
 OCD needs Node, git and OpenCode. Everything else is optional and off by
@@ -498,7 +544,11 @@ says why (`available: false` with notes) instead of guessing.
    in the base branch. A branch that was squash-merged on GitHub counts as
    landed, so no `--force` is needed. `--force` (or `discard`) is for throwing
    work away; both ask you to type `approve` first.
-10. **Diffs** are capped: a patch over 1.5 MB is cut at a file boundary, and at
+10. **Automatic cleanup** (`"autoCleanup": { "enabled": true, "afterHours": 72 }`,
+    off by default) removes the worktrees of tasks that finished (accepted or
+    cancelled) more than `afterHours` ago, hourly, the way `ocd task cleanup`
+    does: never forced, so a worktree whose work would be lost is kept.
+11. **Diffs** are capped: a patch over 1.5 MB is cut at a file boundary, and at
     most 50 new untracked files are included (the rest are counted as
     truncated).
 

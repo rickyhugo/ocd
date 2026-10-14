@@ -1,4 +1,4 @@
-import type { Attention, Task } from "@ocd/core";
+import type { Attention, Task, UpdateStatus } from "@ocd/core";
 
 // The sidebar's view model: what to show, in which order, with which emphasis.
 // Pure, so it is tested without a terminal.
@@ -374,4 +374,30 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
     default:
       return [message, { label: "Cancel it", message: "Cancel this task." }, details];
   }
+}
+
+/** The sidebar line for OCD updating itself; null when there is nothing to show. */
+export function updateBanner(
+  u: UpdateStatus | null | undefined,
+): { glyph: string; tone: Tone; text: string; meta: string } | null {
+  if (!u?.enabled) return null;
+  const short = (sha: string) => sha.slice(0, 7);
+  if (u.pending) {
+    const n = u.blockedBy.length;
+    return {
+      glyph: "⬆",
+      tone: n ? "warning" : "accent",
+      text: `Update ready · ${short(u.pending.sha)}`,
+      meta: n
+        ? `waits for ${n} worker${n === 1 ? "" : "s"}`
+        : u.cannotApply
+          ? "not applied"
+          : "applying",
+    };
+  }
+  if (u.building)
+    return { glyph: "⟳", tone: "muted", text: "Building an update", meta: short(u.building) };
+  if (u.lastError && u.lastError.sha !== u.current)
+    return { glyph: "!", tone: "error", text: "Update failed", meta: short(u.lastError.sha) };
+  return null;
 }

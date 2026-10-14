@@ -201,6 +201,55 @@ export const SupervisorConfig = z
       .describe(
         "The branch-sync watchdog: keeps task branches near their repository's baseRef to reduce drift. Off by default.",
       ),
+    selfUpdate: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(false)
+          .describe(
+            "OCD updates itself: new commits on the repository's branch are built into ~/.ocd/install, smoke-tested, and switched to by restarting the background service once no Claude Code or Codex worker is running. Off by default. Restart to apply.",
+          ),
+        repo: z
+          .string()
+          .default("ocd")
+          .describe("The declared repository (under repos) that holds OCD's own source."),
+        branch: z
+          .string()
+          .optional()
+          .describe("Branch to follow on origin; defaults to the remote's default branch."),
+        intervalMinutes: z
+          .number()
+          .min(1)
+          .default(10)
+          .describe(
+            "How often origin is checked for a new version (also right after a task lands in that repository).",
+          ),
+        build: z
+          .array(z.string().min(1))
+          .default(["pnpm install --frozen-lockfile", "pnpm run build"])
+          .describe(
+            "Shell commands that build a checkout, run in order in the new build directory.",
+          ),
+      })
+      .strict()
+      .prefault({})
+      .describe("Keeping OCD itself up to date from its own repository."),
+    autoCleanup: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Remove the worktrees of finished (accepted or cancelled) tasks after afterHours, the way `ocd task cleanup` does: never forced, so a worktree whose work would be lost is kept. Off by default.",
+          ),
+        afterHours: z
+          .number()
+          .min(1)
+          .default(72)
+          .describe("How long a finished task's worktree is kept before automatic cleanup."),
+      })
+      .strict()
+      .prefault({}),
     mergeMethod: MergeMethod.default("squash").describe(
       "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod. Applies on save.",
     ),

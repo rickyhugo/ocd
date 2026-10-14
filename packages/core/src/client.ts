@@ -26,6 +26,7 @@ import type {
   TakeOverResult,
   Task,
   TaskDiff,
+  UpdateStatus,
   TaskDetail,
   TaskFilter,
   TaskProgress,
@@ -295,6 +296,17 @@ export class OcdClient {
       timeoutMs: LONG_CALL_TIMEOUT_MS,
     });
   /** Gets the work into its base branch: through a pull request, or directly once confirmed. */
+  /** OCD's own update state (selfUpdate). */
+  updateStatus = () => this.call<UpdateStatus | null>("GET", "/v1/update");
+  /** Fetches and, when there is a new version, builds and smoke-tests it (can take minutes). */
+  checkUpdate = () =>
+    this.call<UpdateStatus>("POST", "/v1/update/check", {}, undefined, {
+      timeoutMs: LONG_CALL_TIMEOUT_MS,
+    });
+  /** Switches to the pending version; `force` interrupts Claude Code / Codex workers. Human only. */
+  applyUpdate = (force = false) => this.call<UpdateStatus>("POST", "/v1/update/apply", { force });
+  /** Back to the previous version. Human only. */
+  rollbackUpdate = () => this.call<UpdateStatus>("POST", "/v1/update/rollback", {});
   landTask = (id: string, input: LandTaskInput = {}) =>
     this.call<LandResult>("POST", `/v1/tasks/${encodeURIComponent(id)}/land`, input, undefined, {
       timeoutMs: LONG_CALL_TIMEOUT_MS,
