@@ -145,6 +145,35 @@ describe("self-update", () => {
     expect((await u2.check()).current).toBe(fixed);
   });
 
+  it("follows a checkout given by path, without OCD being a declared repository", async () => {
+    const w = world();
+    seedInstall(w);
+    const sha = w.land("feat: from a path");
+    const { u, calls } = updater(w, {
+      settings: () => ({
+        enabled: true,
+        repo: "ocd",
+        path: w.repo,
+        intervalMinutes: 10,
+        build: ["mkdir -p packages/cli/dist && echo built > packages/cli/dist/ocd.mjs"],
+      }),
+      repoPath: () => null,
+    });
+    expect(await u.check()).toMatchObject({ current: sha, lastError: null });
+    expect(calls.restart).toBe(1);
+
+    const { u: missing } = updater(w, {
+      settings: () => ({
+        enabled: true,
+        repo: "ocd",
+        path: join(w.root, "nowhere"),
+        intervalMinutes: 10,
+        build: [],
+      }),
+    });
+    await expect(missing.check()).rejects.toMatchObject({ code: "update_no_repo" });
+  });
+
   it("refuses a build whose supervisor does not boot", async () => {
     const w = world();
     seedInstall(w);

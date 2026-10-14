@@ -51,7 +51,46 @@ packages/
 
 ## Setup
 
-With the pinned mise tools installed:
+On a new machine (needs git and Node.js 24+):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rickyhugo/ocd/main/scripts/install.sh | sh
+```
+
+It clones OCD into `~/.ocd/src` (`OCD_SRC` to choose), builds it with the pnpm
+version OCD pins, and runs `ocd setup`. From a checkout you already have:
+`pnpm install && pnpm run build && node packages/cli/dist/ocd.mjs setup`.
+
+`ocd setup` is the one place to get everything working, and to check or repair
+it later: run it again any time. Each step says what it found (✓), what it
+does (→) or why it skips (–), and it asks before changing anything outside
+`~/.ocd` (`--yes` takes the defaults):
+
+1. **Prerequisites:** Node, git, OpenCode and its background service (offers
+   `opencode service start`), terminal-notifier on macOS (offers `brew
+   install`), and which of Claude Code, Codex, gh and tmux are installed and
+   logged in.
+2. **`ocd.jsonc`:** creates one from your answers (manager directory, which
+   optional tools to use, a starter profile per harness with a model picked
+   from the harness's own list, and repositories), or links an existing file
+   (for example in a config repo). An existing config is validated and only
+   gets what it lacks, edited in place with its comments kept.
+3. **Install:** from a git checkout, turns on self-update (`selfUpdate.path`)
+   and builds the first version into `~/.ocd/install`; everything below then
+   runs from `~/.ocd/install/current`.
+4. **Manager directory:** creates it, loads the OCD plugin there (keeping the
+   rest of its OpenCode config) and writes starter manager instructions
+   (`AGENTS.md`) if there are none.
+5. **`ocd` on PATH:** links `~/.local/bin/ocd`, and says if that directory is
+   not on your login shell's PATH.
+6. **Background service** (`ocd service install`), then `opencode reload`.
+7. **Notifications:** sends a test one; on macOS it opens System Settings →
+   Notifications so you can allow "OCD".
+8. **Check:** `ocd doctor`, then how to start.
+
+State lives in `~/.ocd` (override with `OCD_HOME`).
+
+Developing OCD, with the pinned mise tools installed:
 
 ```sh
 mise exec -- pnpm install
@@ -59,10 +98,6 @@ mise exec -- pnpm run build      # vp pack for every package
 mise exec -- pnpm run check      # format, lint, type-check
 mise exec -- pnpm test           # fake harnesses and temporary DBs/worktrees only
 ```
-
-Put `packages/cli/dist/ocd.mjs` on your PATH (for example
-`alias ocd="node $PWD/packages/cli/dist/ocd.mjs"`). State lives in `~/.ocd`
-(override with `OCD_HOME`).
 
 ### Configuration: `ocd.jsonc`
 
@@ -133,8 +168,8 @@ worker sessions, are refused. There is no registration step: a fresh session in
 that directory simply takes over. `ocd manager` shows the configured directory
 and the active session.
 
-Nothing installs the plugin for you. Load it only in that directory with a
-project-level OpenCode config:
+`ocd setup` loads the plugin in that directory only, with a project-level
+OpenCode config:
 
 ```jsonc
 // ~/ocd-manager/.opencode/opencode.jsonc
@@ -142,8 +177,8 @@ project-level OpenCode config:
 ```
 
 OpenCode requires a plugin directory (not a file) and loads its `server.js`,
-which re-exports the build, so run `pnpm run build` first. After changing the
-plugin config, run `opencode reload` (it reloads every OpenCode location).
+which re-exports the build. After changing the plugin config by hand, run
+`opencode reload` (it reloads every OpenCode location).
 
 ### Background operation (optional)
 
@@ -176,10 +211,11 @@ the service runs with: never from a worker's sandbox, and not with another
 ### Updating itself (optional)
 
 ```jsonc
-"selfUpdate": { "enabled": true }, // repo "ocd" (repos.ocd), its remote's default branch
+"selfUpdate": { "enabled": true, "path": "~/.ocd/src" }, // a checkout; or "repo": "ocd" for repos.ocd
 ```
 
-With `selfUpdate` on, OCD follows its own repository: when a new commit
+With `selfUpdate` on (`ocd setup` turns it on from a checkout), OCD follows
+its own repository on its remote's default branch: when a new commit
 reaches `origin/<branch>` (a task landed there, or a PR merged on GitHub; it
 also checks every `intervalMinutes`), the supervisor:
 
@@ -206,18 +242,10 @@ switches to a built one; `ocd update rollback` goes back to the previous
 build (refused when the newer one migrated the database further than the
 older one can read). Only the current and previous builds are kept.
 
-To run from the install, point the service, the `ocd` command and the
-manager's plugin at `~/.ocd/install/current` once:
-
-```sh
-ocd update check                                  # builds and installs the first version
-~/.ocd/install/current/packages/cli/dist/ocd.mjs service install
-ln -sf ~/.ocd/install/current/packages/cli/dist/ocd.mjs ~/.local/bin/ocd
-# manager directory's .opencode/opencode.jsonc:
-#   "plugins": ["<home>/.ocd/install/current/packages/plugin"]
-```
-
-Until then OCD only installs new versions and tells you how to switch.
+`ocd setup` builds the first version and points the service, the `ocd`
+command and the manager's plugin at `~/.ocd/install/current`. Until those run
+from it, OCD only installs new versions and tells you how to switch (run
+`ocd setup` again).
 
 ### Optional tools
 

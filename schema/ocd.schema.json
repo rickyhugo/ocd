@@ -235,8 +235,13 @@
         },
         "repo": {
           "default": "ocd",
-          "description": "The declared repository (under repos) that holds OCD's own source.",
+          "description": "The declared repository (under repos) that holds OCD's own source. Ignored when path is set.",
           "type": "string"
+        },
+        "path": {
+          "description": "A checkout of OCD's own repository to follow instead of a declared repo (`~` is expanded), so a machine that only uses OCD need not dispatch work to it. `ocd setup` sets it.",
+          "type": "string",
+          "minLength": 1
         },
         "branch": {
           "description": "Branch to follow on origin; defaults to the remote's default branch.",
