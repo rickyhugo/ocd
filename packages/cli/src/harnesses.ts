@@ -89,3 +89,23 @@ export async function probeHarnesses(
     );
   return statuses;
 }
+
+/**
+ * What makes `ocd doctor` exit non-zero: an invalid config, no git, or an
+ * enabled harness or tool that is unavailable. Tools that are off do not count.
+ */
+export function doctorProblems(input: {
+  configError: string | null;
+  git: string | null;
+  harnesses: Pick<AdapterStatus, "harness" | "available">[];
+  github: { enabled: boolean; available: boolean | null };
+  tmux: { enabled: boolean; path: string | null };
+}): string[] {
+  return [
+    ...(input.configError ? ["invalid config"] : []),
+    ...(input.git ? [] : ["git not found"]),
+    ...input.harnesses.filter((h) => !h.available).map((h) => `${h.harness} unavailable`),
+    ...(input.github.enabled && !input.github.available ? ["gh unavailable"] : []),
+    ...(input.tmux.enabled && !input.tmux.path ? ["tmux not found"] : []),
+  ];
+}

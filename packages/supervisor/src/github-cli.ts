@@ -157,6 +157,11 @@ export function runGh(
             ),
           );
         }
+        if (errno === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+          return reject(
+            new GhError("failed", `${label} failed: its output exceeded 8 MiB and was cut off`),
+          );
+        }
         if (error.killed) {
           const seconds = Math.round((options.timeoutMs ?? 120_000) / 1000);
           return reject(

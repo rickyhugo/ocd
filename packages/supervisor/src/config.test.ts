@@ -175,6 +175,29 @@ describe("hot reload of ocd.jsonc", () => {
   });
 });
 
+describe("overlapping reloads", () => {
+  it("settle in order, so the last saved file wins", async () => {
+    h = await startHarness();
+    const harness = h;
+    const save = (name: string) =>
+      writeFileSync(
+        harness.paths.config,
+        `{ "profiles": { "${name}": { "harness": "fake", "model": "fake/x" } } }`,
+      );
+    save("first");
+    const a = harness.daemon.reload();
+    save("second");
+    const b = harness.daemon.reload();
+    save("third");
+    const c = harness.daemon.reload();
+    await Promise.all([a, b, c]);
+    const names = await profileNames(harness);
+    expect(names).toContain("third");
+    expect(names).not.toContain("first");
+    expect(names).not.toContain("second");
+  });
+});
+
 describe("invalid config reporting", () => {
   it("keeps one inbox item that always shows the current error", async () => {
     h = await startHarness();

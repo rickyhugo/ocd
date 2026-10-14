@@ -25,6 +25,8 @@ export interface FollowOptions {
   maxDurationMs?: number;
   signal?: AbortSignal;
   write: (text: string) => void;
+  /** Diagnostics (header, notes, retries); stderr in the CLI so --json output stays clean. Defaults to `write`. */
+  note?: (text: string) => void;
   /** NDJSON entries instead of text. */
   json?: boolean;
   now?: () => number;
@@ -58,6 +60,7 @@ export async function followTranscript(
   const deadline =
     now() +
     Math.min(options.maxDurationMs ?? FOLLOW_LIMITS.maxDurationMs, FOLLOW_LIMITS.maxDurationMs);
+  const note = options.note ?? options.write;
   const seen = new Map<string, string>();
   let errors = 0;
   let first = true;
@@ -72,22 +75,22 @@ export async function followTranscript(
       const message = (error as Error).message ?? String(error);
       if (errors >= FOLLOW_LIMITS.maxConsecutiveErrors)
         return { end: "errors", detail: `${errors} consecutive failures; last: ${message}` };
-      options.write(`(peek failed: ${message}; retrying)`);
+      note(`(peek failed: ${message}; retrying)`);
     }
     if (t) {
       if (first) {
         if (!options.json) {
-          options.write(
+          note(
             `${t.taskId} [${t.taskState}] ${t.harness}: following ${t.source ?? "nothing"} (untrusted worker output; Ctrl-C to stop)`,
           );
-          for (const note of t.notes) options.write(`note: ${note}`);
+          for (const n of t.notes) note(`note: ${n}`);
         }
         first = false;
       }
       if (!t.available) return { end: "unavailable", detail: t.notes.join(" ") };
       const fresh = t.entries.filter((e) => seen.get(e.id) !== signature(e));
       if (seen.size > 0 && t.entries.length > 0 && !seen.has(t.entries[0]!.id) && t.before)
-        options.write("(more entries arrived than one poll returns; some may have been skipped)");
+        note("(more entries arrived than one poll returns; some may have been skipped)");
       for (const entry of fresh) {
         seen.set(entry.id, signature(entry));
         options.write(options.json ? JSON.stringify(entry) : renderEntry(entry));

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -14,6 +14,7 @@ import {
   formatDiffStat,
   formatLandPlan,
   formatSpill,
+  plainText,
   renderTranscript,
   resolveOcdPaths,
   type Attention,
@@ -35,8 +36,8 @@ import {
 } from "@ocd/supervisor";
 
 import { describeGh } from "./github.ts";
-import { insideWorktree } from "./guard.ts";
-import { buildAdapters, buildManagerChannel, probeHarnesses } from "./harnesses.ts";
+import { insideWorktree, serviceHomeProblem } from "./guard.ts";
+import { buildAdapters, buildManagerChannel, doctorProblems, probeHarnesses } from "./harnesses.ts";
 import {
   FallbackNotifier,
   currentPlatform,
@@ -56,9 +57,11 @@ const HELP = `ocd — local agent control plane
 
 Supervisor
   ocd daemon                        Run the supervisor in the foreground
-  ocd service install|status|uninstall
+  ocd service install [--force]|status|uninstall
                                     Run the supervisor in the background and at login
-                                    (LaunchAgent on macOS, systemd user unit on Linux)
+                                    (LaunchAgent on macOS, systemd user unit on Linux). install and uninstall
+                                    (like restart) work only from the service's own home, never a worker sandbox;
+                                    reinstalling a running service refuses while Claude Code / Codex workers run unless --force
   ocd stop                          Stop the supervisor and report worker outcomes
   ocd restart [--force]             Restart the background service (picks up a new build); refuses while
                                     Claude Code / Codex workers are running unless --force
@@ -81,6 +84,7 @@ Tasks
   ocd spill                         Read-only summary of all open work: running, blocked, manual, stuck,
                                     queued and ready for review (/spill in the manager's TUI)
   ocd dispatch <repo> <title> --instructions TEXT [--profile P] [--criteria TEXT]... [--key KEY]
+                                    (quote a multi-word title; extra words are rejected)
   ocd task list [--all] [--repo R]
   ocd task show <id>
   ocd task peek <id> [--limit N] [--before CURSOR] [--reasoning-summaries] [--follow [--interval SECONDS]]
@@ -111,7 +115,8 @@ Tasks
                                     Review feedback: the worker gets it as a follow-up and the task comes back
                                     for review; recorded as a numbered review round
   ocd task cleanup <id> [--force]   Remove a finished task's worktree and branch (refuses to lose work; work that
-                                    is already in the base branch, e.g. squash-merged, counts as landed)
+                                    is already in the base branch, e.g. squash-merged, counts as landed);
+                                    --force loses work and asks first, like discard
   ocd task discard <id> [--reason TEXT]
                                     Cancel if needed and delete the worktree and branch, losing their work (asks first)
 
@@ -131,8 +136,11 @@ Maintenance
   ocd outbox [--status pending|delivered|dead]
 
 Global flags: --json  (machine-readable output)
-Environment: OCD_HOME (default ~/.ocd), OCD_SOCKET
+Environment: OCD_HOME (default ~/.ocd), OCD_SOCKET, OCD_CONFIG (default $OCD_HOME/ocd.jsonc)
 `;
+
+/** How long `task land --wait` polls before giving up. */
+const LAND_WAIT_LIMIT_MS = 60 * 60_000;
 
 const paths = resolveOcdPaths();
 const client = new OcdClient({ socketPath: paths.socket, actor: "human" });
@@ -183,27 +191,83 @@ function taskLine(t: Task): string {
       : sync?.state === "behind"
         ? `  [${sync.behind} behind ${sync.baseRef}]`
         : "";
-  return `${t.id}  ${t.state.padEnd(16)} ${t.repo.padEnd(14)} ${t.harness.padEnd(8)} ${t.title}${drift}`;
+  return `${t.id}  ${t.state.padEnd(16)} ${t.repo.padEnd(14)} ${t.harness.padEnd(8)} ${plainText(t.title)}${drift}`;
 }
 
 function attentionLine(a: Attention): string {
   const target = a.taskId ? ` ${a.taskId}` : "";
-  return `${a.id}  ${a.status.padEnd(8)} ${a.kind.padEnd(16)}${target}  [${a.resolvableBy}] ${a.reason}`;
+  return `${a.id}  ${a.status.padEnd(8)} ${a.kind.padEnd(16)}${target}  [${a.resolvableBy}] ${plainText(a.reason)}`;
 }
 
 async function confirmInteractive(prompt: string): Promise<boolean> {
   // Approvals need a person at a terminal, not a script or an agent's shell tool.
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Prompts and plans go to stderr so --json output on stdout stays clean.
+  if (!process.stdin.isTTY || !process.stderr.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     return (await rl.question(`${prompt} Type "approve" to confirm: `)).trim() === "approve";
+  } catch {
+    // Ctrl-C / Ctrl-D at the prompt (AbortError): not confirmed.
+    return false;
   } finally {
     rl.close();
   }
 }
 
+/**
+ * The background service is global (one LaunchAgent label / systemd unit), so
+ * it is only managed from its own home, never from a worker's sandbox.
+ */
+function guardServiceHome(definitionPath: string): void {
+  let definition: string | null = null;
+  try {
+    definition = readFileSync(definitionPath, "utf8");
+  } catch {
+    // not installed yet
+  }
+  const problem = serviceHomeProblem({ defaultHome: resolveOcdPaths({}).home, definition });
+  if (problem) fail(problem);
+}
+
+/**
+ * Supervisor-owned processes (Claude Code, Codex) are interrupted by a service
+ * restart; OpenCode workers live in the OpenCode service and are reattached.
+ */
+async function interruptedWorkers(running: boolean): Promise<Task[]> {
+  if (!running) return [];
+  return (await client.listTasks({ open: true, limit: 200 })).filter(
+    (t) =>
+      t.harness !== "opencode" &&
+      (t.state === "starting" || t.state === "running" || t.state === "blocked"),
+  );
+}
+
+function refuseInterrupting(interrupted: Task[], what: string): void {
+  fail(
+    [
+      `${what} would interrupt these workers (their sessions are kept for \`ocd task resume\`):`,
+      ...interrupted.map((t) => `  ${t.id} ${t.harness} ${t.state} ${shown(t.title)}`),
+      "wait for them, or pass --force",
+    ].join("\n"),
+  );
+}
+
+/** Worker-controlled text on a confirmation screen: no escape sequences or control characters. */
+const shown = (text: string) => plainText(text);
+
 async function main(argv: string[]): Promise<void> {
-  const { values: flags, positionals } = parseArgs({
+  let parsed: ReturnType<typeof parseCli>;
+  try {
+    parsed = parseCli(argv);
+  } catch (error) {
+    fail(`${(error as Error).message}\nRun \`ocd --help\` for usage.`);
+  }
+  const { values: flags, positionals } = parsed;
+  return run(flags, positionals);
+}
+
+function parseCli(argv: string[]) {
+  return parseArgs({
     args: argv,
     allowPositionals: true,
     options: {
@@ -244,6 +308,12 @@ async function main(argv: string[]): Promise<void> {
       interval: { type: "string" },
     },
   });
+}
+
+async function run(
+  flags: ReturnType<typeof parseCli>["values"],
+  positionals: string[],
+): Promise<void> {
   const json = flags.json ?? false;
   const [command, sub, ...rest] = positionals;
   if (!command || flags.help) {
@@ -323,6 +393,9 @@ async function main(argv: string[]): Promise<void> {
       const service = platform.service;
       if (!service)
         fail(`no background service manager for ${process.platform}; run \`ocd daemon\` instead`);
+      if (sub === "install" || sub === "uninstall") {
+        guardServiceHome((await service.status()).definition);
+      }
       if (sub === "install") {
         const status = await client.status().catch(() => null);
         const current = await service.status();
@@ -331,6 +404,10 @@ async function main(argv: string[]): Promise<void> {
             `a supervisor is already running (pid ${status.pid}); stop it with \`ocd stop\` first`,
           );
         }
+        // Replacing a loaded definition restarts the supervisor, like `ocd restart`.
+        const interrupted = current.loaded ? await interruptedWorkers(status !== null) : [];
+        if (interrupted.length && !flags.force)
+          refuseInterrupting(interrupted, "reinstalling the service");
         const { definition } = await service.install({
           nodePath: process.execPath,
           cliPath: cliPath(),
@@ -386,6 +463,7 @@ async function main(argv: string[]): Promise<void> {
     }
     case "restart": {
       const service = platform.service;
+      if (service) guardServiceHome((await service.status()).definition);
       const before = await client.status().catch(() => null);
       const current = service ? await service.status() : null;
       if (!service || !current?.loaded) {
@@ -395,24 +473,8 @@ async function main(argv: string[]): Promise<void> {
             : "no background service installed; run `ocd daemon` or `ocd service install`",
         );
       }
-      // Supervisor-owned processes (Claude Code, Codex) are interrupted by a
-      // restart; OpenCode workers live in the OpenCode service and are reattached.
-      const interrupted = before
-        ? (await client.listTasks({ open: true, limit: 200 })).filter(
-            (t) =>
-              t.harness !== "opencode" &&
-              (t.state === "starting" || t.state === "running" || t.state === "blocked"),
-          )
-        : [];
-      if (interrupted.length && !flags.force) {
-        fail(
-          [
-            "a restart would interrupt these workers (their sessions are kept for `ocd task resume`):",
-            ...interrupted.map((t) => `  ${t.id} ${t.harness} ${t.state} ${t.title}`),
-            "wait for them, or pass --force",
-          ].join("\n"),
-        );
-      }
+      const interrupted = await interruptedWorkers(before !== null);
+      if (interrupted.length && !flags.force) refuseInterrupting(interrupted, "a restart");
       await service.restart();
       // Wait for the new instance to answer on the socket.
       const deadline = Date.now() + 30_000;
@@ -570,6 +632,17 @@ async function main(argv: string[]): Promise<void> {
           ...hints,
         ].join("\n");
       });
+      const problems = doctorProblems({
+        configError,
+        git,
+        harnesses,
+        github: { enabled: config.github.enabled, available: gh?.available ?? null },
+        tmux: { enabled: config.tmux.enabled, path: tmux },
+      });
+      if (problems.length) {
+        console.error(`ocd doctor: ${problems.join("; ")}`);
+        process.exitCode = 1;
+      }
       return;
     }
     case "repo": {
@@ -647,6 +720,10 @@ async function main(argv: string[]): Promise<void> {
       const [repo, title] = [sub, rest[0]];
       if (!repo || !title || !flags.instructions)
         fail("usage: ocd dispatch <repo> <title> --instructions TEXT");
+      if (rest.length > 1)
+        fail(
+          `unexpected extra words after the title: ${rest.slice(1).join(" ")}\nQuote a multi-word title: ocd dispatch ${repo} "${rest.join(" ")}" --instructions …`,
+        );
       const r = await client.dispatch({
         repo,
         title,
@@ -717,11 +794,18 @@ async function main(argv: string[]): Promise<void> {
           const stop = new AbortController();
           process.once("SIGINT", () => stop.abort());
           const r = await followTranscript(
-            () => client.peekTask(id, { limit: 50, reasoningSummaries }),
-            { intervalMs: interval, signal: stop.signal, json, write: (line) => console.log(line) },
+            () => client.peekTask(id, { limit: limit ?? 50, reasoningSummaries }),
+            {
+              intervalMs: interval,
+              signal: stop.signal,
+              json,
+              write: (line) => console.log(line),
+              // Headers, notes and retries are not entries: keep stdout clean for --json.
+              note: (line) => console.error(line),
+            },
           );
           if (r.end === "errors" || r.end === "unavailable") fail(`stopped following: ${r.detail}`);
-          if (!json) console.log(`(stopped following: ${r.detail})`);
+          if (!json) console.error(`(stopped following: ${r.detail})`);
           return;
         }
         const t = await client.peekTask(id, {
@@ -769,24 +853,41 @@ async function main(argv: string[]): Promise<void> {
         const t = await client.requestChanges(id, feedback);
         print(t, json, () => `sent the feedback to ${id}; it is ${t.state} again`);
       } else if (sub === "land") {
+        const ignored = (names: readonly (keyof typeof flags)[]) => {
+          const given = names.filter((n) => flags[n] !== undefined);
+          if (given.length)
+            fail(
+              `${given.map((n) => `--${n}`).join(", ")} ${given.length === 1 ? "does" : "do"} not apply to \`ocd task land\`${flags.direct ? " --direct" : ""}`,
+            );
+        };
         if (flags.direct) {
+          ignored(["commit", "wait", "base", "method", "draft"]);
           const plan = await client.landPlan(id);
           if (plan.blocker) fail(`${plan.blocker.message} (${plan.blocker.code})`);
-          console.log(formatLandPlan(plan));
+          console.error(formatLandPlan(plan));
           if (!(await confirmInteractive("Push it?")))
             fail("not pushed (confirming needs an interactive terminal)");
           const r = await client.landTask(id, { direct: true, confirm: plan.head });
           print(r, json, () => describeLandResult(r));
           return;
         }
-        let r = await client.landTask(id, { commit: flags.commit ?? false });
+        ignored(["base", "method", "draft"]);
+        const commit = flags.commit ?? false;
+        let r = await client.landTask(id, { commit });
         if (!json) console.log(describeLandResult(r));
         // Only states that resolve on their own are worth waiting for.
         const waitable = new Set(["pr_checks_pending", "pr_not_ready", "merge_queued"]);
+        const waitUntil = Date.now() + LAND_WAIT_LIMIT_MS;
         while (flags.wait && r.waiting && waitable.has(r.waiting.code)) {
+          if (Date.now() >= waitUntil) {
+            console.error(
+              `ocd: stopped waiting after ${LAND_WAIT_LIMIT_MS / 60_000} minutes; run \`ocd task land ${id} --wait\` again to continue`,
+            );
+            break;
+          }
           await new Promise((resolve) => setTimeout(resolve, 30_000));
           const before = r.waiting.message;
-          r = await client.landTask(id);
+          r = await client.landTask(id, { commit });
           if (!json && (r.landed || r.waiting?.message !== before))
             console.log(describeLandResult(r));
         }
@@ -794,14 +895,23 @@ async function main(argv: string[]): Promise<void> {
         if (!r.landed) process.exitCode = 2;
       } else if (sub === "discard") {
         const t = (await client.inspectTask(id)).task;
-        console.log(
-          `Discard "${t.title}" (${t.id}, ${t.state})? ${t.state === "completed" || t.state === "cancelled" ? "Its" : "It is cancelled, then its"} worktree and branch are deleted, including uncommitted changes and commits that exist nowhere else.${t.workspacePath ? `\n  ${t.workspacePath}` : ""}`,
+        console.error(
+          `Discard "${shown(t.title)}" (${t.id}, ${t.state})? ${t.state === "completed" || t.state === "cancelled" ? "Its" : "It is cancelled, then its"} worktree and branch are deleted, including uncommitted changes and commits that exist nowhere else.${t.workspacePath ? `\n  ${shown(t.workspacePath)}` : ""}`,
         );
         if (!(await confirmInteractive("Discard it?")))
           fail("not discarded (confirming needs an interactive terminal)");
         const d = await client.discardTask(id, flags.reason);
         print(d, json, () => `discarded ${id}`);
       } else if (sub === "cleanup") {
+        if (flags.force) {
+          // --force skips the supervisor's lost-work check: as destructive as discard.
+          const d = (await client.inspectTask(id)).task;
+          console.error(
+            `Force-clean "${shown(d.title)}" (${d.id}, ${d.state})? Its worktree and branch are deleted even if that loses work: uncommitted changes and commits that exist nowhere else.${d.workspacePath ? `\n  ${shown(d.workspacePath)}` : ""}`,
+          );
+          if (!(await confirmInteractive("Force the cleanup?")))
+            fail("not cleaned up (confirming needs an interactive terminal)");
+        }
         const t = await client.cleanupTask(id, flags.force ?? false);
         print(t, json, () => `removed the worktree and branch of ${id}`);
       } else if (sub === "pr") {
@@ -854,21 +964,40 @@ async function main(argv: string[]): Promise<void> {
         if (!id) fail("usage: ocd attention resolve <id> --approve|--deny|--answer TEXT|--ack");
         let response: AttentionResponse;
         if (flags.approve) {
-          const items = await client.listAttention({ status: "open", limit: 200 });
-          const item = items.find((a) => a.id === id);
-          if (item?.kind === "permission") {
-            console.log(`Permission request from ${item.taskId}: ${item.reason}`);
-            console.log(`Operation: ${JSON.stringify(item.operation)}`);
+          // Look the item up before approving; an unknown item is never approved blind.
+          // (The API lists at most 200 per call and cannot fetch one by id.)
+          const open = await client.listAttention({ status: "open", limit: 200 });
+          let item = open.find((a) => a.id === id);
+          if (!item) {
+            const any = (await client.listAttention({ limit: 200 })).find((a) => a.id === id);
+            fail(
+              any
+                ? `${id} is ${any.status}, not open; nothing to approve`
+                : `attention item ${id} was not found among the latest ${open.length >= 200 ? "200 open" : "open"} items; refusing to approve it unseen (see \`ocd attention list --all\`)`,
+            );
+          }
+          const NO_CONFIRMATION = new Set(["decision", "review", "question", "stall", "failure"]);
+          if (item.kind === "permission") {
+            console.error(`Permission request from ${item.taskId}: ${shown(item.reason)}`);
+            console.error(`Operation: ${shown(JSON.stringify(item.operation))}`);
             if (!(await confirmInteractive("Approve this operation?")))
               fail("not approved (an interactive terminal is required)");
-          } else if (item?.kind === "land" && item.taskId) {
+          } else if (item.kind === "land") {
+            if (!item.taskId)
+              fail(`${id} is a land request without a task; refusing to approve it`);
             const plan = await client.landPlan(item.taskId);
             const asked = item.operation as LandPlan;
             if (plan.blocker) fail(`${plan.blocker.message} (${plan.blocker.code})`);
             if (plan.head !== asked.head)
               fail("the task branch moved since the manager asked; deny this and ask again");
-            console.log(`The manager asks to push directly:\n${formatLandPlan(asked)}`);
+            console.error(`The manager asks to push directly:\n${formatLandPlan(asked)}`);
             if (!(await confirmInteractive("Push it?")))
+              fail("not approved (an interactive terminal is required)");
+          } else if (!NO_CONFIRMATION.has(item.kind)) {
+            // A kind this CLI does not know how to present: show it, and confirm.
+            console.error(`${shown(item.kind)} request: ${shown(item.reason)}`);
+            console.error(`Operation: ${shown(JSON.stringify(item.operation))}`);
+            if (!(await confirmInteractive("Approve it?")))
               fail("not approved (an interactive terminal is required)");
           }
           response = { type: "approve" };

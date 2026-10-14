@@ -19,11 +19,16 @@ export function diffTotals(diff: TaskDiff): string {
 
 const STATUS: Record<TaskDiffFile["status"], string> = { added: "A", deleted: "D", modified: "M" };
 
+/** The base as people read it: a branch name, or a commit hash shortened. */
+export function baseLabel(diff: TaskDiff): string {
+  return /^[0-9a-f]{40}$/.test(diff.baseRef) ? diff.baseRef.slice(0, 7) : diff.baseRef;
+}
+
 /** A header and one line per file, like `git diff --stat`. */
 export function formatDiffStat(diff: TaskDiff): string {
   const width = Math.min(60, Math.max(0, ...diff.files.map((f) => f.path.length)));
   return [
-    `${diff.branch ?? diff.taskId} vs ${diff.baseRef} (since ${diff.mergeBase.slice(0, 7)}): ${diffTotals(diff)}`,
+    `${diff.branch ?? diff.taskId} vs ${baseLabel(diff)}${baseLabel(diff) === diff.mergeBase.slice(0, 7) ? "" : ` (since ${diff.mergeBase.slice(0, 7)})`}: ${diffTotals(diff)}`,
     ...diff.files.map(
       (f) =>
         `  ${STATUS[f.status]} ${f.path.padEnd(width)}  ${fileCounts(f)}${f.uncommitted ? "  (uncommitted)" : ""}`,

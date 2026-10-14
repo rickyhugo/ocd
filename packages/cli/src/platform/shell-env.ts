@@ -81,16 +81,31 @@ export function loginShellPath(
         stdio: ["ignore", "pipe", "ignore"],
       },
     );
-    timer = setTimeout(() => {
+    const killGroup = () => {
       try {
         if (child.pid) process.kill(-child.pid, "SIGKILL");
       } catch {
         child.kill("SIGKILL");
       }
-      done(null, `${basename(shell)} did not finish within ${Math.round(timeoutMs / 1000)}s`);
+    };
+    timer = setTimeout(() => {
+      killGroup();
+      // The PATH may have been printed even though the shell never finished.
+      const path = parseShellPath(stdout);
+      done(
+        path,
+        path ? null : `${basename(shell)} did not finish within ${Math.round(timeoutMs / 1000)}s`,
+      );
     }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
       if (stdout.length < 1_000_000) stdout += chunk.toString("utf8");
+      // Both markers are in: do not wait for 'close', which an rc-started
+      // background process holding stdout open would delay until the timeout.
+      const path = parseShellPath(stdout);
+      if (path) {
+        done(path, null);
+        killGroup();
+      }
     });
     child.on("error", (error) => done(null, `${shell} could not be started: ${error.message}`));
     child.on("close", (code) => {

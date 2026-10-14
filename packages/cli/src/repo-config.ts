@@ -69,9 +69,10 @@ export function addRepo(
   }
   const { text, json } = readConfig(configPath);
   const repos = (json["repos"] ?? {}) as Record<string, unknown>;
-  if (repos[name]) throw new Error(`repo "${name}" is already declared in ${configPath}`);
+  if (Object.hasOwn(repos, name))
+    throw new Error(`repo "${name}" is already declared in ${configPath}`);
   const profiles = (json["profiles"] ?? {}) as Record<string, unknown>;
-  if (profile && !profiles[profile])
+  if (profile && !Object.hasOwn(profiles, profile))
     throw new Error(
       `no profile "${profile}" in ${configPath} (have: ${Object.keys(profiles).join(", ") || "none"})`,
     );
@@ -101,7 +102,7 @@ function insertEntry(text: string, name: string, entry: Record<string, string>):
 
 export function removeRepo(configPath: string, name: string): void {
   const { text, json } = readConfig(configPath);
-  if (!((json["repos"] ?? {}) as Record<string, unknown>)[name])
+  if (!Object.hasOwn((json["repos"] ?? {}) as Record<string, unknown>, name))
     throw new Error(`no repo "${name}" in ${configPath}`);
   // No formatting options: only the entry (and its comma) is removed.
   writeConfig(configPath, applyEdits(text, modify(text, ["repos", name], undefined, {})));

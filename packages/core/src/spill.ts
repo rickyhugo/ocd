@@ -65,6 +65,7 @@ const BLOCKING: ReadonlySet<AttentionKind> = new Set([
   "question",
   "decision",
   "ambiguous_launch",
+  "land",
 ]);
 
 const ATTENTION_LABEL: Record<AttentionKind, string> = {
@@ -98,6 +99,11 @@ const MILESTONES: Record<string, string> = {
   "task.taken_over": "taken over",
   "task.given_back": "handed back",
   "pull_request.opened": "pull request opened",
+  "pull_request.failed": "pull request failed",
+  "review.changes_requested": "changes requested",
+  "land.requested": "push confirmation requested",
+  "land.failed": "landing failed",
+  "task.landed": "landed",
 };
 
 /** "<1m", "4m", "2h", "3d". */

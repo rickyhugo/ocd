@@ -81,6 +81,24 @@ describe("notifications and the outbox (AT9)", () => {
     expect((await h.human.status()).outbox.dead).toBe(1);
   });
 
+  it("redacts secrets from delivery errors before storing or surfacing them", async () => {
+    h = await startHarness();
+    const store = h.daemon.store;
+    store.enqueue([{ kind: "notify", dedupeKey: "secret-err", payload: {} } as never]);
+    const [entry] = store.listOutbox();
+    store.markDeliveryFailed(
+      [entry!.id],
+      "POST https://user:pw12345@hooks.example.com failed, token=abcd1234efgh",
+      1,
+      10,
+    );
+    const [after] = store.listOutbox("dead");
+    expect(after?.lastError).not.toMatch(/pw12345|abcd1234efgh/);
+    const reasons = (await h.human.listAttention({ status: "open" })).map((a) => a.reason).join();
+    expect(reasons).toContain("Could not deliver");
+    expect(reasons).not.toMatch(/pw12345|abcd1234efgh/);
+  });
+
   it("deduplicates repeated harness events", async () => {
     h = await startHarness();
     await setupRepo(h, "app");

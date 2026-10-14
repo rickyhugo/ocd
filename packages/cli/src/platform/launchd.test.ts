@@ -71,15 +71,53 @@ describe("LaunchAgent lifecycle", () => {
     expect(readFileSync(plist, "utf8")).toContain("--background");
   });
 
-  it("restarts by kickstarting with -k, and reports failures", async () => {
-    const { exec, calls } = fakeExec();
-    await new LaunchdService({ exec, plist: join(temp(), "x.plist") }).restart();
-    expect(calls).toEqual([
-      ["/bin/launchctl", "kickstart", "-k", `gui/${process.getuid!()}/${LAUNCH_AGENT_LABEL}`],
-    ]);
-    const failing = fakeExec({ kickstart: { code: 113, stderr: "Could not find service" } });
+  it("restarts with SIGTERM, waits for the exit, then kickstarts without -k", async () => {
+    const target = `gui/${process.getuid!()}/${LAUNCH_AGENT_LABEL}`;
+    const calls: string[][] = [];
+    let prints = 0;
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (args[0] === "print") {
+        prints += 1;
+        return {
+          code: 0,
+          stdout: prints < 3 ? "\tpid = 123\n" : "\tstate = not running\n",
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    await new LaunchdService({
+      exec,
+      plist: join(temp(), "x.plist"),
+      sleep: async () => {},
+    }).restart();
+    expect(calls[0]).toEqual(["/bin/launchctl", "kill", "SIGTERM", target]);
+    expect(calls.at(-1)).toEqual(["/bin/launchctl", "kickstart", target]);
+    expect(calls.flat()).not.toContain("-k");
+    expect(prints).toBe(3);
+  });
+
+  it("does not SIGKILL a supervisor that will not exit, and reports a missing service", async () => {
+    const stuck: Exec = async (_c, args) => ({
+      code: 0,
+      stdout: args[0] === "print" ? "\tpid = 123\n" : "",
+      stderr: "",
+    });
     await expect(
-      new LaunchdService({ exec: failing.exec, plist: join(temp(), "x.plist") }).restart(),
+      new LaunchdService({
+        exec: stuck,
+        plist: join(temp(), "x.plist"),
+        stopTimeoutMs: 0,
+        sleep: async () => {},
+      }).restart(),
+    ).rejects.toThrow(/did not exit/);
+    const missing = fakeExec({
+      kill: { code: 113, stderr: "Could not find service" },
+      print: { code: 113, stderr: "Could not find service" },
+    });
+    await expect(
+      new LaunchdService({ exec: missing.exec, plist: join(temp(), "x.plist") }).restart(),
     ).rejects.toThrow(/Could not find service/);
   });
 

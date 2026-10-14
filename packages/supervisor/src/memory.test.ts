@@ -129,6 +129,40 @@ describe("memory", () => {
     await expect(h.human.forget(fixed.id)).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("keeps confirmed memory human-only to forget or supersede", async () => {
+    h = await startHarness();
+    const mgr = h.manager("mgr");
+    const confirmed = await mgr.remember({ scope: "global", content: "Use tabs", source: "human" });
+    expect(confirmed.status).toBe("confirmed");
+    await expect(mgr.forget(confirmed.id)).rejects.toMatchObject({ code: "human_only" });
+    await expect(
+      mgr.remember({
+        scope: "global",
+        content: "Use spaces",
+        source: "manager",
+        supersedes: confirmed.id,
+      }),
+    ).rejects.toMatchObject({ code: "human_only" });
+    expect((await h.human.listMemories({})).map((m) => [m.id, m.status])).toEqual([
+      [confirmed.id, "confirmed"],
+    ]);
+
+    // The manager may still retire and delete its own proposals.
+    const proposal = await mgr.remember({
+      scope: "global",
+      content: "Lint first",
+      source: "manager",
+    });
+    const better = await mgr.remember({
+      scope: "global",
+      content: "Lint and test first",
+      source: "manager",
+      supersedes: proposal.id,
+    });
+    expect(await mgr.forget(better.id)).toEqual({ deleted: true });
+    await h.human.forget(confirmed.id);
+  });
+
   it("builds FTS queries from free text safely", () => {
     expect(toFtsQuery('tabs "OR" NEAR(x)')).toBe('"tabs" OR "OR" OR "NEAR"');
     expect(() => toFtsQuery("?!")).toThrow();

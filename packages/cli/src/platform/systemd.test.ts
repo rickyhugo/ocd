@@ -38,6 +38,17 @@ describe("systemd user unit", () => {
     expect(systemdQuote('a "b" 100% $HOME \\')).toBe('"a \\"b\\" 100%% $$HOME \\\\"');
   });
 
+  it("keeps $ literal in Environment= and escapes % in log paths", () => {
+    expect(systemdQuote("A=$x", { expandVariables: false })).toBe('"A=$x"');
+    const unit = renderUnit({
+      ...spec,
+      logsDir: "/home/me/100%/logs",
+      env: { OCD_HOME: "/h/$dir", OCD_CONFIG: undefined },
+    });
+    expect(unit).toContain('Environment="OCD_HOME=/h/$dir"');
+    expect(unit).toContain("StandardOutput=append:/home/me/100%%/logs/service.out.log");
+  });
+
   it("runs the pinned node and built CLI, restarting only after failures", () => {
     const unit = renderUnit(spec);
     expect(unit).toContain(

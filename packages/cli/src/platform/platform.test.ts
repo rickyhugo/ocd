@@ -125,6 +125,23 @@ describe("notifiers", () => {
     );
   });
 
+  it("reports a clickable notify-send that fails right away", async () => {
+    const dir = temp();
+    const fake = join(dir, "notify-send");
+    writeFileSync(fake, "#!/bin/sh\necho 'no notification daemon' >&2\nexit 3\n", {
+      mode: 0o755,
+    });
+    const notifier = new NotifySendNotifier({
+      binary: fake,
+      onClick: ["/usr/bin/true"],
+      supportsActions: true,
+      graceMs: 10_000, // generous: spawning is slow when the suite runs in parallel
+    });
+    await expect(notifier.notify({ title: "t", body: "b" })).rejects.toThrow(
+      /exited 3: no notification daemon/,
+    );
+  });
+
   it("older notify-send gets a plain notification", async () => {
     const { exec, calls } = recordingExec();
     const notifier = new NotifySendNotifier({

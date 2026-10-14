@@ -1,6 +1,17 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
+/** Live children, so a supervisor that exits without stop() does not orphan their groups. */
+const live = new Set<JsonLineProcess>();
+let exitHookInstalled = false;
+function installExitHook(): void {
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.on("exit", () => {
+    for (const proc of live) proc.killGroup("SIGKILL");
+  });
+}
+
 /**
  * A child process that speaks newline-delimited JSON on stdio. Used by
  * harnesses whose workers are processes owned by the supervisor (Claude Code,
@@ -20,11 +31,16 @@ export class JsonLineProcess {
       env: Record<string, string>;
       onMessage: (message: unknown) => void;
       onInvalidLine?: (line: string) => void;
+      /** An exception thrown by `onMessage`; the stream keeps being read. */
+      onError?: (error: unknown) => void;
     },
   ) {
+    // Own process group, so stop() can take down grandchildren (dev servers,
+    // watchers) too. The exit hook above keeps "workers die with the supervisor".
     this.child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
+      detached: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     const lines = createInterface({ input: this.child.stdout });
@@ -37,7 +53,18 @@ export class JsonLineProcess {
         options.onInvalidLine?.(line);
         return;
       }
-      options.onMessage(message);
+      // Valid JSON of the wrong shape (null, a number, an array) is not a message.
+      if (!message || typeof message !== "object" || Array.isArray(message)) {
+        options.onInvalidLine?.(line);
+        return;
+      }
+      // A handler bug must never become an uncaught exception in the supervisor.
+      try {
+        options.onMessage(message);
+      } catch (error) {
+        if (options.onError) options.onError(error);
+        else options.onInvalidLine?.(line);
+      }
     });
     this.child.stderr.on("data", (chunk: Buffer) => {
       this.stderrTail.push(chunk.toString("utf8"));
@@ -45,13 +72,17 @@ export class JsonLineProcess {
     });
     // EPIPE on stdin after the child exits is reported through `exited`.
     this.child.stdin.on("error", () => undefined);
+    live.add(this);
+    installExitHook();
     this.exited = new Promise((resolve) => {
       this.child.on("error", (error) => {
+        live.delete(this);
         this.stderrTail.push(String(error));
         this.exitInfo ??= { code: null, signal: null };
         resolve(this.exitInfo);
       });
       this.child.on("exit", (code, signal) => {
+        live.delete(this);
         this.exitInfo = { code, signal };
         resolve(this.exitInfo);
       });
@@ -71,7 +102,8 @@ export class JsonLineProcess {
   }
 
   send(message: unknown): void {
-    if (!this.running) throw new Error("Worker process is not running");
+    if (!this.running || this.child.stdin.writableEnded || this.child.stdin.destroyed)
+      throw new Error("Worker process is not running");
     this.child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
@@ -82,10 +114,28 @@ export class JsonLineProcess {
     const timeout = (ms: number) => new Promise((r) => setTimeout(r, ms).unref());
     if (await Promise.race([this.exited.then(() => true), timeout(graceMs).then(() => false)]))
       return;
-    this.child.kill("SIGTERM");
-    if (await Promise.race([this.exited.then(() => true), timeout(graceMs).then(() => false)]))
+    this.killGroup("SIGTERM");
+    if (await Promise.race([this.exited.then(() => true), timeout(graceMs).then(() => false)])) {
+      // The leader is gone; anything it left behind in the group goes too.
+      this.killGroup("SIGKILL");
       return;
-    this.child.kill("SIGKILL");
+    }
+    this.killGroup("SIGKILL");
     await this.exited;
+  }
+
+  /** Signals the whole process group, falling back to the direct child. */
+  killGroup(signal: NodeJS.Signals): void {
+    const pid = this.child.pid;
+    try {
+      if (pid === undefined) throw new Error("no pid");
+      process.kill(-pid, signal);
+    } catch {
+      try {
+        this.child.kill(signal);
+      } catch {
+        // already gone
+      }
+    }
   }
 }

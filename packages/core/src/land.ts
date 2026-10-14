@@ -1,3 +1,4 @@
+import { plainText } from "./redact.ts";
 import type { LandPlan, LandResult } from "./schemas.ts";
 
 // Wording shared by the CLI and the TUI for landing a task.
@@ -12,9 +13,14 @@ export function formatLandPlan(plan: LandPlan, maxCommits = 15): string {
       : plan.method === "merge"
         ? `as a merge commit (${commits})`
         : `replaying ${commits}`;
-  const shown = plan.commits.slice(-maxCommits).map((c) => `  ${c.sha.slice(0, 7)} ${c.subject}`);
+  // Worker-controlled text: no escape sequences or control characters, so
+  // nothing can hide what the human is about to approve.
+  const t = (value: string) => plainText(value);
+  const shown = plan.commits
+    .slice(-maxCommits)
+    .map((c) => `  ${t(c.sha).slice(0, 7)} ${t(c.subject)}`);
   return [
-    `Push "${plan.title}" (${plan.taskId}, repo ${plan.repo}) to ${plan.remote}/${plan.base} ${how}:`,
+    `Push "${t(plan.title)}" (${t(plan.taskId)}, repo ${t(plan.repo)}) to ${t(plan.remote)}/${t(plan.base)} ${how}:`,
     ...(n > maxCommits ? [`  … ${n - maxCommits} earlier`] : []),
     ...shown,
     `${plan.files.length} file${plan.files.length === 1 ? "" : "s"} changed. A plain push: never forced; hooks and branch protection apply.`,
@@ -23,8 +29,8 @@ export function formatLandPlan(plan: LandPlan, maxCommits = 15): string {
 
 /** One line on what `land` did and what is left. */
 export function describeLandResult(result: LandResult): string {
-  const done = result.steps.join("; ");
+  const done = result.steps.map((s) => plainText(s)).join("; ");
   if (result.landed) return done ? `landed: ${done}` : "already landed";
-  const left = result.waiting ? result.waiting.message : "not landed";
+  const left = result.waiting ? plainText(result.waiting.message) : "not landed";
   return done ? `${done}. Not landed yet: ${left}` : `Not landed yet: ${left}`;
 }

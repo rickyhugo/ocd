@@ -138,7 +138,9 @@ export function buildTools(
               ? {}
               : { open: true }),
         });
-        return tasks.length ? tasks.map(taskLine).join("\n") : "No matching tasks.";
+        return tasks.length
+          ? `${UNTRUSTED}\n\n${tasks.map(taskLine).join("\n")}`
+          : "No matching tasks.";
       },
     },
     {
@@ -293,7 +295,7 @@ export function buildTools(
         const i = z.object({ id: z.string(), stat_only: z.boolean().optional() }).parse(input);
         const d = await clientFor(ctx.sessionID, ctx.directory).taskDiff(i.id);
         const stat = formatDiffStat(d);
-        if (i.stat_only) return stat;
+        if (i.stat_only) return `${UNTRUSTED}\n\n${stat}`;
         const patch = truncate(d.patch, 60_000);
         return `${UNTRUSTED}\n\n${stat}\n\n${patch}${patch.length < d.patch.length || d.truncated ? "\n(patch truncated; look at specific files in the worktree)" : ""}`;
       },
@@ -342,7 +344,7 @@ export function buildTools(
           direct: i.direct ?? false,
           commit: i.commit ?? false,
         });
-        return describeLandResult(r);
+        return `${UNTRUSTED}\n\n${describeLandResult(r)}`;
       },
     },
     {
@@ -383,7 +385,7 @@ export function buildTools(
         {
           id: str("Attention request ID"),
           response: { type: "string", enum: ["answer", "deny", "acknowledge"] },
-          text: str("Answer text or note"),
+          text: str('Answer text or note. Required and non-empty when response is "answer".'),
         },
         ["id", "response"],
       ),
@@ -393,6 +395,10 @@ export function buildTools(
             id: z.string(),
             response: z.enum(["answer", "deny", "acknowledge"]),
             text: z.string().optional(),
+          })
+          .refine((v) => v.response !== "answer" || (v.text ?? "").trim() !== "", {
+            message: 'text is required (non-empty) when response is "answer"',
+            path: ["text"],
           })
           .parse(input);
         const response =
@@ -408,7 +414,7 @@ export function buildTools(
     {
       name: "remember",
       description:
-        "Store durable memory. Use source=human only for something the human explicitly stated (stored as confirmed); use source=inferred for your own lessons (stored as a proposal for the human to confirm). Never store secrets.",
+        "Store durable memory. Use source=human only for something the human explicitly stated (stored as confirmed); use source=inferred for your own lessons (stored as a proposal for the human to confirm). Superseding a confirmed memory is human-only; you may only supersede your own proposals. Never store secrets.",
       input: obj(
         {
           scope: { type: "string", enum: ["global", "repo", "task"] },
@@ -481,7 +487,8 @@ export function buildTools(
     },
     {
       name: "forget",
-      description: "Delete a memory entry permanently.",
+      description:
+        "Delete a memory entry permanently. Only unconfirmed (proposed) memory can be forgotten from here; confirmed memory is removed by the human with `ocd memory forget`.",
       input: obj({ id: str("Memory ID") }, ["id"]),
       run: async (input, ctx) => {
         const { id } = z.object({ id: z.string() }).parse(input);

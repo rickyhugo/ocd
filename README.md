@@ -80,8 +80,8 @@ dispatch to. Both are referred to by name.
 
 The daemon validates the file at startup and refuses typos, invalid profiles,
 and repo paths that are not git repository roots. While it runs, saved changes
-to profiles, repos and the manager directory apply immediately (other settings
-need a restart); if a save leaves the file invalid, the last good configuration
+to profiles, repos, the manager directory, `mergeMethod` and `branchSync.mode`
+apply immediately (other settings need a restart); if a save leaves the file invalid, the last good configuration
 stays in effect and one item appears in `ocd attention list` until the
 file is fixed. [`schema/ocd.schema.json`](schema/ocd.schema.json) gives editors
 completion and hover docs; it is generated from the daemon's own validation
@@ -149,7 +149,11 @@ reattached and anything uncertain shows up in `ocd attention list`.
 
 Re-run `ocd service install` after moving Node or the build; it rewrites
 the definition with the current paths. Like `ocd restart`, it restarts the
-supervisor, so wait until no Claude Code or Codex worker is running.
+supervisor (gracefully: it stops on SIGTERM, then starts again), so it refuses
+while Claude Code or Codex workers are running unless you pass `--force`. The
+service commands (`install`, `uninstall`, `restart`) only act from the home
+the service runs with: never from a worker's sandbox, and not with another
+`OCD_HOME` unless the installed service uses that home.
 
 ### Optional tools
 
@@ -166,7 +170,9 @@ these.
 ```
 
 `ocd doctor` shows each one as `off` until it is turned on, then checks it,
-and names any profile that uses a harness that is off. Dispatching to such a
+and names any profile that uses a harness that is off. It exits with status 1
+when something it checks is broken: an invalid config, no git, or a tool or
+harness that is turned on but unavailable. Dispatching to such a
 profile fails with `harness_disabled`, naming the setting.
 
 ### Finding your tools
@@ -321,8 +327,7 @@ plugin directory) adds:
   confirm the commits. The same as the row actions and `ocd task land`.
 
 - **`/task`:** reference a task when talking to the manager. `/task` opens a
-  searchable picker, then asks for your message; `/task <id or words> <message>`
-  skips the picker when it matches one task. The manager receives "Regarding OCD
+  searchable picker, then asks for your message. The manager receives "Regarding OCD
   task t_… (title, repo, state): your message". OpenCode has no plugin API for
   custom `@` mentions, so this is a slash command.
 
@@ -428,7 +433,8 @@ says why (`available: false` with notes) instead of guessing.
 1. The manager calls `ocd_dispatch_task`. The supervisor persists the task and
    returns its ID; the worker is owned by the supervisor from then on.
 2. Each task gets its own worktree under `~/.ocd/workspaces/<repo>/<task>` on
-   branch `ocd/<task>`. Workspaces are never deleted by OCD. Optionally
+   branch `ocd/<task>`. Cancelling never deletes a workspace; only landing,
+   cleanup and discard remove one, and cleanup refuses to lose work. Optionally
    (`"branchSync"`, off by default), a watchdog reports how far each task
    branch has drifted from the repo's `baseRef` and whether merging it would
    conflict, and in `refresh` mode fast-forwards or merges the base into clean,
@@ -463,8 +469,13 @@ says why (`available: false` with notes) instead of guessing.
    check, a draft, branch protection. Run it again later, or pass `--wait` to
    poll while checks run. It merges only once GitHub reports the PR open, not
    a draft, conflict-free, unblocked, and with all checks passed, and never
-   uses admin overrides. `ocd task pr` and `ocd task merge` remain as the
-   separate steps.
+   uses admin overrides, and only the commit GitHub checked is merged
+   (`--match-head-commit`). If the worktree gained commits or edits after the
+   PR was pushed, the merge still happens but the worktree and branch are kept
+   (`worktree_kept`). Every check that could refuse (no worktree, uncommitted
+   changes without `--commit`, nothing to push) runs before the task is
+   accepted, so a refusal leaves it under review. `ocd task pr` and
+   `ocd task merge` remain as the separate steps.
 7. **Landing directly** (`--direct`) shows what will be pushed (base branch,
    commits, files) and asks you to type `approve`. It then fetches the base
    branch and builds the landing commit in git's object store (your checkout
@@ -473,7 +484,8 @@ says why (`available: false` with notes) instead of guessing.
    a plain fast-forward: never `--force`, never `--no-verify`, and branch
    protection applies. If the base moved in a conflicting way or the push is
    rejected, nothing changes and the worktree is kept. It refuses uncommitted
-   changes and tasks that already have a pull request. The manager cannot push
+   changes, tasks that already have a pull request, and work that is already
+   in the base branch (`nothing_to_push`). The manager cannot push
    directly: `ocd_land_task` with `direct` puts a confirmation in your inbox
    (`ocd attention resolve <id> --approve`, or the row in the sidebar), bound
    to the exact commits it showed you. If the branch moves before you approve,
@@ -485,7 +497,10 @@ says why (`available: false` with notes) instead of guessing.
    commits that exist on no other branch or remote and whose changes are not
    in the base branch. A branch that was squash-merged on GitHub counts as
    landed, so no `--force` is needed. `--force` (or `discard`) is for throwing
-   work away.
+   work away; both ask you to type `approve` first.
+10. **Diffs** are capped: a patch over 1.5 MB is cut at a file boundary, and at
+    most 50 new untracked files are included (the rest are counted as
+    truncated).
 
 Crashes, restarts, lost event streams and sleep are reconciled conservatively:
 uncertain launches become `needs_attention` instead of being retried, and
@@ -527,7 +542,8 @@ requires typing `approve` in an interactive terminal.
 
 `ocd_remember` / `ocd memory add` store scoped (`global`, `repo`, `task`) notes
 with FTS5 search. Human statements are confirmed immediately; inferred lessons
-are proposals until `ocd memory confirm`. Workers see confirmed memory for
+are proposals until `ocd memory confirm`. The manager can forget or supersede
+only proposals; removing a confirmed memory takes `ocd memory forget`. Workers see confirmed memory for
 their own repository only; the manager briefing includes confirmed global
 preferences, open tasks, pending attention and recent decisions. Secrets are
 refused.
@@ -538,7 +554,9 @@ The database migrates itself: on startup the daemon backs up an existing
 database to `~/.ocd/backups/pre-migrate-*.db` and applies pending reviewed
 migrations in one transaction (a failure leaves the database unchanged). It
 refuses to start on a database written by a newer OCD. Automatic backups
-(`auto-*.db`) are taken daily.
+(`auto-*.db`) are taken daily. Backups are written under a temporary name and
+verified before they count, and only the five newest pre-migrate backups are
+kept.
 
 To restore a backup, stop the daemon (`ocd stop`), move `~/.ocd/ocd.db` and any
 `ocd.db-wal` / `ocd.db-shm` aside, copy the backup to `~/.ocd/ocd.db`, and start

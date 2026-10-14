@@ -68,6 +68,8 @@ export class MemoryService {
       if (input.supersedes) {
         const old = this.store.memoryRow(input.supersedes);
         if (!old) throw notFound(`Memory ${input.supersedes}`);
+        if (old.status === "confirmed" && actor !== "human")
+          throw forbidden("human_only", "Only a human can supersede confirmed memory");
         this.store.updateMemory(old.id, { status: "retired", supersededBy: memory.id });
       }
       return memory;
@@ -100,8 +102,11 @@ export class MemoryService {
     return this.store.updateMemory(id, { status: "confirmed" });
   }
 
-  forget(id: string): boolean {
-    if (!this.store.memoryRow(id)) throw notFound(`Memory ${id}`);
+  forget(id: string, actor: Actor): boolean {
+    const memory = this.store.memoryRow(id);
+    if (!memory) throw notFound(`Memory ${id}`);
+    if (memory.status === "confirmed" && actor !== "human")
+      throw forbidden("human_only", "Only a human can forget confirmed memory");
     return this.store.deleteMemory(id);
   }
 

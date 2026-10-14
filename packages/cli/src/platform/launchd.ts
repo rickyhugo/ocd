@@ -73,10 +73,22 @@ export class LaunchdService implements ServiceManager {
   readonly kind = "launchd";
   private readonly exec: Exec;
   private readonly plist: string;
+  private readonly stopTimeoutMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
-  constructor(options: { exec?: Exec; plist?: string } = {}) {
+  constructor(
+    options: {
+      exec?: Exec;
+      plist?: string;
+      /** How long a restart waits for the old instance to exit after SIGTERM. */
+      stopTimeoutMs?: number;
+      sleep?: (ms: number) => Promise<void>;
+    } = {},
+  ) {
     this.exec = options.exec ?? execCommand;
     this.plist = options.plist ?? plistPath();
+    this.stopTimeoutMs = options.stopTimeoutMs ?? 60_000;
+    this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
   private target(): string {
@@ -110,12 +122,31 @@ export class LaunchdService implements ServiceManager {
   }
 
   async restart(): Promise<void> {
-    // -k: kill the running instance first; launchd starts it again right away.
-    const result = await this.exec("/bin/launchctl", [
-      "kickstart",
-      "-k",
-      `${this.target()}/${LAUNCH_AGENT_LABEL}`,
-    ]);
+    // `kickstart -k` sends SIGKILL, which skips the supervisor's graceful
+    // shutdown. Ask for SIGTERM, wait for the exit, then start it again.
+    const service = `${this.target()}/${LAUNCH_AGENT_LABEL}`;
+    const term = await this.exec("/bin/launchctl", ["kill", "SIGTERM", service]);
+    if (term.code !== 0) {
+      // Not running (kill finds no process) is fine; a missing service is not.
+      const printed = await this.exec("/bin/launchctl", ["print", service]);
+      if (printed.code !== 0)
+        throw new Error(
+          `launchctl kickstart failed: ${printed.stderr.trim() || term.stderr.trim() || term.stdout.trim()}`,
+        );
+    } else {
+      const deadline = Date.now() + this.stopTimeoutMs;
+      for (;;) {
+        const printed = await this.exec("/bin/launchctl", ["print", service]);
+        if (printed.code !== 0 || !/^\s*pid = \d+$/m.test(printed.stdout)) break;
+        if (Date.now() >= deadline)
+          throw new Error(
+            `the supervisor did not exit within ${Math.round(this.stopTimeoutMs / 1000)}s of SIGTERM; not killing it (workers may still be shutting down)`,
+          );
+        await this.sleep(500);
+      }
+    }
+    // Without -k: start it if launchd has not already (KeepAlive does not restart a clean exit).
+    const result = await this.exec("/bin/launchctl", ["kickstart", service]);
     if (result.code !== 0)
       throw new Error(
         `launchctl kickstart failed: ${result.stderr.trim() || result.stdout.trim()}`,

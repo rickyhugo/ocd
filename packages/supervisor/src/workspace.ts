@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
@@ -83,6 +83,54 @@ export async function git(
 }
 
 /**
+ * Runs git and keeps at most `maxBytes` of stdout; once over, the process is
+ * killed and `overflow` is set, so a huge diff never lands in memory whole.
+ * `code` is git's exit status (null when killed or not started).
+ */
+export function gitCapped(
+  cwd: string,
+  args: string[],
+  maxBytes: number,
+  timeoutMs = 60_000,
+): Promise<{ stdout: Buffer; overflow: boolean; code: number | null }> {
+  return new Promise((resolve) => {
+    const child = spawn("git", args, {
+      cwd,
+      env: { ...filteredEnv(), GIT_TERMINAL_PROMPT: "0" },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let overflow = false;
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (overflow) return;
+      const room = maxBytes - size;
+      if (chunk.length > room) {
+        if (room > 0) chunks.push(chunk.subarray(0, room));
+        size = maxBytes;
+        overflow = true;
+        child.kill("SIGKILL");
+        return;
+      }
+      chunks.push(chunk);
+      size += chunk.length;
+    });
+    const done = (code: number | null) => {
+      clearTimeout(timer);
+      resolve({ stdout: Buffer.concat(chunks), overflow, code });
+    };
+    child.on("error", () => done(null));
+    child.on("close", (code) => done(code));
+  });
+}
+
+/** Splits NUL-separated git output (`-z`) into its non-empty fields. */
+function nulFields(output: string): string[] {
+  return output.split("\0").filter(Boolean);
+}
+
+/**
  * Paths from `git status --porcelain=v1 -z`. Each entry is "XY path"; renames
  * and copies are followed by the original path as a separate entry. Never trim
  * this output: the status column may start with a space.
@@ -110,6 +158,8 @@ export interface Workspace {
   branch: string;
   baseRef: string;
 }
+
+const MAX_UNTRACKED_FILES = 50;
 
 /** One managed git worktree per editing task. Never deletes anything. */
 export class WorkspaceManager {
@@ -231,11 +281,11 @@ export class WorkspaceManager {
         trim: false,
       }),
     );
-    const committed = (
-      await git(workspace.path, ["diff", "--name-only", `${workspace.baseRef}...HEAD`])
-    )
-      .split("\n")
-      .filter(Boolean);
+    const committed = nulFields(
+      await git(workspace.path, ["diff", "--name-only", "-z", `${workspace.baseRef}...HEAD`], {
+        trim: false,
+      }),
+    );
     const commitsAhead = Number(
       await git(workspace.path, ["rev-list", "--count", `${workspace.baseRef}..HEAD`]),
     );
@@ -295,18 +345,27 @@ export class WorkspaceManager {
     branch: string,
     force: boolean,
   ): Promise<void> {
-    if (workspacePath && existsSync(workspacePath)) {
-      await git(repoPath, ["worktree", "remove", ...(force ? ["--force"] : []), workspacePath]);
+    if (workspacePath) {
+      // A missing directory with a leftover admin entry is removed by path too,
+      // which leaves the user's other worktrees alone (unlike a repo-wide prune).
+      const registered =
+        existsSync(workspacePath) ||
+        (await this.worktrees(repoPath)).some((w) => w.path === workspacePath);
+      if (registered) {
+        await git(repoPath, ["worktree", "remove", ...(force ? ["--force"] : []), workspacePath]);
+      }
     }
-    await git(repoPath, ["worktree", "prune"]);
-    if (
-      (
-        await run("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
-          cwd: repoPath,
-        })
-      ).code === 0
-    ) {
-      await git(repoPath, ["branch", force ? "-D" : "-d", branch]);
+    const ref = `refs/heads/${branch}`;
+    const exists = async () =>
+      (await run("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoPath })).code === 0;
+    if (await exists()) {
+      // Callers have checked safety; `-d` would still refuse commits that only
+      // live on a remote-tracking or other branch.
+      try {
+        await git(repoPath, ["branch", "-D", branch]);
+      } catch (error) {
+        if (await exists()) throw error;
+      }
     }
   }
 
@@ -323,7 +382,7 @@ export class WorkspaceManager {
   async push(workspacePath: string, remote: string, branch: string): Promise<void> {
     const result = await run("git", ["push", "-u", remote, `${branch}:${branch}`], {
       cwd: workspacePath,
-      env: process.env as Record<string, string>,
+      env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
       timeoutMs: 120_000,
     });
     if (result.code !== 0)
@@ -334,7 +393,7 @@ export class WorkspaceManager {
   async deleteRemoteBranch(repoPath: string, remote: string, branch: string): Promise<boolean> {
     const result = await run("git", ["push", remote, "--delete", branch], {
       cwd: repoPath,
-      env: process.env as Record<string, string>,
+      env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
       timeoutMs: 120_000,
     });
     return result.code === 0;
@@ -368,42 +427,46 @@ export class WorkspaceManager {
     const mergeBase = await git(path, ["merge-base", baseRef, "HEAD"]);
     const head = await this.head(path);
     const [numstat, nameStatus, untrackedZ, dirtyZ] = await Promise.all([
-      git(path, [...opts, "diff", ...plain, "--numstat", mergeBase]),
-      git(path, [...opts, "diff", ...plain, "--name-status", mergeBase]),
+      git(path, [...opts, "diff", ...plain, "-z", "--numstat", mergeBase], { trim: false }),
+      git(path, [...opts, "diff", ...plain, "-z", "--name-status", mergeBase], { trim: false }),
       git(path, ["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }),
       git(path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { trim: false }),
     ]);
     const dirty = new Set(parsePorcelainZ(dirtyZ));
-    const status = new Map(
-      nameStatus
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const [code = "M", ...rest] = line.split("\t");
-          const kind = code.startsWith("A")
-            ? "added"
-            : code.startsWith("D")
-              ? "deleted"
-              : "modified";
-          return [rest.join("\t"), kind] as const;
-        }),
+    // `-z --name-status` alternates status and path fields (no renames here).
+    const status = new Map<string, "added" | "deleted" | "modified">();
+    const statusFields = nulFields(nameStatus);
+    for (let i = 0; i + 1 < statusFields.length; i += 2) {
+      const code = statusFields[i]!;
+      status.set(
+        statusFields[i + 1]!,
+        code.startsWith("A") ? "added" : code.startsWith("D") ? "deleted" : "modified",
+      );
+    }
+    // `-z --numstat` records are "add\tdel\tpath" separated by NUL.
+    const files = nulFields(numstat).map((record) => {
+      const [add = "-", del = "-", ...rest] = record.split("\t");
+      const file = rest.join("\t");
+      return {
+        path: file,
+        status: status.get(file) ?? ("modified" as const),
+        additions: add === "-" ? null : Number(add),
+        deletions: del === "-" ? null : Number(del),
+        uncommitted: dirty.has(file),
+      };
+    });
+    const tracked = await gitCapped(
+      path,
+      [...opts, "diff", ...plain, mergeBase],
+      maxBytes + 1,
+      120_000,
     );
-    const files = numstat
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
-        const [add = "-", del = "-", ...rest] = line.split("\t");
-        const file = rest.join("\t");
-        return {
-          path: file,
-          status: status.get(file) ?? ("modified" as const),
-          additions: add === "-" ? null : Number(add),
-          deletions: del === "-" ? null : Number(del),
-          uncommitted: dirty.has(file),
-        };
-      });
-    let patch = await git(path, [...opts, "diff", ...plain, mergeBase], { trim: false });
-    for (const file of untrackedZ.split("\0").filter(Boolean)) {
+    const parts: Buffer[] = [tracked.stdout];
+    let size = tracked.stdout.length;
+    let truncated = tracked.overflow;
+    const untracked = nulFields(untrackedZ);
+    if (untracked.length > MAX_UNTRACKED_FILES) truncated = true;
+    for (const file of untracked.slice(0, MAX_UNTRACKED_FILES)) {
       // `git diff --no-index` exits 1 when the files differ, which they always do here.
       const r = await run(
         "git",
@@ -418,18 +481,28 @@ export class WorkspaceManager {
         deletions: del === "-" ? null : Number(del),
         uncommitted: true,
       });
-      if (patch.length < maxBytes)
-        patch += (
-          await run("git", [...opts, "diff", ...plain, "--no-index", "--", "/dev/null", file], {
-            cwd: path,
-          })
-        ).stdout;
+      if (size > maxBytes) continue;
+      const diff = await gitCapped(
+        path,
+        [...opts, "diff", ...plain, "--no-index", "--", "/dev/null", file],
+        maxBytes + 1 - size,
+      );
+      parts.push(diff.stdout);
+      size += diff.stdout.length;
+      if (diff.overflow) truncated = true;
     }
     // Byte order, as git lists paths.
     files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    const truncated = patch.length > maxBytes;
-    if (truncated)
-      patch = patch.slice(0, patch.lastIndexOf("\ndiff --git ", maxBytes) + 1 || maxBytes);
+    let buf = Buffer.concat(parts);
+    if (buf.length > maxBytes) {
+      truncated = true;
+      // Prefer a file boundary, else a line boundary; both are UTF-8 safe cuts.
+      const window = buf.subarray(0, maxBytes);
+      const file = window.lastIndexOf("\ndiff --git ");
+      const line = window.lastIndexOf("\n");
+      buf = window.subarray(0, file >= 0 ? file + 1 : line >= 0 ? line + 1 : 0);
+    }
+    const patch = buf.toString("utf8");
     return { mergeBase, head, files, patch, truncated };
   }
 
@@ -440,7 +513,9 @@ export class WorkspaceManager {
 
   /** Files that differ between `from` and HEAD's changes since their merge base. */
   async filesChangedSince(path: string, from: string): Promise<string[]> {
-    return (await git(path, ["diff", "--name-only", `${from}...HEAD`])).split("\n").filter(Boolean);
+    return nulFields(
+      await git(path, ["diff", "--name-only", "-z", `${from}...HEAD`], { trim: false }),
+    );
   }
 
   /** Fetches one branch of the remote with the user's credentials; false when it fails. */
@@ -516,6 +591,8 @@ export class WorkspaceManager {
         "land_conflict",
         `The task's changes conflict with the current ${onto}; bring the branch up to date first`,
       );
+    const nothingToPush = () =>
+      new WorkspaceError("nothing_to_push", `The task's changes are already in ${onto}`);
     const commitTree = async (tree: string, parents: string[], message: string, env = {}) => {
       const result = await run(
         "git",
@@ -529,12 +606,21 @@ export class WorkspaceManager {
     if (method !== "rebase") {
       const tree = await this.mergeTree(path, onto, head);
       if (!tree) throw conflict();
+      if (tree === (await git(path, ["rev-parse", "--verify", `${onto}^{tree}`])))
+        throw nothingToPush();
       return commitTree(tree, method === "squash" ? [onto] : [onto, head], options.message);
     }
     const ontoSha = await git(path, ["rev-parse", "--verify", `${onto}^{commit}`]);
     const isAncestor =
       (await run("git", ["merge-base", "--is-ancestor", ontoSha, head], { cwd: path })).code === 0;
-    if (isAncestor) return git(path, ["rev-parse", "--verify", `${head}^{commit}`]);
+    if (isAncestor) {
+      const headSha = await git(path, ["rev-parse", "--verify", `${head}^{commit}`]);
+      const sameTree =
+        (await git(path, ["rev-parse", "--verify", `${head}^{tree}`])) ===
+        (await git(path, ["rev-parse", "--verify", `${ontoSha}^{tree}`]));
+      if (sameTree) throw nothingToPush();
+      return headSha;
+    }
     const commits = await this.commitsBetween(path, onto, head);
     if (commits.some((c) => c.merge))
       throw new WorkspaceError(
@@ -542,9 +628,11 @@ export class WorkspaceManager {
         "The task branch contains merge commits, which rebase cannot replay; use squash or merge",
       );
     let tip = ontoSha;
+    let tipTree = await git(path, ["rev-parse", "--verify", `${ontoSha}^{tree}`]);
     for (const commit of commits) {
       const tree = await this.mergeTree(path, tip, commit.sha, `${commit.sha}^`);
       if (!tree) throw conflict();
+      if (tree === tipTree) continue; // became empty: already in the target
       const [name, email, date, ...body] = (
         await git(path, ["log", "-1", "--format=%an%x00%ae%x00%aI%x00%B", commit.sha], {
           trim: false,
@@ -555,7 +643,9 @@ export class WorkspaceManager {
         GIT_AUTHOR_EMAIL: email ?? "",
         GIT_AUTHOR_DATE: date ?? "",
       });
+      tipTree = tree;
     }
+    if (tip === ontoSha) throw nothingToPush();
     return tip;
   }
 

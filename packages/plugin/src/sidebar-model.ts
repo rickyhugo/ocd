@@ -72,6 +72,7 @@ const BLOCKING = new Set<Attention["kind"]>([
   "question",
   "decision",
   "ambiguous_launch",
+  "land",
 ]);
 
 /**

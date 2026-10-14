@@ -6,7 +6,12 @@ import { resolveOcdPaths, type OcdPaths, type ShutdownReport } from "@ocd/core";
 import type { FastifyInstance } from "fastify";
 
 import { buildApi } from "./api.ts";
-import { autoBackupDue, runAutoBackup } from "./backups.ts";
+import {
+  autoBackupDue,
+  prunePreMigrateBackups,
+  runAutoBackup,
+  writeVerifiedBackup,
+} from "./backups.ts";
 import {
   ConfigError,
   ConfigWatcher,
@@ -18,7 +23,6 @@ import {
 } from "./config.ts";
 import {
   applyMigrations,
-  backupDb,
   defaultMigrationsFolder,
   migrationStatus,
   openDb,
@@ -66,6 +70,8 @@ export interface DaemonOptions {
 }
 
 const CONFIG_INVALID_KEY = "config-invalid";
+/** Pre-migration backups kept in ~/.ocd/backups. */
+const PRE_MIGRATE_KEEP = 5;
 
 /** Validates declared repository paths: `~` expanded, symlinks resolved, a git root, no duplicates. */
 export async function resolveRepos(
@@ -135,7 +141,8 @@ export async function prepareDatabase(
           paths.backups,
           `pre-migrate-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.db`,
         );
-        await backupDb(db, backup);
+        await writeVerifiedBackup(db, backup);
+        prunePreMigrateBackups(paths.backups, PRE_MIGRATE_KEEP);
         options.logger?.info({ backup }, "backed up database before migrating");
       }
       applyMigrations(db, folder);
@@ -209,12 +216,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
     // Saved changes to ocd.jsonc apply immediately. An invalid file keeps the
     // last good configuration and raises one inbox item until it is fixed.
-    const reloadConfig = async () => {
+    const reloadOnce = async () => {
       try {
         const next = loadConfig(paths.config, options.config);
         const repos = await resolveRepos(next, workspaces);
-        live.apply(next);
+        // Live config changes only once the database accepted the repositories.
         store.syncRepos(repos);
+        live.apply(next);
         // A manager session outside a changed manager directory stops receiving updates.
         const active = store.activeManager();
         if (active && active.directory !== live.managerDirectory) store.retireManager();
@@ -254,6 +262,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         if (!created && attention.reason !== reason)
           store.updateAttentionReason(attention.id, reason);
       }
+    };
+    // Reloads run one at a time, in order, each reading the file when it starts,
+    // so an older slow reload can never overwrite a newer one.
+    let reloadChain: Promise<void> = Promise.resolve();
+    const reloadConfig = (): Promise<void> => {
+      reloadChain = reloadChain.then(reloadOnce, reloadOnce);
+      return reloadChain;
     };
     let backupTimer: NodeJS.Timeout | null = null;
     const configWatcher = new ConfigWatcher(paths.config, () => void reloadConfig());

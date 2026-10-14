@@ -28,7 +28,13 @@ Profiles:
 A worker process stays alive between turns so follow-up instructions reach
 the same session. After `workerIdleMinutes` (10) idle it is stopped; the next
 instruction to that task resumes the session transparently (`--resume` /
-`thread/resume`). Accepting or cancelling a task stops its process at once.
+`thread/resume`), and one that arrives while the process is still stopping
+waits for it, then resumes. Accepting or cancelling a task stops its process
+at once.
+
+Each worker runs in its own process group. A stop that has to be forced
+(SIGTERM, then SIGKILL) signals the whole group, so tools the worker started
+(dev servers, test watchers) stop with it.
 
 ## `yolo`
 

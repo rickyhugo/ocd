@@ -116,8 +116,12 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     const session = req.headers[HEADER_SESSION];
     req.sessionId = typeof session === "string" && session ? session : null;
     const directory = req.headers[HEADER_DIRECTORY];
-    req.directory =
-      typeof directory === "string" && directory ? decodeURIComponent(directory) : null;
+    try {
+      req.directory =
+        typeof directory === "string" && directory ? decodeURIComponent(directory) : null;
+    } catch {
+      throw new ApiError(400, "bad_request", `Malformed ${HEADER_DIRECTORY} header`);
+    }
     if (req.sessionId && store.isWorkerSession(req.sessionId)) {
       // Plugins load in worker sessions too; workers never get control-plane tools.
       throw forbidden("worker_session", "Worker sessions cannot use OCD control tools");
@@ -386,7 +390,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   );
   app.delete("/v1/memories/:id", async (req) => {
     requireCaller(req);
-    return { deleted: memory.forget(IdParams.parse(req.params).id) };
+    return { deleted: memory.forget(IdParams.parse(req.params).id, req.actor) };
   });
   app.post("/v1/decisions", async (req) => {
     requireCaller(req);
