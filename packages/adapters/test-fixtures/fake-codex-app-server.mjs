@@ -1,7 +1,13 @@
 // Minimal stand-in for `codex app-server` (0.162.1 protocol subset) used by
 // adapter tests. Directives in the prompt pick behaviour: [approve-cmd],
 // [edit], [limit], [hang], [plan]. Never calls a model.
+import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+
+// FAKE_CODEX_PIDFILE: write this process's pid there. FAKE_CODEX_FAIL=<method>:
+// answer that request with an error.
+if (process.env.FAKE_CODEX_PIDFILE)
+  writeFileSync(process.env.FAKE_CODEX_PIDFILE, String(process.pid));
 
 const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
 let threadId = null;
@@ -17,6 +23,26 @@ function startTurn(text) {
   active = turn;
   notify("turn/started", { threadId, turn: { id: turn.id, status: "inProgress", items: [] } });
   if (text.includes("[hang]")) return;
+  if (text.includes("[die]")) return void setTimeout(() => process.exit(1), 50);
+  if (text.includes("[malformed]")) {
+    // Valid JSON of the wrong shape must not take the adapter down.
+    send(null);
+    send([1]);
+    send(7);
+    notify("turn/started", { threadId });
+    notify("item/started", {});
+    notify("item/completed", {});
+    notify("item/completed", { item: null });
+    notify("turn/completed", { threadId });
+    return finish(turn, `Survived.\n${report}`);
+  }
+  if (text.includes("[commentary]") || text.includes("[items-only]")) {
+    const say = (id, text) => ({ type: "agentMessage", id, text, phase: null });
+    const items = [say("m_a", "Earlier commentary"), say("m_b", `Final answer\n${report}`)];
+    if (text.includes("[commentary]"))
+      for (const item of items) notify("item/completed", { threadId, turnId: turn.id, item });
+    return complete(turn, "completed", null, items);
+  }
   if (text.includes("[params]")) return finish(turn, JSON.stringify(threadParams));
   if (text.includes("[plan]")) {
     notify("turn/plan/updated", {
@@ -194,6 +220,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   const reply = (result) => send({ id: m.id, result });
+  if (process.env.FAKE_CODEX_FAIL === m.method)
+    return send({ id: m.id, error: { code: -32000, message: `${m.method} failed` } });
   switch (m.method) {
     case "initialize":
       return reply({
