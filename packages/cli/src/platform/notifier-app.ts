@@ -6,6 +6,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -75,11 +76,14 @@ export async function ensureNotifierApp(options: {
     rmSync(tmp, { recursive: true, force: true });
     cpSync(source, tmp, { recursive: true, dereference: false, verbatimSymlinks: true });
     const plist = join(tmp, "Contents", "Info.plist");
-    cpSync(options.icns, join(tmp, "Contents", "Resources", "OCD.icns"));
+    // Named after the icon's content: macOS caches app icons, and a new file
+    // name makes a changed icon a new icon rather than a cached old one.
+    const iconName = `OCD-${stamp.slice(0, 12)}`;
+    cpSync(options.icns, join(tmp, "Contents", "Resources", `${iconName}.icns`));
     for (const command of [
       `Set :CFBundleIdentifier ${NOTIFIER_BUNDLE_ID}`,
       "Set :CFBundleName OCD",
-      "Set :CFBundleIconFile OCD",
+      `Set :CFBundleIconFile ${iconName}`,
     ]) {
       const r = await exec(PLIST_BUDDY, ["-c", command, plist]);
       if (r.code !== 0) throw new Error(`PlistBuddy ${command}: ${r.stderr || r.stdout}`);
@@ -93,6 +97,9 @@ export async function ensureNotifierApp(options: {
     if (signed.code !== 0) throw new Error(`codesign: ${signed.stderr || signed.stdout}`);
     rmSync(app, { recursive: true, force: true });
     renameSync(tmp, app);
+    // A fresh modification time tells LaunchServices the bundle changed.
+    const now = new Date();
+    utimesSync(app, now, now);
     // Let LaunchServices pick up the new icon now rather than whenever it rescans.
     await exec(LSREGISTER, ["-f", app]);
     return binary;
