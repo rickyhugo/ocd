@@ -151,13 +151,29 @@ Re-run `ocd service install` after moving Node or the build; it rewrites
 the definition with the current paths. Like `ocd restart`, it restarts the
 supervisor, so wait until no Claude Code or Codex worker is running.
 
+### Optional tools
+
+OCD needs Node, git and the harnesses your profiles use. gh and tmux are
+optional and off by default: until you turn one on in `ocd.jsonc`, OCD never
+runs it, checks for it or mentions it in warnings. Restart the supervisor
+after changing these.
+
+```jsonc
+"github": { "enabled": true }, // pull requests with gh: ocd task pr / merge
+"tmux": { "enabled": true },   // notification clicks and taken-over sessions use tmux
+```
+
+`ocd doctor` shows each one as `off` until it is turned on, then checks it.
+Claude Code, Codex and OpenCode have their own `claude.enabled`,
+`codex.enabled` and `opencode.enabled` switches (on by default).
+
 ### Finding your tools
 
 Service managers start programs with a bare PATH, not your shell's. So when it
 starts, the supervisor asks your login shell for its PATH, the way GUI editors
 do: it runs the shell once as an interactive login shell, without a terminal
-and with a 10-second limit, and runs gh, git, tmux and the harnesses with the
-result. Whatever puts tools on your PATH (Homebrew, a version manager, a
+and with a 10-second limit, and runs git, the harnesses and any optional
+tools you turned on with the result. Whatever puts tools on your PATH (Homebrew, a version manager, a
 profile script) applies, with no OCD configuration. Claude Code and Codex
 workers and notification clicks get the same PATH. Common install locations
 (`~/.local/bin`, Homebrew, Nix) are added as a fallback, and used alone when
@@ -171,6 +187,8 @@ right away; after changing your shell's PATH itself, run `ocd restart`.
 
 ### GitHub CLI (pull requests)
 
+Pull requests are off until `"github": { "enabled": true }`; until then PR
+actions fail with `pr_unavailable` and gh is never run. Once on,
 `ocd task pr` / `ocd task merge` (and the manager's PR tools) run the `gh` on
 the supervisor's PATH (see above) with your own `gh auth` login. `ocd doctor`
 shows which gh that is and whether it is logged in. At startup the supervisor
@@ -191,8 +209,9 @@ PR, OCD looks for an open PR from the task branch and reuses it.
 ### Notifications
 
 OCD notifies you when a task is ready for review or needs you. Clicking a
-notification runs `ocd focus`, which switches tmux to the pane running OpenCode
-in the manager directory and raises the terminal window. `ocd doctor` shows
+notification runs `ocd focus`, which raises the terminal window and, with
+`tmux.enabled`, first switches tmux to the pane running OpenCode in the manager
+directory. `ocd doctor` shows
 which backend is in use.
 
 The title says what happened or what is needed; the body names the task by its
@@ -226,9 +245,10 @@ Notifications). Until it has it, OCD falls back to osascript so nothing is
 lost, and it tries terminal-notifier again each time. `ocd doctor --notify`
 sends a test notification and says which path delivered it.
 
-The terminal is detected from the tmux client (Ghostty, kitty, WezTerm,
-Alacritty, iTerm2, Terminal, …); set `notifications.focusApp` to a macOS bundle
-id or Linux window class to override it. GNOME and KDE on Wayland do not let
+With `tmux.enabled`, the terminal is detected from the tmux client (Ghostty,
+kitty, WezTerm, Alacritty, iTerm2, Terminal, …); set `notifications.focusApp`
+to a macOS bundle id or Linux window class to choose it yourself (without tmux,
+a click raises nothing unless it is set). GNOME and KDE on Wayland do not let
 other programs raise windows, so there `ocd focus` only switches tmux. Under
 systemd, run `systemctl --user import-environment DISPLAY WAYLAND_DISPLAY
 SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE` (most desktops already do) so the
@@ -305,8 +325,8 @@ back to the manager.
   mode)_, or `ocd task takeover <id>`. OCD interrupts a running turn, stops a
   Claude Code / Codex worker process, expires its pending requests, moves the
   task to `manual` and tells the manager to leave it alone. The session opens
-  in a tmux window named `ocd-<id>` in the task's worktree when the TUI runs in
-  tmux (it keeps running after you close the terminal; open it again from the
+  in a tmux window named `ocd-<id>` in the task's worktree when `tmux.enabled`
+  is on and the TUI runs in tmux (it keeps running after you close the terminal; open it again from the
   sidebar), otherwise you get the command: `claude --resume <id>`,
   `codex resume <id>` or `opencode --session <id>`.
 - **While manual**: the sidebar lists it under Manual (`◆ you · 12m`); OCD does
@@ -405,7 +425,8 @@ says why (`available: false` with notes) instead of guessing.
    `ocd task accept <id>`, or tell the manager to accept it (`ocd_accept_task`).
    Nothing is merged automatically.
 6. Optionally, `ocd task pr <id> [--draft] [--commit]` (or `ocd_open_pull_request`)
-   pushes the branch and opens a GitHub pull request with `gh`; you merge it.
+   pushes the branch and opens a GitHub pull request with `gh` (with
+   `github.enabled`); you merge it.
 7. `ocd task merge <id> [--method squash|merge|rebase]` (or
    `ocd_merge_pull_request`) merges an accepted task's PR once GitHub reports it
    open, not a draft, conflict-free, unblocked, and with all checks passed; it

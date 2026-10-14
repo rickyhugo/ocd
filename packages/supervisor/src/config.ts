@@ -129,6 +129,28 @@ export const SupervisorConfig = z
       })
       .strict()
       .prefault({}),
+    github: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Open and merge pull requests with the GitHub CLI (gh, logged in with `gh auth login`): ocd task pr / merge and the manager's PR tools. Off by default; when off, gh is never run. Restart to apply.",
+          ),
+      })
+      .strict()
+      .prefault({}),
+    tmux: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Use tmux: a notification click (ocd focus) switches to the manager's tmux pane and raises its terminal, and a taken-over session opens in its own tmux window when the TUI runs in tmux. Off by default; when off, tmux is never run.",
+          ),
+      })
+      .strict()
+      .prefault({}),
     allowFakeHarness: z
       .boolean()
       .default(false)

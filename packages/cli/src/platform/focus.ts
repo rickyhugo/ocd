@@ -44,7 +44,7 @@ export function parsePanes(output: string): TmuxPane[] {
 export interface FocusOptions {
   /** Manager directory from ocd.jsonc; null when none is configured. */
   directory: string | null;
-  /** tmux binary, or null when tmux is not installed. */
+  /** tmux binary, or null when tmux is off (tmux.enabled) or not installed. */
   tmux: string | null;
   /** notifications.focusApp from ocd.jsonc; overrides tmux's client detection. */
   focusApp?: string | undefined;
@@ -99,5 +99,7 @@ export async function focusManager(options: FocusOptions): Promise<string[]> {
       (await options.activate(app)) ? `raised ${app.name}` : `could not raise ${app.name}`,
     );
   }
-  return steps.length ? steps : ["nothing to focus: no tmux and no notifications.focusApp"];
+  return steps.length
+    ? steps
+    : ["nothing to focus: turn on tmux.enabled or set notifications.focusApp in ocd.jsonc"];
 }

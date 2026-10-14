@@ -24,6 +24,7 @@ import {
   GhPullRequests,
   probeGh,
   LockHeldError,
+  SupervisorConfig,
   loadConfig,
   normalizeDirectory,
   startDaemon,
@@ -60,9 +61,9 @@ Supervisor
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
   ocd doctor [--notify]             Check harnesses, the OpenCode service, notifications, the service manager and
-                                    the tools (gh, git, tmux) on the PATH the supervisor uses (your login shell's);
+                                    the tools (git; gh and tmux when enabled) on the supervisor's PATH (your login shell's);
                                     --notify sends a test notification (click it to try \`ocd focus\`)
-  ocd focus                         Switch to the manager session (tmux pane + terminal window); what a notification click runs
+  ocd focus                         Switch to the manager session (tmux pane when tmux.enabled + terminal window); what a notification click runs
 
 Configuration (human only)
   ocd repo list                     Repositories declared in ocd.jsonc
@@ -259,7 +260,7 @@ async function main(argv: string[]): Promise<void> {
           foreground: !background,
           adapters: buildAdapters,
           managerChannel: buildManagerChannel,
-          pullRequests: () => new GhPullRequests(),
+          pullRequests: ({ config }) => (config.github.enabled ? new GhPullRequests() : undefined),
           notifier: await platform.notifier({ onClick: focusCommand() }),
         });
       } catch (error) {
@@ -345,16 +346,18 @@ async function main(argv: string[]): Promise<void> {
     case "focus": {
       let directory: string | null = null;
       let focusApp: string | undefined;
+      let tmux = false;
       try {
         const config = loadConfig(paths.config);
         directory = config.manager ? normalizeDirectory(config.manager.directory) : null;
         focusApp = config.notifications.focusApp;
+        tmux = config.tmux.enabled;
       } catch {
-        // An invalid config still lets tmux detection raise the terminal.
+        // An invalid config focuses nothing; the click must not fail loudly.
       }
       const steps = await focusManager({
         directory,
-        tmux: locateBinary("tmux"),
+        tmux: tmux ? locateBinary("tmux") : null,
         focusApp,
         exec: execCommand,
         activate: (app) => platform.activate(app),
@@ -469,11 +472,20 @@ async function main(argv: string[]): Promise<void> {
         platform.service ? servicePath(process.execPath) : process.env["PATH"],
       );
       process.env["PATH"] = tools.path;
-      const harnesses = await probeHarnesses();
-      const gh = await probeGh({ timeoutMs: 10_000 });
+      // Optional tools are checked only when ocd.jsonc turns them on.
+      let configError: string | null = null;
+      let config: SupervisorConfig;
+      try {
+        config = loadConfig(paths.config);
+      } catch (error) {
+        configError = error instanceof Error ? error.message : String(error);
+        config = SupervisorConfig.parse({});
+      }
+      const harnesses = await probeHarnesses(config);
+      const gh = config.github.enabled ? await probeGh({ timeoutMs: 10_000 }) : null;
       const git = locateBinary("git");
       const notifier = await platform.notifier({ onClick: focusCommand() });
-      const tmux = locateBinary("tmux");
+      const tmux = config.tmux.enabled ? locateBinary("tmux") : null;
       let delivery: string | null = null;
       if (flags.notify) {
         try {
@@ -490,6 +502,7 @@ async function main(argv: string[]): Promise<void> {
         }
       }
       const report = {
+        config: { path: paths.config, error: configError },
         harnesses,
         github: gh,
         path: { value: tools.path, shell: tools.login.shell, error: tools.login.error },
@@ -511,16 +524,22 @@ async function main(argv: string[]): Promise<void> {
           hints.push(
             "  libnotify 0.7.9+ (notify-send --action) makes notifications open the manager session",
           );
+        const off = (key: string) => `off (turn on with ${key}.enabled in ocd.jsonc)`;
+        const harnessOff = (["opencode", "claude", "codex"] as const)
+          .filter((h) => !config[h].enabled)
+          .map((h) => `${h.padEnd(9)} ${off(h)}`);
         return [
+          ...(configError ? [`${"config".padEnd(9)} INVALID ${configError}`] : []),
           ...harnesses.map(
             (r) =>
               `${r.harness.padEnd(9)} ${r.available ? "ok" : "--"} ${r.version ?? ""} ${r.problems.join("; ")}`,
           ),
+          ...harnessOff,
           `${"notify".padEnd(9)} ${notifier.backend}${notifier.clickable ? ", click opens the manager" : ", not clickable"}`,
           ...(delivery ? [`${"".padEnd(9)} test notification ${delivery}`] : []),
-          `${"tmux".padEnd(9)} ${tmux ?? "not found (ocd focus can only raise the terminal)"}`,
+          `${"tmux".padEnd(9)} ${config.tmux.enabled ? (tmux ?? "not found on PATH") : off("tmux")}`,
           `${"service".padEnd(9)} ${platform.service?.kind ?? "none"} (${platform.name})`,
-          `${"gh".padEnd(9)} ${describeGh(gh)}`,
+          `${"gh".padEnd(9)} ${gh ? describeGh(gh) : off("github")}`,
           `${"git".padEnd(9)} ${git ?? "not found (worktrees need git)"}`,
           `${"PATH".padEnd(9)} ${tools.login.error ? `login shell not readable (${tools.login.error}); common install locations only` : `from your login shell (${tools.login.shell})`}`,
           ...hints,

@@ -228,7 +228,7 @@ export function buildTools(
     {
       name: "open_pull_request",
       description:
-        "Optional: push a task's branch and open a pull request for human review. Only when the human asks for a PR. Never merges. Use commit=true if the worker left uncommitted changes. gh_* errors (gh_not_found, gh_invalid_path, gh_auth_required, gh_unreachable) carry the fix for the human; after it, retrying is safe because an open PR for the branch is reused, never duplicated.",
+        "Optional: push a task's branch and open a pull request for human review. Only when the human asks for a PR. Never merges. Use commit=true if the worker left uncommitted changes. pr_unavailable means the human has not turned on pull requests (github.enabled in ocd.jsonc); tell them, do not retry. gh_* errors (gh_not_found, gh_auth_required, gh_unreachable) carry the fix for the human; after it, retrying is safe because an open PR for the branch is reused, never duplicated.",
       input: obj(
         {
           id: str("Task ID"),

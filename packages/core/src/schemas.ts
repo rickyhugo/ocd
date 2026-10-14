@@ -327,6 +327,8 @@ export interface TakeOverResult {
   cwd: string;
   /** The worker sandbox environment: the session stays isolated from the live OCD. */
   env: Record<string, string>;
+  /** tmux.enabled in ocd.jsonc: the TUI may open the session in a tmux window. */
+  tmux: boolean;
 }
 
 export const ResumeTaskInput = z.object({
@@ -504,8 +506,8 @@ export interface AdapterStatus {
 }
 
 /**
- * Why the GitHub CLI cannot be used: not_found (not on PATH), invalid_path
- * (gh.binary is wrong), auth_missing / auth_invalid (log in again),
+ * Why the GitHub CLI cannot be used: not_found (not on PATH),
+ * auth_missing / auth_invalid (log in again),
  * unreachable (network or timeout; the login may be fine), failed (other).
  */
 export type GitHubCliProblem =

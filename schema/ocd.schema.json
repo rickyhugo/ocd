@@ -146,6 +146,30 @@
       },
       "additionalProperties": false
     },
+    "github": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Open and merge pull requests with the GitHub CLI (gh, logged in with `gh auth login`): ocd task pr / merge and the manager's PR tools. Off by default; when off, gh is never run. Restart to apply.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "tmux": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Use tmux: a notification click (ocd focus) switches to the manager's tmux pane and raises its terminal, and a taken-over session opens in its own tmux window when the TUI runs in tmux. Off by default; when off, tmux is never run.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "allowFakeHarness": {
       "default": false,
       "description": "Allow profiles that use the fake harness (tests and dry runs).",
