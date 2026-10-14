@@ -23,6 +23,8 @@ export interface PullRequestStatus {
   mergeState: string;
   failingChecks: string[];
   pendingChecks: string[];
+  /** The PR's head commit as GitHub sees it (headRefOid), when known. */
+  headSha?: string | undefined;
 }
 
 /**
@@ -33,7 +35,8 @@ export interface PullRequestHost {
   /** existing: an open PR for the branch was found and reused instead of creating one. */
   create(input: PullRequestInput): Promise<{ url: string; existing?: boolean }>;
   status(url: string, cwd: string): Promise<PullRequestStatus>;
-  merge(url: string, cwd: string, method: MergeMethod): Promise<void>;
+  /** With matchHead, GitHub refuses the merge if the PR head moved since it was checked. */
+  merge(url: string, cwd: string, method: MergeMethod, matchHead?: string): Promise<void>;
   /** Read-only, bounded availability and login check, run at startup. Never throws. */
   probe?(): Promise<GitHubCliStatus>;
 }
@@ -147,7 +150,13 @@ export class GhPullRequests implements PullRequestHost {
   async status(url: string, cwd: string): Promise<PullRequestStatus> {
     const raw = JSON.parse(
       await this.gh(
-        ["pr", "view", url, "--json", "state,isDraft,mergeable,mergeStateStatus,statusCheckRollup"],
+        [
+          "pr",
+          "view",
+          url,
+          "--json",
+          "state,isDraft,mergeable,mergeStateStatus,statusCheckRollup,headRefOid",
+        ],
         cwd,
       ),
     ) as {
@@ -156,6 +165,7 @@ export class GhPullRequests implements PullRequestHost {
       mergeable: string;
       mergeStateStatus: string;
       statusCheckRollup: CheckEntry[] | null;
+      headRefOid?: string | null;
     };
     const { failing, pending } = classifyChecks(raw.statusCheckRollup ?? []);
     return {
@@ -170,19 +180,24 @@ export class GhPullRequests implements PullRequestHost {
       mergeState: raw.mergeStateStatus,
       failingChecks: failing,
       pendingChecks: pending,
+      ...(raw.headRefOid ? { headSha: raw.headRefOid } : {}),
     };
   }
 
-  async merge(url: string, cwd: string, method: MergeMethod): Promise<void> {
+  async merge(url: string, cwd: string, method: MergeMethod, matchHead?: string): Promise<void> {
     // No --admin (never bypass protection) and no --delete-branch (OCD removes
     // the worktree and branches itself once GitHub reports the merge).
-    await this.gh(["pr", "merge", url, `--${method}`], cwd);
+    // --match-head-commit binds the merge to the head that was checked.
+    await this.gh(
+      ["pr", "merge", url, `--${method}`, ...(matchHead ? ["--match-head-commit", matchHead] : [])],
+      cwd,
+    );
   }
 }
 
 export class RecordingPullRequests implements PullRequestHost {
   readonly created: PullRequestInput[] = [];
-  readonly merged: { url: string; method: MergeMethod }[] = [];
+  readonly merged: { url: string; method: MergeMethod; matchHead?: string | undefined }[] = [];
   /** Status to report per URL; defaults to an open, clean, green PR. */
   readonly statuses = new Map<string, Partial<PullRequestStatus>>();
   /** Open PRs on GitHub by head branch, reused by create. */
@@ -214,9 +229,9 @@ export class RecordingPullRequests implements PullRequestHost {
     };
   }
 
-  async merge(url: string, _cwd: string, method: MergeMethod): Promise<void> {
+  async merge(url: string, _cwd: string, method: MergeMethod, matchHead?: string): Promise<void> {
     if (this.failure) throw this.failure;
-    this.merged.push({ url, method });
+    this.merged.push({ url, method, ...(matchHead ? { matchHead } : {}) });
   }
 
   async probe(): Promise<GitHubCliStatus> {

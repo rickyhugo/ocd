@@ -32,6 +32,7 @@ import {
   type TaskResult,
   type TodoItem,
   type TaskTranscript,
+  type WorkerReport,
   type TranscriptEntry,
   type WorkerRun,
 } from "@ocd/core";
@@ -101,6 +102,21 @@ export interface SupervisorOptions {
 
 const INTERACTION_KINDS = ["permission", "question"] as const;
 const PEEK_TIMEOUT_MS = 10_000;
+
+/** Worker-written text is stored and published (PR bodies): redact and bound it. */
+function sanitizeReport(report: WorkerReport): WorkerReport {
+  const clean = (text: string, max: number) => truncate(redact(text), max);
+  return {
+    ...report,
+    summary: clean(report.summary, 4000),
+    tests: report.tests.map((t) => ({
+      ...t,
+      command: clean(t.command, 500),
+      ...(t.details !== undefined ? { details: clean(t.details, 2000) } : {}),
+    })),
+    unresolved: report.unresolved.map((u) => clean(u, 2000)),
+  };
+}
 /** Pull request merge refusals that `land` reports as what is left, not as failures. */
 const PR_WAITING = new Set([
   "pr_checks_pending",
@@ -956,7 +972,9 @@ export class Supervisor {
       requestRef: interaction.id,
       operation: interaction.operation,
     };
-    const dedupeKey = `${interaction.kind}:${taskId}:${interaction.id}`;
+    const baseKey = `${interaction.kind}:${taskId}:${interaction.id}`;
+    let dedupeKey = baseKey;
+    let askPrefix = interaction.kind === "permission" ? "Permission requested" : "Question";
 
     if (interaction.kind === "permission" && task.profile.permissionPolicy === "deny") {
       // The profile does not forward permissions: deny and surface the block.
@@ -1021,12 +1039,27 @@ export class Supervisor {
         { notify: false, wake: false },
       );
       if (!created) return;
-      await adapter.reply({ sessionId: task.sessionId! }, interaction.id, { type: "approve" });
-      this.store.settleAttention(attention.id, {
-        status: "resolved",
-        response: { type: "approve" },
-      });
-      return;
+      try {
+        await adapter.reply({ sessionId: task.sessionId! }, interaction.id, { type: "approve" });
+        this.store.settleAttention(attention.id, {
+          status: "resolved",
+          response: { type: "approve" },
+        });
+        return;
+      } catch (error) {
+        // The worker is still waiting: do not leave a record saying it was approved.
+        // Settle it as expired and ask the human through the normal path instead.
+        const message = truncate(redact(String(error)), 300);
+        this.store.tx(() => {
+          this.store.settleAttention(attention.id, { status: "expired" });
+          this.store.appendEvent(taskId, "permission.auto_approve_failed", {
+            id: interaction.id,
+            error: message,
+          });
+        });
+        dedupeKey = `${baseKey}:reply_failed`;
+        askPrefix = `Permission requested (auto-approve failed: ${message})`;
+      }
     }
 
     // Workflow questions may be answered by the manager; permissions only by a human.
@@ -1036,12 +1069,7 @@ export class Supervisor {
         taskId,
         kind: interaction.kind,
         dedupeKey,
-        reason: truncate(
-          redact(
-            `${interaction.kind === "permission" ? "Permission requested" : "Question"}: ${interaction.summary}`,
-          ),
-          2000,
-        ),
+        reason: truncate(redact(`${askPrefix}: ${interaction.summary}`), 2000),
         resolvableBy,
         expiresAt: iso(this.o.clock() + this.o.config.attentionExpiryMinutes * 60_000),
         ...binding,
@@ -1214,11 +1242,11 @@ export class Supervisor {
           baseRef: task.baseRef,
         });
       } catch (error) {
-        verifyError = String(error);
+        verifyError = truncate(redact(String(error)), 2000);
       }
     }
     const result: TaskResult = {
-      reported: parsed.ok ? parsed.report : null,
+      reported: parsed.ok ? sanitizeReport(parsed.report) : null,
       reportError: parsed.ok ? null : parsed.error,
       verification,
       finalMessageExcerpt: text ? truncate(redact(text), 2000) : null,
@@ -1447,11 +1475,13 @@ export class Supervisor {
     const now = this.store.now();
     for (const a of this.store.listAttention({
       status: "open",
-      kinds: [...INTERACTION_KINDS],
+      kinds: [...INTERACTION_KINDS, "land"],
       limit: 200,
     })) {
       if (!a.expiresAt || a.expiresAt > now || !a.taskId) continue;
-      void this.withTaskLock(a.taskId, () => this.expireInteraction(a.id));
+      this.withTaskLock(a.taskId, () => this.expireInteraction(a.id)).catch((error: unknown) => {
+        this.log.warn({ err: error, attentionId: a.id }, "expiring an overdue request failed");
+      });
     }
   }
 
@@ -1473,9 +1503,12 @@ export class Supervisor {
       this.store.settleAttention(a.id, { status: "expired" });
       if (a.taskId) this.store.appendEvent(a.taskId, "attention.expired", { id: a.id });
       const copy = notification({
-        headline: "Request expired",
+        headline: a.kind === "land" ? "Push confirmation expired" : "Request expired",
         task,
-        detail: `${a.kind === "question" ? "Question" : "Permission request"} went unanswered and was denied`,
+        detail:
+          a.kind === "land"
+            ? "The push was not confirmed in time and will not happen; ask again to land it"
+            : `${a.kind === "question" ? "Question" : "Permission request"} went unanswered and was denied`,
       });
       this.store.enqueue([
         {
@@ -1637,7 +1670,12 @@ export class Supervisor {
   }
 
   async sendToWorker(taskId: string, instructions: string): Promise<Task> {
-    return this.withTaskLock(taskId, async () => {
+    return this.withTaskLock(taskId, () => this.sendToWorkerLocked(taskId, instructions));
+  }
+
+  /** sendToWorker() inside the task lock. */
+  private async sendToWorkerLocked(taskId: string, instructions: string): Promise<Task> {
+    {
       const task = this.store.requireTask(taskId);
       if (!task.sessionId) throw conflict("no_session", "Task has no worker session yet");
       if (!["running", "blocked", "ready_for_review"].includes(task.state)) {
@@ -1673,7 +1711,7 @@ export class Supervisor {
       }
       this.store.appendEvent(taskId, "worker.steered", { chars: instructions.length });
       return this.store.requireTask(taskId);
-    });
+    }
   }
 
   /**
@@ -1831,9 +1869,18 @@ export class Supervisor {
       const noteText = note?.trim() ? ` Their note: "${truncate(redact(note.trim()), 2000)}"` : "";
       const header = `[handed back] Task ${task.id} ("${task.title}", repo ${task.repo})`;
       if (mode === "review") {
+        // The human changed the worktree by hand: show the review what is there now.
+        let result = task.result;
+        if (result && task.workspacePath && task.baseRef) {
+          const previous = result.verification;
+          const verification = await this.o.workspaces
+            .verify({ path: task.workspacePath, baseRef: task.baseRef })
+            .catch(() => previous);
+          result = { ...result, verification };
+        }
         return this.store.transition(taskId, "ready_for_review", {
           from: ["manual"],
-          patch: { finishedAt: this.store.now() },
+          patch: { finishedAt: this.store.now(), ...(result ? { result } : {}) },
           event: { type: "task.given_back", data: { mode, note: note ?? null } },
           attention: [
             {
@@ -1884,7 +1931,7 @@ export class Supervisor {
           this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
         this.store.transition(taskId, "running", {
           from: ["manual"],
-          patch: { lastActivityAt: this.store.now(), error: null },
+          patch: { lastActivityAt: this.store.now(), finishedAt: null, error: null },
           event: { type: "task.given_back", data: { mode, note: note ?? null } },
           outbox: [
             this.wake(
@@ -1982,7 +2029,7 @@ export class Supervisor {
         if (task.state !== "running") {
           this.store.transition(taskId, "running", {
             event: { type: "task.resumed", data: { mode } },
-            patch: { lastActivityAt: this.store.now(), error: null },
+            patch: { lastActivityAt: this.store.now(), finishedAt: null, error: null },
           });
         }
       });
@@ -2031,12 +2078,21 @@ export class Supervisor {
             `${safety.unmergedCommits} commit(s) on ${branch} exist on no other branch or remote and are not in the base branch; land them (ocd task land), or force`,
           );
       }
-      await this.o.workspaces.remove(
-        repo.path,
-        task.workspacePath,
-        branch,
-        force || landedIn !== null,
-      );
+      try {
+        await this.o.workspaces.remove(
+          repo.path,
+          task.workspacePath,
+          branch,
+          force || landedIn !== null,
+        );
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw conflict(
+          "cleanup_failed",
+          `Could not remove ${task.workspacePath ?? branch}: ${truncate(redact(error instanceof Error ? error.message : String(error)), 500)}`,
+        );
+      }
+      this.settleLandAttention(taskId);
       this.store.patchTask(
         taskId,
         { workspacePath: null },
@@ -2138,7 +2194,17 @@ export class Supervisor {
     options: { method?: MergeMethod | undefined },
     actor: Actor,
   ): Promise<Task> {
-    return this.withTaskLock(taskId, async () => {
+    return (
+      await this.withTaskLock(taskId, () => this.mergePullRequestLocked(taskId, options, actor))
+    ).task;
+  }
+
+  private async mergePullRequestLocked(
+    taskId: string,
+    options: { method?: MergeMethod | undefined },
+    actor: Actor,
+  ): Promise<{ task: Task; merged: boolean; keptReason: string | null }> {
+    {
       const task = this.store.requireTask(taskId);
       const url = task.pullRequestUrl;
       if (!url) throw conflict("no_pull_request", "The task has no pull request; open one first");
@@ -2188,18 +2254,48 @@ export class Supervisor {
             `${url} is blocked by branch protection or required reviews; OCD never overrides that`,
           );
         }
-        await gh("merge", () => host.merge(url, repo.path, method));
+        // Bound to the head that was checked: a push since then is not merged.
+        const checkedHead = status.headSha;
+        await gh("merge", () => host.merge(url, repo.path, method, checkedHead));
         status = await gh("status", () => host.status(url, repo.path));
         if (status.state !== "merged") {
           // e.g. a merge queue: GitHub accepted the request but has not merged yet.
           this.store.appendEvent(taskId, "pull_request.merge_requested", { url, method, actor });
-          return this.store.requireTask(taskId);
+          return { task: this.store.requireTask(taskId), merged: false, keptReason: null };
         }
       }
-      // Merged on GitHub: the work is safe there, so local copies can go.
+      // Merged on GitHub. Local copies go only if nothing exists beyond what GitHub merged:
+      // commits added after the push and uncommitted edits stay.
       const branch = task.branch ?? this.o.workspaces.branchFor(taskId);
-      await this.o.workspaces.remove(repo.path, task.workspacePath, branch, true);
+      const keptReason = await this.localWorkBeyondMerge(task, repo.path, branch, status.headSha);
+      if (keptReason) {
+        this.store.appendEvent(taskId, "pull_request.merged", {
+          url,
+          method,
+          actor,
+          worktreeKept: true,
+          reason: keptReason,
+          remoteBranchDeleted: false,
+        });
+        return { task: this.store.requireTask(taskId), merged: true, keptReason };
+      }
+      try {
+        await this.o.workspaces.remove(repo.path, task.workspacePath, branch, true);
+      } catch (error) {
+        // The merge itself succeeded; keep the copies and say why.
+        const reason = `Could not remove the worktree: ${truncate(redact(error instanceof Error ? error.message : String(error)), 300)}`;
+        this.store.appendEvent(taskId, "pull_request.merged", {
+          url,
+          method,
+          actor,
+          worktreeKept: true,
+          reason,
+          remoteBranchDeleted: false,
+        });
+        return { task: this.store.requireTask(taskId), merged: true, keptReason: reason };
+      }
       const remoteDeleted = await this.o.workspaces.deleteRemoteBranch(repo.path, "origin", branch);
+      this.settleLandAttention(taskId);
       this.store.patchTask(
         taskId,
         { workspacePath: null },
@@ -2208,8 +2304,37 @@ export class Supervisor {
           data: { url, method, actor, remoteBranchDeleted: remoteDeleted },
         },
       );
-      return this.store.requireTask(taskId);
-    });
+      return { task: this.store.requireTask(taskId), merged: true, keptReason: null };
+    }
+  }
+
+  /**
+   * Why the local copies of a merged PR must not be removed: the worktree has
+   * uncommitted edits, or the branch has commits beyond the PR head that the
+   * merge did not take and the base does not contain. Null when everything is
+   * on GitHub.
+   */
+  private async localWorkBeyondMerge(
+    task: Task,
+    repoPath: string,
+    branch: string,
+    prHead: string | undefined,
+  ): Promise<string | null> {
+    const safety = await this.o.workspaces.branchSafety(repoPath, task.workspacePath, branch);
+    if (safety.dirtyFiles.length > 0)
+      return `${safety.dirtyFiles.length} uncommitted file(s) in the worktree`;
+    if (!safety.branchExists) return null;
+    // Head known: identical means nothing extra. Otherwise count commits that exist nowhere else.
+    if (prHead && task.workspacePath) {
+      const local = await this.o.workspaces.head(task.workspacePath).catch(() => null);
+      if (local === prHead) return null;
+    } else if (safety.unmergedCommits === 0) {
+      return null;
+    }
+    const landedIn = await this.landedBase(repoPath, branch, task.baseRef).catch(() => null);
+    return landedIn
+      ? null
+      : `${branch} has commits beyond the merged pull request that are not in the base branch`;
   }
 
   // ---------------------------------------------------------------------------
@@ -2230,25 +2355,28 @@ export class Supervisor {
    * numbered review round.
    */
   async requestChanges(taskId: string, feedback: string, actor: Actor): Promise<Task> {
-    const task = this.store.requireTask(taskId);
-    if (task.state !== "ready_for_review")
-      throw conflict(
-        "not_reviewable",
-        `Request changes on a task under review (task is ${task.state})`,
+    // State check, round numbering and the send are one step under the task lock.
+    return this.withTaskLock(taskId, async () => {
+      const task = this.store.requireTask(taskId);
+      if (task.state !== "ready_for_review")
+        throw conflict(
+          "not_reviewable",
+          `Request changes on a task under review (task is ${task.state})`,
+        );
+      const round =
+        this.store.events(taskId, 10_000).filter((e) => e.type === "review.changes_requested")
+          .length + 1;
+      const reopened = await this.sendToWorkerLocked(
+        taskId,
+        `Review feedback (round ${round}) on your work:\n\n${feedback}\n\nAddress it in this worktree and commit your changes.`,
       );
-    const round =
-      this.store.events(taskId, 10_000).filter((e) => e.type === "review.changes_requested")
-        .length + 1;
-    const reopened = await this.sendToWorker(
-      taskId,
-      `Review feedback (round ${round}) on your work:\n\n${feedback}\n\nAddress it in this worktree and commit your changes.`,
-    );
-    this.store.appendEvent(taskId, "review.changes_requested", {
-      round,
-      actor,
-      feedback: truncate(redact(feedback), 2000),
+      this.store.appendEvent(taskId, "review.changes_requested", {
+        round,
+        actor,
+        feedback: truncate(redact(feedback), 2000),
+      });
+      return reopened;
     });
-    return reopened;
   }
 
   // ---------------------------------------------------------------------------
@@ -2334,16 +2462,34 @@ export class Supervisor {
       commit: null,
     });
     let task = this.store.requireTask(taskId);
-    // Already merged and cleaned up: nothing left to do.
-    if (task.state === "completed" && task.pullRequestUrl && !task.workspacePath)
-      return result(task, null);
-    if (!this.o.pullRequests)
+    const host = this.o.pullRequests;
+    if (!host)
       throw new ApiError(
         422,
         "pr_unavailable",
         'Landing through a pull request needs "github": { "enabled": true } in ocd.jsonc (then restart the supervisor); or push directly with ocd task land --direct',
       );
+    // The worktree is gone: either merged and cleaned up, or cleaned up while the PR is still open.
+    if (task.state === "completed" && task.pullRequestUrl && !task.workspacePath) {
+      const url = task.pullRequestUrl;
+      const repo = this.store.requireRepo(task.repo, { includeRetired: true });
+      const status = await this.recordPullRequestFailure(
+        taskId,
+        { stage: "status", url, actor },
+        () => host.status(url, repo.path),
+      );
+      if (status.state === "merged") return result(task, null);
+      return result(task, {
+        code: status.state === "closed" ? "pr_closed" : "pr_not_merged",
+        message:
+          status.state === "closed"
+            ? `${url} was closed without merging and the task's worktree is gone`
+            : `${url} is not merged and the task's worktree is gone; merge it on GitHub (or ocd task merge)`,
+      });
+    }
     if (task.state === "ready_for_review") {
+      // Refuse before accepting: a task that cannot get a PR stays steerable.
+      if (!task.pullRequestUrl) await this.assertPullRequestOpenable(task, commit);
       task = await this.accept(taskId, actor);
       steps.push("accepted");
     }
@@ -2351,20 +2497,47 @@ export class Supervisor {
       task = await this.openPullRequest(taskId, { draft: false, commit }, actor);
       steps.push(`opened ${task.pullRequestUrl}`);
     }
+    let merged: { task: Task; merged: boolean; keptReason: string | null };
     try {
-      task = await this.mergePullRequest(taskId, {}, actor);
+      merged = await this.withTaskLock(taskId, () =>
+        this.mergePullRequestLocked(taskId, {}, actor),
+      );
+      task = merged.task;
     } catch (error) {
       if (error instanceof ApiError && PR_WAITING.has(error.code))
         return result(task, { code: error.code, message: error.message });
       throw error;
     }
-    if (task.workspacePath)
+    if (!merged.merged)
       return result(task, {
         code: "merge_queued",
         message: `GitHub accepted the merge of ${task.pullRequestUrl} but has not merged it yet`,
       });
-    steps.push(`merged ${task.pullRequestUrl}`, "removed the worktree and branches");
+    steps.push(`merged ${task.pullRequestUrl}`);
+    if (merged.keptReason)
+      return result(task, {
+        code: "worktree_kept",
+        message: `Merged, but the worktree and branch were kept: ${merged.keptReason}`,
+      });
+    steps.push("removed the worktree and branches");
     return result(task, null);
+  }
+
+  /** The checks openPullRequest would fail on, run before the task is accepted. */
+  private async assertPullRequestOpenable(task: Task, commit: boolean): Promise<void> {
+    if (!task.workspacePath || !task.branch || !task.baseRef)
+      throw conflict("no_workspace", "The task has no workspace to push");
+    const facts = await this.o.workspaces.verify({
+      path: task.workspacePath,
+      baseRef: task.baseRef,
+    });
+    if (facts.dirty && !commit)
+      throw conflict(
+        "workspace_dirty",
+        "The worktree has uncommitted changes; commit them first (--commit)",
+      );
+    if (facts.commitsAhead === 0 && !(facts.dirty && commit))
+      throw conflict("nothing_to_push", `${task.branch} has no commits beyond its base`);
   }
 
   private async landDirect(
@@ -2505,6 +2678,7 @@ export class Supervisor {
       removed = false;
       steps.push(`kept the worktree: ${error instanceof Error ? error.message : String(error)}`);
     }
+    this.settleLandAttention(taskId, attentionId);
     this.store.patchTask(taskId, removed ? { workspacePath: null } : {}, {
       type: "task.landed",
       data: {
@@ -2568,16 +2742,19 @@ export class Supervisor {
 
   private pullRequestBody(task: Task, changedFiles: string[]): string {
     const report = task.result?.reported;
+    const clean = (text: string, max: number) => truncate(redact(text), max);
+    // A command goes in a code span: no backticks or line breaks to end it early.
+    const code = (text: string) => clean(text, 500).replaceAll("`", "'").replaceAll(/\s+/g, " ");
     return [
-      report ? `## Summary\n\n${report.summary}` : "",
+      report ? `## Summary\n\n${clean(report.summary, 4000)}` : "",
       task.acceptanceCriteria.length
         ? `## Acceptance criteria\n\n${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}`
         : "",
       report?.tests.length
-        ? `## Worker-reported checks\n\n${report.tests.map((t) => `- ${t.outcome}: \`${t.command}\``).join("\n")}`
+        ? `## Worker-reported checks\n\n${report.tests.map((t) => `- ${t.outcome}: \`${code(t.command)}\``).join("\n")}`
         : "",
       report?.unresolved.length
-        ? `## Unresolved\n\n${report.unresolved.map((u) => `- ${u}`).join("\n")}`
+        ? `## Unresolved\n\n${report.unresolved.map((u) => `- ${clean(u, 2000)}`).join("\n")}`
         : "",
       `## Changed files (verified by OCD)\n\n${changedFiles.map((f) => `- \`${f}\``).join("\n") || "none"}`,
       `---\nOpened by OCD for task \`${task.id}\` (${task.harness}, ${task.model}). Review before merging.`,
@@ -2599,6 +2776,13 @@ export class Supervisor {
       `${remote}/${base}`,
       ...(baseRef ? [baseRef] : []),
     ]);
+  }
+
+  /** A pending direct-push confirmation is moot once the task is landed, cleaned up or discarded. */
+  private settleLandAttention(taskId: string, except?: string | null): void {
+    for (const a of this.store.listAttention({ taskId, status: "open", kinds: ["land"] })) {
+      if (a.id !== except) this.store.settleAttention(a.id, { status: "expired" });
+    }
   }
 
   /** Finished tasks need no live worker; process-owned harnesses stop theirs. */
