@@ -18,6 +18,7 @@ import {
   TAKEOVER_STATES,
   buildSpill,
   collectSpill,
+  baseLabel,
   describeLandResult,
   diffTotals,
   fileCounts,
@@ -490,7 +491,7 @@ export default Plugin.define({
             <b>{props.view.task.title}</b>
           </text>
           <text fg={muted()} wrapMode="none" flexShrink={0}>
-            {`${d().branch ?? props.view.task.id} vs ${d().baseRef} · ${diffTotals(d())}${d().truncated ? " · truncated" : ""}`}
+            {`${d().branch ?? props.view.task.id} vs ${baseLabel(d())} · ${diffTotals(d())}${d().truncated ? " · truncated" : ""}`}
           </text>
           <text fg={muted()} wrapMode="none" flexShrink={0}>
             {`v split · j/k scroll${reviewable() ? " · r request changes" : ""}${canLand() ? " · l land" : ""} · f fullscreen · q close`}

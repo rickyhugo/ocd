@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { diffTotals, fileCounts, formatDiffStat, splitPatch } from "./diff.ts";
+import { baseLabel, diffTotals, fileCounts, formatDiffStat, splitPatch } from "./diff.ts";
 import type { TaskDiff } from "./schemas.ts";
 
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
@@ -38,6 +38,14 @@ describe("task diff wording", () => {
     expect(splitPatch(PATCH).map((p) => p.path)).toEqual(["src/a.ts", "notes.md"]);
     expect(splitPatch(PATCH)[1]!.patch).toContain("+hello");
     expect(splitPatch("")).toEqual([]);
+  });
+
+  it("shortens a commit-hash base and skips a redundant merge base", () => {
+    const sha = "c57f6e071fe8d8342b03df6c6f7d96460bbc3361";
+    expect(baseLabel({ ...DIFF, baseRef: sha })).toBe("c57f6e0");
+    expect(formatDiffStat({ ...DIFF, baseRef: sha, mergeBase: sha }).split("\n")[0]).toBe(
+      "ocd/t_1 vs c57f6e0: 3 files, +2 −1",
+    );
   });
 
   it("summarizes files and totals, marking binary and uncommitted files", () => {
