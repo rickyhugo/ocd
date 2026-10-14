@@ -35,7 +35,8 @@ Known gaps:
   upgrading Node, re-run `ocd service install`.
 - **Model names** in profiles are checked only when a task starts, not by
   `ocd doctor`.
-- **Usage:** token and cost usage is not tracked.
+- **Usage:** subscription limits are tracked (see [Usage limits](#usage-limits)),
+  but token counts and cost per task are not.
 
 ## Packages
 
@@ -340,6 +341,44 @@ about the OS: notifier, window activation and service manager sit behind one
 The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
 `backups.intervalHours` (24) and keeps the newest `backups.keep` (7).
 
+### Usage limits
+
+Claude Code and Codex report how much of your subscription's usage windows
+you have used, and OCD keeps the latest report for each:
+
+```text
+$ ocd usage
+Claude Code: 5-hour 15% (resets 20:50) · weekly 64% (resets Sat 22:00) · seen 3m ago
+Codex: weekly 23% (resets Tue 08:26) · seen just now
+Notifies at 80% and 95% of a window, and when a limit is reached.
+```
+
+When a window passes 80% you get one notification, "OCD: Claude usage at
+82%" ("You've used 82% of your 5-hour limit · resets 16:40"), another at 95%,
+and one when a limit is reached. Each threshold notifies once per window; the
+next window starts again. The sidebar shows the same as one line
+(`◔ claude 5h 15% wk 64% · codex wk 23%`, yellow from the first threshold, red
+when limited); click it or use `/limits` for the details. The manager's
+briefing includes the limits too, so it can prefer a profile whose harness
+has headroom.
+
+```jsonc
+"usageLimits": { "notifyAt": [80, 95], "pollMinutes": 15 }, // the defaults
+```
+
+Where the numbers come from (no tokens are spent to read them):
+
+- **Claude Code** sends its limits (`rate_limit_event`) with every turn, so they
+  are as fresh as the last Claude Code worker's last turn. Between tasks the
+  sidebar shows the last report, and a window that has reset since shows `↻`.
+- **Codex** is read when a worker starts, whenever it says its limits changed,
+  and every `pollMinutes` from a short-lived `codex app-server` that starts no
+  thread and calls no model (`ocd usage --refresh` reads it now).
+- **OpenCode** reports no subscription limits.
+
+Only harnesses turned on in `ocd.jsonc` are read. The latest reports are kept
+in `~/.ocd/usage.json`, so a restart still shows them.
+
 ### In the OpenCode TUI
 
 The plugin's TUI part (`packages/plugin/tui.tsx`, loaded by OpenCode from the
@@ -396,6 +435,9 @@ plugin directory) adds:
 - **`/land`:** pick a finished task, then a route: through a pull request
   (only with `github.enabled`), or directly on the base branch after you
   confirm the commits. The same as the row actions and `ocd task land`.
+
+- **Usage limits:** a `◔` line under the update banner; click it or use
+  `/limits` (see [Usage limits](#usage-limits)).
 
 - **`/task`:** reference a task when talking to the manager. `/task` opens a
   searchable picker, then asks for your message. The manager receives "Regarding OCD

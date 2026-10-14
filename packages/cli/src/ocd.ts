@@ -21,6 +21,7 @@ import {
   renderTranscript,
   resolveOcdPaths,
   updateLine,
+  usageLines,
   type Attention,
   type AttentionResponse,
   type LandPlan,
@@ -76,6 +77,8 @@ Supervisor
                                     OCD updating itself (selfUpdate in ocd.jsonc): show the state, look for and
                                     build a new version now, switch to the built one (--force interrupts Claude
                                     Code / Codex workers; asks first), or go back to the previous version
+  ocd usage [--refresh]             Subscription usage limits Claude Code and Codex reported (usageLimits in
+                                    ocd.jsonc); --refresh reads Codex's now (no tokens)
   ocd doctor [--notify]             Check harnesses, the OpenCode service, notifications, the service manager and
                                     the tools (git; gh and tmux when enabled) on the supervisor's PATH (your login shell's);
                                     --notify sends a test notification (click it to try \`ocd focus\`)
@@ -327,6 +330,7 @@ function parseCli(argv: string[]) {
       approve: { type: "boolean" },
       force: { type: "boolean" },
       notify: { type: "boolean" },
+      refresh: { type: "boolean" },
       method: { type: "string" },
       draft: { type: "boolean" },
       commit: { type: "boolean" },
@@ -576,7 +580,22 @@ async function run(
           ),
           ...(s.github ? [`github (gh): ${describeGh(s.github)}`] : []),
           ...(updateLine(s.update) ? [`update: ${updateLine(s.update)}`] : []),
+          ...usageLines(s.usage?.harnesses ?? [], Date.now()).map((line) => `usage: ${line}`),
         ].join("\n"),
+      );
+      return;
+    }
+    case "usage": {
+      const u = flags.refresh ? await client.refreshUsage() : await client.usage();
+      print(u, json, () =>
+        u.harnesses.length
+          ? [
+              ...usageLines(u.harnesses, Date.now()),
+              u.notifyAt.length
+                ? `Notifies at ${u.notifyAt.map((n) => `${n}%`).join(" and ")} of a window, and when a limit is reached.`
+                : "Notifies only when a limit is reached (usageLimits.notifyAt is empty).",
+            ].join("\n")
+          : "No usage limits reported yet: Claude Code reports them while a worker runs, Codex when it is enabled (ocd usage --refresh reads it now).",
       );
       return;
     }

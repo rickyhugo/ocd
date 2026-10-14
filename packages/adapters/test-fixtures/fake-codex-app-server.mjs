@@ -1,6 +1,6 @@
 // Minimal stand-in for `codex app-server` (0.162.1 protocol subset) used by
 // adapter tests. Directives in the prompt pick behaviour: [approve-cmd],
-// [edit], [limit], [hang], [plan]. Never calls a model.
+// [edit], [limit], [hang], [plan], [usage]. Never calls a model.
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -17,11 +17,36 @@ let active = null; // { id, waitingFor, text }
 let threadParams = null;
 const notify = (method, params) => send({ method, params });
 const report = '```ocd-report\n{"summary":"codex did it"}\n```';
+// Weekly window usage; [usage] in a turn raises it and sends account/rateLimits/updated.
+let usedPercent = Number(process.env.FAKE_CODEX_USED ?? 22);
+const snapshot = () => ({
+  limitId: "codex",
+  limitName: null,
+  primary: { usedPercent, windowDurationMins: 10080, resetsAt: 1792477564 },
+  secondary: null,
+  credits: { hasCredits: true, unlimited: false, balance: null },
+  planType: "pro",
+  rateLimitReachedType: usedPercent >= 100 ? "rate_limit_reached" : null,
+});
+// The shape codex 0.162.1 returned on a real account.
+const rateLimits = () => ({
+  ordinaryUsageAllowed: usedPercent < 100,
+  rateLimits: snapshot(),
+  rateLimitsByLimitId: { codex: snapshot() },
+  rateLimitResetCredits: null,
+  accountId: "acct",
+  rateLimitUpsell: null,
+});
 
 function startTurn(text) {
   const turn = { id: `turn_${++turnSeq}`, text };
   active = turn;
   notify("turn/started", { threadId, turn: { id: turn.id, status: "inProgress", items: [] } });
+  if (text.includes("[usage]")) {
+    usedPercent = 85;
+    // Sparse, as the real one: clients re-read or merge.
+    notify("account/rateLimits/updated", { rateLimits: { ...snapshot(), planType: null } });
+  }
   if (text.includes("[hang]")) return;
   if (text.includes("[die]")) return void setTimeout(() => process.exit(1), 50);
   if (text.includes("[malformed]")) {
@@ -239,6 +264,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           : { type: "chatgpt", email: "x@example.com", planType: "pro" },
         requiresOpenaiAuth: true,
       });
+    case "account/rateLimits/read":
+      return reply(rateLimits());
     case "thread/start":
       threadId = `thr_${process.pid}`;
       threadParams = m.params;

@@ -899,6 +899,8 @@ export class Supervisor {
           await this.reconcile("stream_reconnected", adapter.harness);
         return;
       }
+      // Account-wide usage limits; the daemon's UsageTracker records them.
+      if (event.type === "limits") return;
       const row = this.store.taskBySession(event.sessionId);
       if (!row) return;
       await this.withTaskLock(row.id, async () => {

@@ -278,6 +278,30 @@
       },
       "additionalProperties": false
     },
+    "usageLimits": {
+      "description": "Tracking the subscription usage limits Claude Code and Codex report. Restart to apply.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "notifyAt": {
+          "default": [80, 95],
+          "description": "Percentages of a subscription usage window (Claude Code's 5-hour and weekly limits, Codex's) that send a notification, once per window. [] turns these notifications off; reaching a limit is always reported.",
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "pollMinutes": {
+          "default": 15,
+          "description": "How often Codex's limits are read while no Codex worker reports them (no model call, no tokens). 0 reads them only from running workers. Claude Code reports its limits only while a worker runs.",
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "mergeMethod": {
       "default": "squash",
       "description": "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod. Applies on save.",

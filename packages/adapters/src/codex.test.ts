@@ -53,6 +53,38 @@ describe("Codex adapter", () => {
     expect(parseCodexModel("gpt-5-codex")).toEqual({ model: "gpt-5-codex", effort: null });
   });
 
+  it("reports the account's usage limits on start and on change, and reads them without a thread", async () => {
+    const { adapter, events, spec } = setup();
+    const limits = () => events.flatMap((e) => (e.type === "limits" ? [e.usage] : []));
+    const ref = await adapter.createSession(spec);
+    await until(limits, (l) => l.length > 0);
+    expect(limits()[0]).toMatchObject({
+      harness: "codex",
+      state: "ok",
+      plan: "pro",
+      windows: [
+        {
+          id: "codex:10080",
+          label: "weekly",
+          short: "wk",
+          usedPercent: 22,
+          resetsAt: new Date(1792477564_000).toISOString(),
+        },
+      ],
+    });
+    // account/rateLimits/updated is sparse; the adapter re-reads the snapshot.
+    await adapter.prompt(ref, "spend [usage]");
+    await until(
+      () => limits().at(-1)?.windows[0]?.usedPercent,
+      (v) => v === 85,
+    );
+    expect(limits().at(-1)?.plan).toBe("pro");
+
+    // A short-lived app-server: no thread, no model call.
+    const read = await adapter.readLimits();
+    expect(read).toMatchObject({ harness: "codex", windows: [{ usedPercent: 22 }] });
+  });
+
   it("runs a turn to completion and reports the final message", async () => {
     const { adapter, spec } = setup();
     const ref = await adapter.createSession(spec);

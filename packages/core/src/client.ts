@@ -33,6 +33,7 @@ import type {
 } from "./schemas.ts";
 import { apiTokenPath } from "./paths.ts";
 import type { PeekTaskInput, TaskTranscript } from "./transcript.ts";
+import type { UsageStatus } from "./usage.ts";
 import {
   API_VERSION,
   HEADER_ACTOR,
@@ -296,6 +297,11 @@ export class OcdClient {
       timeoutMs: LONG_CALL_TIMEOUT_MS,
     });
   /** Gets the work into its base branch: through a pull request, or directly once confirmed. */
+  /** Subscription usage limits the harnesses reported (usageLimits). */
+  usage = () => this.call<UsageStatus>("GET", "/v1/usage");
+  /** Reads the limits that cost no tokens to read (Codex) now. */
+  refreshUsage = () => this.call<UsageStatus>("POST", "/v1/usage/refresh", {});
+
   /** OCD's own update state (selfUpdate). */
   updateStatus = () => this.call<UpdateStatus | null>("GET", "/v1/update");
   /** Fetches and, when there is a new version, builds and smoke-tests it (can take minutes). */

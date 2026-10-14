@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
 
 import {
   boundTodos,
   textEntry,
   toolEntry,
   type AdapterStatus,
+  type HarnessUsage,
   type ToolStatus,
   type TranscriptEntry,
 } from "@ocd/core";
@@ -12,6 +14,7 @@ import {
 import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
 import { TranscriptStore, type TranscriptBufferLimits } from "./transcript-buffer.ts";
+import { codexUsage, type CodexRateLimitsResponse } from "./usage-limits.ts";
 import {
   HarnessUnavailableError,
   type AdapterEvent,
@@ -94,7 +97,12 @@ interface CodexSession {
   turnTextSet: boolean;
   /** Turns that already completed; their turn/start reply may arrive late. */
   finishedTurns: Set<string>;
+  /** A pending re-read of the account's limits after `account/rateLimits/updated`. */
+  limitsTimer?: NodeJS.Timeout | null;
 }
+
+/** The part of a session that RPC calls need; also used for short-lived reads. */
+type RpcChannel = Pick<CodexSession, "proc" | "nextId" | "calls">;
 
 export interface CodexAdapterOptions {
   /** Executable and leading args; defaults to `codex app-server`. */
@@ -223,6 +231,69 @@ export class CodexAdapter implements HarnessAdapter {
       await proc.stop(500);
       throw new HarnessUnavailableError("Codex is not logged in. Run `codex login`.");
     }
+    // The account's usage limits, read once per process (no model call).
+    void this.emitLimits(session);
+  }
+
+  /** Reads the account's limits over a channel and emits them; failures are only logged. */
+  private async emitLimits(channel: RpcChannel): Promise<HarnessUsage | null> {
+    try {
+      const response = (await this.call(
+        channel,
+        "account/rateLimits/read",
+        undefined,
+        15_000,
+      )) as CodexRateLimitsResponse | null;
+      if (!response) return null;
+      const usage = codexUsage(response, new Date().toISOString());
+      this.emit({ type: "limits", usage });
+      return usage;
+    } catch (error) {
+      this.options.onError?.(error, "codex limits");
+      return null;
+    }
+  }
+
+  /**
+   * Reads the account's limits from a short-lived app-server, so they stay
+   * current while no Codex worker runs. No thread is started and no model is
+   * called.
+   */
+  async readLimits(): Promise<HarnessUsage | null> {
+    const [cmd, ...args] = this.command;
+    const channel: RpcChannel = { nextId: 0, calls: new Map() } as unknown as RpcChannel;
+    const proc = new JsonLineProcess(cmd, args, {
+      cwd: homedir(),
+      env: process.env as Record<string, string>,
+      onMessage: (m) => this.onResponse(channel, m as RpcMessage),
+      onError: (error) => this.options.onError?.(error, "codex limits"),
+    });
+    channel.proc = proc;
+    void proc.exited.then(() => {
+      for (const call of channel.calls.values()) {
+        clearTimeout(call.timer);
+        call.reject(new Error("codex app-server exited"));
+      }
+      channel.calls.clear();
+    });
+    try {
+      await this.call(
+        channel,
+        "initialize",
+        {
+          clientInfo: { name: "ocd", title: "OCD supervisor", version: "0.1.0" },
+          capabilities: { experimentalApi: false, requestAttestation: false },
+        },
+        15_000,
+      );
+      proc.send({ method: "initialized" });
+      return await this.emitLimits(channel);
+    } catch (error) {
+      this.options.onError?.(error, "codex limits");
+      return null;
+    } finally {
+      await proc.stop(1000);
+    }
   }
 
   private scheduleIdleStop(session: CodexSession): void {
@@ -286,7 +357,7 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   private call(
-    session: CodexSession,
+    session: RpcChannel,
     method: string,
     params: unknown,
     timeoutMs = REQUEST_TIMEOUT_MS,
@@ -308,16 +379,20 @@ export class CodexAdapter implements HarnessAdapter {
     });
   }
 
+  /** Settles the call a response answers; false when the message is not a response. */
+  private onResponse(channel: RpcChannel, message: RpcMessage): boolean {
+    if (message.id === undefined || message.method !== undefined) return false;
+    const call = channel.calls.get(message.id);
+    if (!call) return true;
+    channel.calls.delete(message.id);
+    clearTimeout(call.timer);
+    if (message.error) call.reject(new Error(message.error.message));
+    else call.resolve(message.result);
+    return true;
+  }
+
   private onMessage(session: CodexSession, message: RpcMessage): void {
-    if (message.id !== undefined && message.method === undefined) {
-      const call = session.calls.get(message.id);
-      if (!call) return;
-      session.calls.delete(message.id);
-      clearTimeout(call.timer);
-      if (message.error) call.reject(new Error(message.error.message));
-      else call.resolve(message.result);
-      return;
-    }
+    if (this.onResponse(session, message)) return;
     if (message.id !== undefined && message.method) {
       this.onServerRequest(session, message.id, message.method, message.params ?? {});
       return;
@@ -394,6 +469,16 @@ export class CodexAdapter implements HarnessAdapter {
     method: string,
     params: Record<string, unknown>,
   ): void {
+    if (method === "account/rateLimits/updated") {
+      // A sparse update: re-read the whole snapshot (debounced) rather than merge.
+      if (session.limitsTimer) clearTimeout(session.limitsTimer);
+      session.limitsTimer = setTimeout(() => {
+        session.limitsTimer = null;
+        if (session.proc.running) void this.emitLimits(session);
+      }, 1000);
+      session.limitsTimer.unref();
+      return;
+    }
     const sessionId = session.threadId;
     if (!sessionId) return;
     switch (method) {

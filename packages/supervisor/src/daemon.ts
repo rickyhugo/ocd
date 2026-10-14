@@ -40,6 +40,7 @@ import { Store } from "./store.ts";
 import type { PullRequestHost } from "./pull-requests.ts";
 import { SelfUpdater } from "./self-update.ts";
 import { Supervisor, type SupervisorHooks } from "./supervisor.ts";
+import { UsageTracker } from "./usage.ts";
 import { WorkspaceManager } from "./workspace.ts";
 
 export interface DaemonOptions {
@@ -133,6 +134,7 @@ export interface Daemon {
   /** The daemon stopped to switch to a new version; the service manager should start it again. */
   readonly restartRequested: boolean;
   readonly updater: SelfUpdater | null;
+  readonly usage: UsageTracker;
 }
 
 /** Opens the database, creating it on first use and refusing silent upgrades. */
@@ -221,6 +223,26 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       logger.child({ component: "outbox" }),
     );
 
+    // Subscription usage limits the harnesses report (usageLimits).
+    const usage = new UsageTracker({
+      file: join(paths.home, "usage.json"),
+      settings: () => config.usageLimits,
+      enqueue: (entries) => store.enqueue(entries),
+      readers: adapters.flatMap((a) => (a.readLimits ? [() => a.readLimits!()] : [])),
+      logger: logger.child({ component: "usage" }),
+      clock,
+    });
+    const usageSubscriptions = adapters.map((adapter) =>
+      adapter.subscribe((event) => {
+        if (event.type !== "limits" || !db?.$client.open) return;
+        try {
+          usage.observe(event.usage);
+        } catch (error) {
+          logger.error({ err: error }, "could not record usage limits");
+        }
+      }),
+    );
+
     let resolveClosed!: (report: ShutdownReport | null) => void;
     const closed = new Promise<ShutdownReport | null>((resolve) => {
       resolveClosed = resolve;
@@ -292,6 +314,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
     const release = async () => {
       configWatcher.stop();
+      usage.stop();
+      for (const unsubscribe of usageSubscriptions) unsubscribe();
       if (backupTimer) clearInterval(backupTimer);
       await app?.close().catch(() => undefined);
       try {
@@ -379,6 +403,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       store,
       supervisor,
       updater,
+      usage,
       memory,
       logger,
       live,
@@ -419,6 +444,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     logger.info({ socket: paths.socket, instanceId, pid: process.pid }, "supervisor started");
 
     updater?.start();
+    usage.start();
     return {
       paths,
       store,
@@ -432,6 +458,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return restartRequested;
       },
       updater,
+      usage,
     };
   } catch (error) {
     await app?.close().catch(() => undefined);
