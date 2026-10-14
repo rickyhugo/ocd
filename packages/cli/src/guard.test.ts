@@ -13,7 +13,7 @@ import { execFileSync } from "node:child_process";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { insideWorktree } from "./guard.ts";
+import { insideWorktree, serviceHomeProblem } from "./guard.ts";
 import { addRepo, removeRepo } from "./repo-config.ts";
 
 const dirs: string[] = [];
@@ -77,5 +77,37 @@ describe("ocd repo add / remove", () => {
     removeRepo(link, "app");
     expect(readFileSync(real, "utf8")).toBe(before);
     expect(() => removeRepo(link, "app")).toThrow(/no repo "app"/);
+    expect(() => removeRepo(link, "constructor")).toThrow(/no repo "constructor"/);
+  });
+});
+
+describe("service home guard", () => {
+  const defaultHome = "/Users/me/.ocd";
+
+  it("allows the default home and refuses a worker sandbox", () => {
+    expect(serviceHomeProblem({ env: {}, defaultHome })).toBeNull();
+    expect(serviceHomeProblem({ env: { OCD_HOME: defaultHome }, defaultHome })).toBeNull();
+    expect(
+      serviceHomeProblem({ env: { OCD_HOME: `${defaultHome}/sandbox/t_1` }, defaultHome }),
+    ).toMatch(/worker sandbox/);
+  });
+
+  it("allows another home only when the installed definition points at it", () => {
+    const env = { OCD_HOME: "/data/ocd" };
+    expect(serviceHomeProblem({ env, defaultHome })).toMatch(
+      /not the home of the background service/,
+    );
+    const plist = "<key>OCD_HOME</key>\n      <string>/data/ocd</string>";
+    expect(serviceHomeProblem({ env, defaultHome, definition: plist })).toBeNull();
+    expect(
+      serviceHomeProblem({ env, defaultHome, definition: 'Environment="OCD_HOME=/data/ocd"' }),
+    ).toBeNull();
+    expect(
+      serviceHomeProblem({
+        env,
+        defaultHome,
+        definition: "<key>OCD_HOME</key><string>/other</string>",
+      }),
+    ).not.toBeNull();
   });
 });

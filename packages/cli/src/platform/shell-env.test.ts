@@ -51,6 +51,17 @@ describe("reading the login shell's PATH", () => {
     });
   });
 
+  it("does not wait for a background process that keeps stdout open", async () => {
+    const shell = fakeShell(
+      "bash",
+      ["sleep 30 &", "PATH=/opt/tools/bin:/usr/bin:/bin; export PATH"].join("\n"),
+    );
+    const started = Date.now();
+    const result = await loginShellPath({ shell, timeoutMs: 8000 });
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(result.path).toBe("/opt/tools/bin:/usr/bin:/bin");
+  });
+
   it("gives up on a shell that hangs, within the timeout", async () => {
     const shell = fakeShell("bash", "sleep 30");
     const started = Date.now();

@@ -21,21 +21,30 @@ export function unitPath(env: NodeJS.ProcessEnv = process.env, home = homedir())
   return join(config, "systemd", "user", SYSTEMD_UNIT);
 }
 
-/** One systemd word: double-quoted, with backslash, quote, specifier (%) and variable ($) escapes. */
-export function systemdQuote(value: string): string {
-  const escaped = value
-    .replaceAll("\\", "\\\\")
-    .replaceAll('"', '\\"')
-    .replaceAll("%", "%%")
-    .replaceAll("$", "$$$$");
+/**
+ * One systemd word: double-quoted, with backslash, quote and specifier (%)
+ * escapes. `$` is escaped as `$$` only where systemd expands variables
+ * (ExecStart= words); Environment= values do no variable expansion, so there
+ * `$$` would stay literal.
+ */
+export function systemdQuote(value: string, options: { expandVariables?: boolean } = {}): string {
+  let escaped = value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%");
+  if (options.expandVariables ?? true) escaped = escaped.replaceAll("$", "$$$$");
   return `"${escaped}"`;
+}
+
+/** A path used unquoted after `append:`; only specifiers are expanded there. */
+function systemdPath(value: string): string {
+  return value.replaceAll("%", "%%");
 }
 
 export function renderUnit(spec: ServiceSpec): string {
   const env = Object.entries(serviceEnv(spec, servicePath(spec.nodePath, "linux")))
-    .map(([k, v]) => `Environment=${systemdQuote(`${k}=${v}`)}`)
+    .map(([k, v]) => `Environment=${systemdQuote(`${k}=${v}`, { expandVariables: false })}`)
     .join("\n");
-  const exec = [spec.nodePath, spec.cliPath, "daemon", "--background"].map(systemdQuote).join(" ");
+  const exec = [spec.nodePath, spec.cliPath, "daemon", "--background"]
+    .map((w) => systemdQuote(w))
+    .join(" ");
   return `${MARKER}
 [Unit]
 Description=OCD supervisor (local agent control plane)
@@ -47,8 +56,8 @@ ${env}
 # Restart after a crash, not after a clean \`ocd stop\`.
 Restart=on-failure
 RestartSec=10
-StandardOutput=append:${join(spec.logsDir, "service.out.log")}
-StandardError=append:${join(spec.logsDir, "service.err.log")}
+StandardOutput=append:${systemdPath(join(spec.logsDir, "service.out.log"))}
+StandardError=append:${systemdPath(join(spec.logsDir, "service.err.log"))}
 
 [Install]
 WantedBy=default.target

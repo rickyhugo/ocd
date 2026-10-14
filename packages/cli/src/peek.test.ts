@@ -151,4 +151,16 @@ describe("ocd task peek --follow", () => {
     );
     expect(out.map((l) => JSON.parse(l).id)).toEqual(["m1"]);
   });
+
+  it("sends the header and notes to the note channel, entries to write", async () => {
+    const out: string[] = [];
+    const notes: string[] = [];
+    await followTranscript(
+      async () =>
+        transcript([textEntry("m1", null, "hi")], { taskState: "completed", notes: ["only live"] }),
+      { write: (l) => out.push(l), note: (l) => notes.push(l), ...clock() },
+    );
+    expect(out).toHaveLength(1);
+    expect(notes.join("\n")).toMatch(/following[\s\S]*note: only live/);
+  });
 });
