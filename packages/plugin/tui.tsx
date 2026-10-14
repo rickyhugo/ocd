@@ -22,6 +22,8 @@ import {
   describeLandResult,
   describePendingUpdate,
   updateLine,
+  usageLines,
+  usageSummary,
   diffTotals,
   fileCounts,
   formatDiffStat,
@@ -37,6 +39,7 @@ import {
   type Task,
   type TaskDiff,
   type UpdateStatus,
+  type UsageStatus,
 } from "@ocd/core";
 import { Plugin } from "@opencode/plugin/tui";
 import type { ScrollBoxRenderable } from "@opentui/core";
@@ -120,6 +123,8 @@ export default Plugin.define({
     const [online, setOnline] = createSignal(true);
     // OCD's own update state (selfUpdate), shown as one line above the tasks.
     const [update, setUpdate] = createSignal<UpdateStatus | null>(null);
+    // Subscription usage limits Claude Code and Codex reported, as one line.
+    const [usage, setUsage] = createSignal<UsageStatus | null>(null);
     const [hovered, setHovered] = createSignal<string | null>(null);
     // Session-only: which running tasks show their progress panel.
     const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set());
@@ -151,6 +156,7 @@ export default Plugin.define({
           client.status(),
         ]);
         setUpdate(status.update ?? null);
+        setUsage(status.usage ?? null);
         setNow(Date.now());
         setModel(reconcile(buildSidebar(open, items, now(), done), { key: "key" }));
         setExpanded((e) =>
@@ -844,6 +850,34 @@ export default Plugin.define({
       );
     };
 
+    /** Every reported window with its reset time; Codex is read fresh first. */
+    const usageDialog = async () => {
+      const u = await client.refreshUsage().catch(() => usage());
+      if (u) setUsage(u);
+      const lines = usageLines(u?.harnesses ?? [], Date.now());
+      await ctx.ui.dialog.alert({
+        title: "OCD: usage limits",
+        message: lines.length
+          ? lines.join("\n")
+          : "Nothing reported yet. Claude Code reports its limits while a worker runs; Codex when it is enabled.",
+      });
+    };
+
+    const UsageLine = () => {
+      const summary = createMemo(() => usageSummary(usage(), now()));
+      return (
+        <Show when={summary()}>
+          {(u: () => NonNullable<ReturnType<typeof usageSummary>>) => (
+            <box flexDirection="row" onMouseDown={() => void usageDialog().catch(fail)}>
+              <text fg={u().tone === "muted" ? muted() : tone(u().tone)} wrapMode="none">
+                {`◔ ${u().text}`}
+              </text>
+            </box>
+          )}
+        </Show>
+      );
+    };
+
     const removeDiffPanel = ctx.ui.slot({
       append: "session.panel",
       render: (input) => (
@@ -880,6 +914,7 @@ export default Plugin.define({
             }
           >
             <UpdateBanner />
+            <UsageLine />
             <Show
               when={!model.idle}
               fallback={
@@ -1023,6 +1058,20 @@ export default Plugin.define({
           run: async () => {
             try {
               await updateMenu();
+            } catch (error) {
+              fail(error);
+            }
+          },
+        },
+        {
+          id: "ocd.limits",
+          title: "OCD: usage limits (Claude Code, Codex)",
+          group: "OCD",
+          palette: true,
+          slash: { name: "limits" },
+          run: async () => {
+            try {
+              await usageDialog();
             } catch (error) {
               fail(error);
             }

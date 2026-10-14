@@ -7,6 +7,7 @@ import { ClaudeTodoTracker, type ClaudeStreamMessage } from "./claude-todos.ts";
 import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
 import { TranscriptStore, type TranscriptBufferLimits } from "./transcript-buffer.ts";
+import { claudeUsage, type ClaudeRateLimitInfo } from "./usage-limits.ts";
 import {
   HarnessUnavailableError,
   type AdapterEvent,
@@ -29,7 +30,7 @@ import {
 // are answered according to the profile's policy by the supervisor. Workers
 // die with the supervisor; `--resume <session id>` continues them later.
 
-export const CLAUDE_TESTED_VERSIONS = ["2.1.296"] as const;
+export const CLAUDE_TESTED_VERSIONS = ["2.1.296", "2.1.299"] as const;
 
 const CAPABILITIES: Capabilities = {
   start: true,
@@ -70,7 +71,7 @@ type ClaudeMessage = ClaudeStreamMessage & {
   errors?: string[];
   api_error_status?: number | null;
   error?: string;
-  rate_limit_info?: { status?: string };
+  rate_limit_info?: ClaudeRateLimitInfo;
   uuid?: string;
   /** A user message echoed back by --replay-user-messages as it is consumed. */
   isReplay?: boolean;
@@ -353,9 +354,18 @@ export class ClaudeAdapter implements HarnessAdapter {
         this.record(session, message);
         this.emit({ type: "activity", sessionId });
         return;
-      case "rate_limit_event":
-        if (message.rate_limit_info?.status === "rejected") session.limitSeen = true;
+      case "rate_limit_event": {
+        const info = message.rate_limit_info;
+        if (!info) return;
+        if (info.status === "rejected") session.limitSeen = true;
+        // The account's limits, not this task's: Claude Code sends them with every turn.
+        try {
+          this.emit({ type: "limits", usage: claudeUsage(info, new Date().toISOString()) });
+        } catch (error) {
+          this.options.onError?.(error, "claude limits");
+        }
         return;
+      }
       case "result": {
         session.pending.clear();
         const text = typeof message.result === "string" ? message.result : null;

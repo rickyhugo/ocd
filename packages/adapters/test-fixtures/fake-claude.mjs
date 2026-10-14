@@ -1,6 +1,6 @@
 // Minimal stand-in for `claude -p --input-format stream-json ...` (2.1.296
 // protocol subset) used by adapter tests. Directives in the prompt pick
-// behaviour: [perm], [limit], [hang], [todos]. Never calls a model.
+// behaviour: [perm], [limit], [hang], [todos], [usage]. Never calls a model.
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -130,6 +130,26 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     block("u6", [null, { type: 5 }, { type: "redacted_thinking", data: "ENCRYPTED" }]);
     block("u7", [{ type: "text", text: "All tests pass" }]);
     return result(`All tests pass\n${report}`);
+  }
+  if (text.includes("[usage]")) {
+    // As Claude Code 2.1.299 sends with every turn (utilization is a fraction).
+    send({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "allowed_warning",
+        resetsAt: 1792003800,
+        rateLimitType: "five_hour",
+        overageStatus: "rejected",
+        isUsingOverage: false,
+        unifiedWindows: {
+          five_hour: { utilization: 0.83, resetsAt: 1792003800 },
+          seven_day: { utilization: 0.63, resetsAt: 1792267200 },
+        },
+      },
+      uuid: "rl-1",
+      session_id: "",
+    });
+    return result(`Used some.\n${report}`);
   }
   if (text.includes("[hang]")) {
     hanging = true;

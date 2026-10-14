@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { TASK_STATES } from "./states.ts";
+import type { HarnessUsage, UsageStatus } from "./usage.ts";
 
 // Wire contracts shared by the supervisor API, the CLI, and the plugin. Inputs
 // are validated at every boundary; outputs are typed for clients.
@@ -574,6 +575,8 @@ export interface Briefing {
   preferences: Pick<Memory, "id" | "scope" | "repo" | "content">[];
   recentDecisions: Pick<Decision, "id" | "summary" | "repo" | "taskId" | "createdAt">[];
   truncated: boolean;
+  /** Subscription usage limits the harnesses last reported, when any were. */
+  usage?: HarnessUsage[];
   text: string;
 }
 
@@ -645,6 +648,8 @@ export interface SupervisorStatus {
   /** Pull requests are on (github.enabled): tasks can land through a PR. */
   pullRequests?: boolean;
   update?: UpdateStatus | null;
+  /** Subscription usage limits the harnesses reported (Claude Code, Codex). */
+  usage?: UsageStatus | null;
 }
 
 export interface OutboxEntry {

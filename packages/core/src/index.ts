@@ -10,4 +10,5 @@ export * from "./states.ts";
 export * from "./todos.ts";
 export * from "./transcript.ts";
 export * from "./update.ts";
+export * from "./usage.ts";
 export * from "./version.ts";

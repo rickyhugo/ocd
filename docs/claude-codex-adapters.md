@@ -87,6 +87,25 @@ recorded per request; there is no sandbox.
 - `ocd doctor` checks `codex --version`; login is checked when a session
   starts.
 
+## Usage limits
+
+Both adapters report the account's subscription usage limits as `limits`
+events (see the README's "Usage limits"):
+
+- Claude Code: every turn's `rate_limit_event`. `rate_limit_info.unifiedWindows`
+  holds each window (`five_hour`, `seven_day`, and model-specific ones such as
+  `seven_day_opus`) with `utilization`, a fraction (Claude Code itself shows
+  `Math.round(utilization * 100)%`), and `resetsAt` in epoch seconds. `status`
+  is `allowed`, `allowed_warning` or `rejected`. An event without
+  `unifiedWindows` describes the window named by `rateLimitType`.
+- Codex: `account/rateLimits/read` (no model call) on each new app-server and
+  again after `account/rateLimits/updated`, which is sparse, so the adapter
+  re-reads rather than merges. `readLimits()` does the same from a short-lived
+  app-server with no thread, for polling. Windows come from `primary` /
+  `secondary` (`usedPercent`, `windowDurationMins`, `resetsAt`) of every bucket
+  in `rateLimitsByLimitId`; `rateLimitReachedType` or `ordinaryUsageAllowed:
+  false` means limited.
+
 ## Transcripts (`ocd task peek`)
 
 Both adapters keep a bounded, in-memory record of what they already receive
@@ -122,6 +141,7 @@ supervisor restart; peeking never starts or resumes a process to fill it.
 | Turns, follow-ups mid-turn, interrupts      | Real runs (Haiku), see "Worker processes"          | Real runs (low effort), see "Worker processes" |
 | Approvals, usage limits, resume             | Fake binaries in `packages/adapters/test-fixtures` | Fake binaries                                  |
 | Real tasks through OCD                      | In use: many tasks dispatched by the manager       | Not yet                                        |
+| Usage limits                                | Real run (Haiku): 5-hour and weekly windows        | Real read: weekly window, plan                 |
 | Transcript extraction (`ocd task peek`)     | Fake binaries only                                 | Fake binaries only                             |
 
 The fakes model the behaviour recorded in the real runs, and the tests for it

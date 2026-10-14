@@ -1,6 +1,7 @@
 import type {
   AdapterStatus,
   HarnessName,
+  HarnessUsage,
   PermissionPolicy,
   ReasoningSummaries,
   TodoItem,
@@ -104,6 +105,8 @@ export type AdapterEvent =
   | { type: "interaction_resolved"; sessionId: string; interactionId: string }
   /** The whole current checklist (bounded with boundTodos), replacing any earlier one. */
   | { type: "todos"; sessionId: string; todos: TodoItem[] }
+  /** The account's subscription usage limits, as the harness reported them (not tied to a task). */
+  | { type: "limits"; usage: HarnessUsage }
   | { type: "stream"; state: "connected" | "disconnected" };
 
 export type AdapterListener = (event: AdapterEvent) => void;
@@ -151,6 +154,12 @@ export interface HarnessAdapter {
    * has nothing for the session (e.g. a process-owned session it never saw).
    */
   transcript?(ref: SessionRef, request: TranscriptRequest): Promise<TranscriptPage | null>;
+  /**
+   * Reads the account's subscription usage limits without a model call (no
+   * tokens spent). Only harnesses with such a read implement it; others report
+   * limits through `limits` events while they work.
+   */
+  readLimits?(): Promise<HarnessUsage | null>;
   close(): Promise<void>;
 }
 

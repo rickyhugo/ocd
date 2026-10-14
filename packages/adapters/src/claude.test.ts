@@ -67,6 +67,35 @@ describe("Claude Code adapter", () => {
     );
   });
 
+  it("reports the account's usage limits from rate_limit_event, as percentages", async () => {
+    const { adapter, events, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "spend [usage]");
+    const limits = await until(
+      () => events.flatMap((e) => (e.type === "limits" ? [e.usage] : [])),
+      (l) => l.length > 0,
+    );
+    expect(limits[0]).toMatchObject({
+      harness: "claude",
+      state: "warning",
+      windows: [
+        {
+          id: "five_hour",
+          label: "5-hour",
+          short: "5h",
+          usedPercent: 83,
+          resetsAt: new Date(1792003800_000).toISOString(),
+        },
+        { id: "seven_day", label: "weekly", short: "wk", usedPercent: 63 },
+      ],
+    });
+    // Account-wide, not a task event: the turn still completes normally.
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+  });
+
   it("runs turns with a caller-chosen session id and reports the result", async () => {
     const { adapter, spec } = setup();
     const ref = await adapter.createSession(spec);

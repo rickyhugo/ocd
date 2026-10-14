@@ -26,6 +26,8 @@ import {
   TaskFilter,
   TaskStateSchema,
   redact,
+  usageLines,
+  type Briefing,
   type ApiErrorBody,
   type ManagerInfo,
   type ShutdownReport,
@@ -48,6 +50,7 @@ import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
 import type { Store } from "./store.ts";
 import type { SelfUpdater } from "./self-update.ts";
+import type { UsageTracker } from "./usage.ts";
 import type { Supervisor } from "./supervisor.ts";
 
 declare module "fastify" {
@@ -70,6 +73,8 @@ export interface ApiDeps {
   live: LiveConfig;
   /** Self-update; null when this daemon does not manage OCD's own installs. */
   updater: SelfUpdater | null;
+  /** Subscription usage limits; absent in tests that do not need it. */
+  usage?: UsageTracker;
 }
 
 const UpdateApplyInput = z.object({ force: z.boolean().default(false) });
@@ -196,7 +201,14 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   app.get("/v1/status", async () => ({
     ...supervisor.status(),
     update: deps.updater?.status() ?? null,
+    usage: deps.usage?.status() ?? null,
   }));
+  app.get("/v1/usage", async () => deps.usage?.status() ?? { harnesses: [], notifyAt: [] });
+  /** Reads the limits that can be read without a model call (Codex) now. */
+  app.post("/v1/usage/refresh", async (req) => {
+    requireCaller(req);
+    return deps.usage ? deps.usage.refresh() : { harnesses: [], notifyAt: [] };
+  });
   const updater = () => {
     if (!deps.updater)
       throw conflict("update_unavailable", "This supervisor does not manage OCD's own updates");
@@ -440,9 +452,23 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     directory: deps.live.managerDirectory,
     active: store.activeManager(),
   }));
-  app.get("/v1/briefing", async (req) => {
+  app.get("/v1/briefing", async (req): Promise<Briefing> => {
     requireCaller(req);
-    return memory.briefing();
+    const briefing = memory.briefing();
+    // Usage limits help the manager pick a profile whose harness has headroom.
+    const usage = deps.usage?.status().harnesses ?? [];
+    if (!usage.length) return briefing;
+    return {
+      ...briefing,
+      usage,
+      text: [
+        briefing.text,
+        "",
+        "### Subscription usage limits (as the harnesses last reported)",
+        ...usageLines(usage, Date.now()).map((line) => `- ${line}`),
+        "Prefer profiles whose harness has headroom; a task that hits a limit waits for the reset.",
+      ].join("\n"),
+    };
   });
 
   app.get("/v1/outbox", async (req) => {

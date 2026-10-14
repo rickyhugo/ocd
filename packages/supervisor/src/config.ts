@@ -250,6 +250,27 @@ export const SupervisorConfig = z
       })
       .strict()
       .prefault({}),
+    usageLimits: z
+      .object({
+        notifyAt: z
+          .array(z.number().min(1).max(100))
+          .default([80, 95])
+          .describe(
+            "Percentages of a subscription usage window (Claude Code's 5-hour and weekly limits, Codex's) that send a notification, once per window. [] turns these notifications off; reaching a limit is always reported.",
+          ),
+        pollMinutes: z
+          .number()
+          .min(0)
+          .default(15)
+          .describe(
+            "How often Codex's limits are read while no Codex worker reports them (no model call, no tokens). 0 reads them only from running workers. Claude Code reports its limits only while a worker runs.",
+          ),
+      })
+      .strict()
+      .prefault({})
+      .describe(
+        "Tracking the subscription usage limits Claude Code and Codex report. Restart to apply.",
+      ),
     mergeMethod: MergeMethod.default("squash").describe(
       "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod. Applies on save.",
     ),
