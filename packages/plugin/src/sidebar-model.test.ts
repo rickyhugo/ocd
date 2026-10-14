@@ -50,6 +50,17 @@ describe("sidebar model", () => {
     expect(age(null, NOW)).toBe("");
   });
 
+  it("lists a manager push request on a task still under review, with confirm and decline", () => {
+    const t = task("r", "ready_for_review", { finishedAt: minutesAgo(3) });
+    const model = buildSidebar([t], [attention("l", "r", "land")], NOW);
+    const row = model.sections.flatMap((s) => s.rows).find((r) => r.attention?.id === "l")!;
+    expect(row).toBeDefined();
+    const kinds = actionsFor(row, PR_ON).map((a) => ("kind" in a ? a.kind : null));
+    expect(kinds).toEqual(expect.arrayContaining(["land_confirm", "land_decline"]));
+    // The task is not also listed under Review.
+    expect(model.sections.flatMap((s) => s.rows).filter((r) => r.task?.id === "r")).toHaveLength(1);
+  });
+
   it("puts what needs the human first and leaves out empty sections", () => {
     const tasks = [
       task("a", "running"),

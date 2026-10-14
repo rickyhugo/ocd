@@ -78,6 +78,9 @@ export interface ClientOptions {
   token?: string;
 }
 
+/** Idle timeout for calls that run git, gh or cleanup on the supervisor and can take minutes. */
+export const LONG_CALL_TIMEOUT_MS = 10 * 60_000;
+
 /** HTTP header carrying the API token. */
 export const HEADER_AUTHORIZATION = "authorization";
 
@@ -115,7 +118,13 @@ export class OcdClient {
     return new OcdClient({ ...this.options, sessionId });
   }
 
-  async call<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+  async call<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    query?: Query,
+    options: { timeoutMs?: number } = {},
+  ): Promise<T> {
     const payload = body === undefined ? undefined : JSON.stringify(body);
     const headers: Record<string, string> = {
       accept: "application/json",
@@ -144,6 +153,19 @@ export class OcdClient {
         (res) => {
           const chunks: Buffer[] = [];
           res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          const broken = (cause?: Error) =>
+            reject(
+              new OcdApiError(
+                res.statusCode ?? 0,
+                "connection_lost",
+                `The connection to the supervisor dropped mid-response${cause ? ` (${cause.message})` : ""}. The operation may still have completed; check \`ocd task show\`.`,
+              ),
+            );
+          res.on("error", broken);
+          res.on("aborted", () => broken());
+          res.on("close", () => {
+            if (!res.complete) broken();
+          });
           res.on("end", () => {
             const text = Buffer.concat(chunks).toString("utf8");
             let json: unknown = undefined;
@@ -178,8 +200,13 @@ export class OcdClient {
           });
         },
       );
-      req.setTimeout(this.options.timeoutMs ?? 30_000, () =>
-        req.destroy(new Error("Request timed out")),
+      const timeoutMs = options.timeoutMs ?? this.options.timeoutMs ?? 30_000;
+      req.setTimeout(timeoutMs, () =>
+        req.destroy(
+          new Error(
+            `Request timed out after ${Math.round(timeoutMs / 1000)}s without a response. The supervisor may still be running the operation; check \`ocd task show\` before retrying.`,
+          ),
+        ),
       );
       req.on("error", (error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
@@ -196,7 +223,10 @@ export class OcdClient {
   status = () => this.call<SupervisorStatus>("GET", "/v1/status");
   pause = () => this.call<{ paused: boolean }>("POST", "/v1/pause");
   resume = () => this.call<{ paused: boolean }>("POST", "/v1/resume");
-  shutdown = () => this.call<ShutdownReport>("POST", "/v1/shutdown");
+  shutdown = () =>
+    this.call<ShutdownReport>("POST", "/v1/shutdown", undefined, undefined, {
+      timeoutMs: LONG_CALL_TIMEOUT_MS,
+    });
 
   listRepos = () => this.call<Repository[]>("GET", "/v1/repos");
   listProfiles = () => this.call<Profile[]>("GET", "/v1/profiles");
@@ -223,29 +253,60 @@ export class OcdClient {
       reason === undefined ? {} : { reason },
     );
   cleanupTask = (id: string, force = false) =>
-    this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/cleanup`, { force });
+    this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/cleanup`, { force }, undefined, {
+      timeoutMs: LONG_CALL_TIMEOUT_MS,
+    });
   openPullRequest = (
     id: string,
     options: { draft?: boolean; base?: string; commit?: boolean } = {},
-  ) => this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/pull-request`, options);
+  ) =>
+    this.call<Task>(
+      "POST",
+      `/v1/tasks/${encodeURIComponent(id)}/pull-request`,
+      options,
+      undefined,
+      { timeoutMs: LONG_CALL_TIMEOUT_MS },
+    );
   mergePullRequest = (id: string, method?: "squash" | "merge" | "rebase") =>
-    this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/merge`, method ? { method } : {});
+    this.call<Task>(
+      "POST",
+      `/v1/tasks/${encodeURIComponent(id)}/merge`,
+      method ? { method } : {},
+      undefined,
+      { timeoutMs: LONG_CALL_TIMEOUT_MS },
+    );
   /** The task's changes against where its branch started, uncommitted ones included. Read-only. */
-  taskDiff = (id: string) => this.call<TaskDiff>("GET", `/v1/tasks/${encodeURIComponent(id)}/diff`);
+  taskDiff = (id: string) =>
+    this.call<TaskDiff>("GET", `/v1/tasks/${encodeURIComponent(id)}/diff`, undefined, undefined, {
+      timeoutMs: LONG_CALL_TIMEOUT_MS,
+    });
   /** Sends review feedback to the worker and reopens the task; recorded as a review round. */
   requestChanges = (id: string, feedback: string) =>
-    this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/request-changes`, { feedback });
+    this.call<Task>(
+      "POST",
+      `/v1/tasks/${encodeURIComponent(id)}/request-changes`,
+      { feedback },
+      undefined,
+      { timeoutMs: LONG_CALL_TIMEOUT_MS },
+    );
   /** What a direct landing would push (fetches the base; changes nothing). */
-  landPlan = (id: string) => this.call<LandPlan>("GET", `/v1/tasks/${encodeURIComponent(id)}/land`);
+  landPlan = (id: string) =>
+    this.call<LandPlan>("GET", `/v1/tasks/${encodeURIComponent(id)}/land`, undefined, undefined, {
+      timeoutMs: LONG_CALL_TIMEOUT_MS,
+    });
   /** Gets the work into its base branch: through a pull request, or directly once confirmed. */
   landTask = (id: string, input: LandTaskInput = {}) =>
-    this.call<LandResult>("POST", `/v1/tasks/${encodeURIComponent(id)}/land`, input);
+    this.call<LandResult>("POST", `/v1/tasks/${encodeURIComponent(id)}/land`, input, undefined, {
+      timeoutMs: LONG_CALL_TIMEOUT_MS,
+    });
   /** Cancels the task if needed and removes its worktree and branch, losing their work. Human only. */
   discardTask = (id: string, reason?: string) =>
     this.call<Task>(
       "POST",
       `/v1/tasks/${encodeURIComponent(id)}/discard`,
       reason === undefined ? {} : { reason },
+      undefined,
+      { timeoutMs: LONG_CALL_TIMEOUT_MS },
     );
   acceptTask = (id: string) =>
     this.call<Task>("POST", `/v1/tasks/${encodeURIComponent(id)}/accept`);

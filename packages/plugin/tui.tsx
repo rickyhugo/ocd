@@ -60,6 +60,7 @@ import {
   type SidebarModel,
   type Tone,
 } from "./src/sidebar-model.ts";
+import { managerSessionFor } from "./src/manager-route.ts";
 import { openSessionWindow, shellLine } from "./src/session-window.ts";
 import { matchTasks } from "./src/task-match.ts";
 
@@ -122,7 +123,19 @@ export default Plugin.define({
       sections: Partial<Record<SectionKey, boolean>>;
     }>("ocd.sidebar", { initial: { expanded: false, sections: {} } });
 
+    // A tick is skipped while a refresh is in flight, so slow responses cannot
+    // pile up or apply out of order.
+    let refreshing = false;
     const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        await refreshOnce();
+      } finally {
+        refreshing = false;
+      }
+    };
+    const refreshOnce = async () => {
       try {
         const [open, done, items] = await Promise.all([
           client.listTasks({ open: true, limit: 100 }),
@@ -187,8 +200,12 @@ export default Plugin.define({
     /** Sends the manager (the current session) a message about one task. */
     const askAbout = async (task: Task, text?: string) => {
       const route = ctx.ui.router.current();
-      if (route.type !== "session") {
-        toast("Open the manager session first", "warning");
+      const sessionID = managerSessionFor(
+        route as { type: string; sessionID?: string },
+        await client.getManager().catch(() => null),
+      );
+      if (!sessionID) {
+        toast("Open the manager session first; this message is for the manager", "warning");
         return;
       }
       const body =
@@ -200,7 +217,7 @@ export default Plugin.define({
         }));
       if (!body) return;
       await ctx.client.session.prompt({
-        sessionID: route.sessionID,
+        sessionID,
         text: `Regarding OCD task ${task.id} ("${task.title}", repo ${task.repo}, ${task.state}): ${body}`,
       });
     };
@@ -352,6 +369,13 @@ export default Plugin.define({
         await ctx.ui.dialog.alert({ title: clip(task.title, 60), message: formatDiffStat(diff) });
     };
 
+    /** A task by id from the latest sidebar model; null once it is gone from it. */
+    const liveTask = (id: string): Task | null => {
+      for (const section of model.sections)
+        for (const row of section.rows) if (row.task?.id === id) return row.task as Task;
+      return null;
+    };
+
     /** The theme's diff colours, where it defines them; OpenTUI's defaults otherwise. */
     const diffColors = () => {
       const pick = (key: string) => theme[key] as never;
@@ -383,7 +407,26 @@ export default Plugin.define({
           file: props.view.diff.files.find((f) => f.path === part.path),
         })),
       );
-      const reviewable = () => props.view.task.state === "ready_for_review";
+      // The task as the sidebar last saw it, not as it was when the diff opened.
+      const live = () => liveTask(props.view.task.id);
+      const reviewable = () => live()?.state === "ready_for_review";
+      const canLand = () => {
+        const t = live();
+        return !!t && landable(t);
+      };
+      /** Re-reads the task, runs the action if it still applies, and closes the panel once it no longer does. */
+      const act = async (applies: (t: Task) => boolean, run: (t: Task) => Promise<unknown>) => {
+        const { task } = await client.inspectTask(props.view.task.id);
+        if (!applies(task)) {
+          toast(`“${clip(task.title, 40)}” is now ${task.state}; nothing to do here`, "warning");
+          await refresh();
+          props.close();
+          return;
+        }
+        await run(task);
+        const after = (await client.inspectTask(task.id)).task;
+        if (!applies(after)) props.close();
+      };
       ctx.keymap.layer(() => ({
         enabled: () => props.focused,
         commands: [
@@ -422,14 +465,14 @@ export default Plugin.define({
             group: "OCD diff",
             bind: "r",
             enabled: reviewable,
-            run: () => void requestChanges(props.view.task).catch(fail),
+            run: () => void act((t) => t.state === "ready_for_review", requestChanges).catch(fail),
           },
           {
             title: "Land…",
             group: "OCD diff",
             bind: "l",
-            enabled: () => landable(props.view.task),
-            run: () => void chooseLanding(props.view.task).catch(fail),
+            enabled: canLand,
+            run: () => void act(landable, chooseLanding).catch(fail),
           },
           {
             title: "Diff: fullscreen",
@@ -450,7 +493,7 @@ export default Plugin.define({
             {`${d().branch ?? props.view.task.id} vs ${d().baseRef} · ${diffTotals(d())}${d().truncated ? " · truncated" : ""}`}
           </text>
           <text fg={muted()} wrapMode="none" flexShrink={0}>
-            {`v split · j/k scroll${reviewable() ? " · r request changes" : ""}${landable(props.view.task) ? " · l land" : ""} · f fullscreen · q close`}
+            {`v split · j/k scroll${reviewable() ? " · r request changes" : ""}${canLand() ? " · l land" : ""} · f fullscreen · q close`}
           </text>
           <scrollbox
             ref={(r: ScrollBoxRenderable) => (scroll = r)}
