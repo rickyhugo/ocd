@@ -187,6 +187,10 @@ export class SelfUpdater {
       }
     }
     if (!this.o.settings().enabled) return;
+    // A switch restarts right away, usually before its own prune finishes.
+    void this.prune().catch((error: unknown) =>
+      this.o.logger.warn({ err: error }, "pruning old OCD builds failed"),
+    );
     const every = this.o.settings().intervalMinutes * 60_000;
     const first = setTimeout(() => void this.check().catch(() => undefined), 30_000);
     const poll = setInterval(() => void this.check().catch(() => undefined), every);
