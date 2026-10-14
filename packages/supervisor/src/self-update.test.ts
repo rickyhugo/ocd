@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -10,6 +10,14 @@ import { makeRepo, rmrf, tempDir } from "./testkit.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim();
+
+async function waitUntil(ok: () => boolean, ms = 10_000): Promise<void> {
+  const start = Date.now();
+  while (!ok()) {
+    if (Date.now() - start > ms) throw new Error("timed out");
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
 
 const roots: string[] = [];
 afterEach(() => {
@@ -143,6 +151,59 @@ describe("self-update", () => {
     const fixed = w.land("fix: build");
     const { u: u2 } = updater(w);
     expect((await u2.check()).current).toBe(fixed);
+  });
+
+  it("follows a checkout given by path, without OCD being a declared repository", async () => {
+    const w = world();
+    seedInstall(w);
+    const sha = w.land("feat: from a path");
+    const { u, calls } = updater(w, {
+      settings: () => ({
+        enabled: true,
+        repo: "ocd",
+        path: w.repo,
+        intervalMinutes: 10,
+        build: ["mkdir -p packages/cli/dist && echo built > packages/cli/dist/ocd.mjs"],
+      }),
+      repoPath: () => null,
+    });
+    expect(await u.check()).toMatchObject({ current: sha, lastError: null });
+    expect(calls.restart).toBe(1);
+
+    const { u: missing } = updater(w, {
+      settings: () => ({
+        enabled: true,
+        repo: "ocd",
+        path: join(w.root, "nowhere"),
+        intervalMinutes: 10,
+        build: [],
+      }),
+    });
+    await expect(missing.check()).rejects.toMatchObject({ code: "update_no_repo" });
+  });
+
+  it("removes builds older than the previous one when the next supervisor starts", async () => {
+    const w = world();
+    seedInstall(w);
+    const { u } = updater(w);
+    const first = w.land("feat: one");
+    await u.check();
+    const second = w.land("feat: two");
+    await u.check();
+    // Left behind by a switch whose restart beat its prune.
+    mkdirSync(join(w.installDir, "builds", "0123456789ab"));
+    writeFileSync(join(w.installDir, "builds", "0123456789ab.log"), "old\n");
+
+    const next = updater(w, {
+      runningFrom: join(w.installDir, "builds", second.slice(0, 12), "packages/cli/dist/ocd.mjs"),
+    });
+    next.u.start();
+    next.u.stop();
+    const builds = () => readdirSync(join(w.installDir, "builds")).toSorted();
+    await waitUntil(() => !builds().includes("0123456789ab"));
+    expect(builds()).toEqual(
+      [first, second].flatMap((s) => [s.slice(0, 12), `${s.slice(0, 12)}.log`]).toSorted(),
+    );
   });
 
   it("refuses a build whose supervisor does not boot", async () => {

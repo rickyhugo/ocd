@@ -23,9 +23,9 @@ import {
 // `ocd repo add|remove` edit ocd.jsonc in place: the file stays the source of
 // truth (comments and formatting are kept) and the supervisor hot-reloads it.
 
-const FORMAT = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
+export const FORMAT = { formattingOptions: { insertSpaces: true, tabSize: 2 } };
 
-function readConfig(path: string): { text: string; json: Record<string, unknown> } {
+export function readConfig(path: string): { text: string; json: Record<string, unknown> } {
   const text = existsSync(path) ? readFileSync(path, "utf8") : "{}\n";
   const errors: ParseError[] = [];
   const json = (parse(text, errors, { allowTrailingComma: true }) ?? {}) as Record<string, unknown>;
@@ -34,7 +34,7 @@ function readConfig(path: string): { text: string; json: Record<string, unknown>
 }
 
 /** Writes through a symlink (ocd.jsonc usually links into a git repo) atomically. */
-function writeConfig(path: string, text: string): void {
+export function writeConfig(path: string, text: string): void {
   const target = existsSync(path) ? realpathSync(path) : path;
   const temp = join(dirname(target), `.${Date.now()}.ocd.jsonc.tmp`);
   writeFileSync(temp, text, { mode: existsSync(target) ? statSync(target).mode & 0o777 : 0o600 });
@@ -42,8 +42,7 @@ function writeConfig(path: string, text: string): void {
 }
 
 /** `~/x` for paths under the home directory, so the config stays portable. */
-function portable(path: string): string {
-  const home = homedir();
+export function portable(path: string, home: string = homedir()): string {
   return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 

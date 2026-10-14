@@ -16,6 +16,7 @@ import { join, sep } from "node:path";
 
 import { redact, truncate, type UpdateStatus } from "@ocd/core";
 
+import { normalizeDirectory } from "./config.ts";
 import { conflict, forbidden } from "./errors.ts";
 import { iso } from "./ids.ts";
 import type { Logger } from "./logger.ts";
@@ -31,6 +32,8 @@ import { git, run } from "./workspace.ts";
 export interface SelfUpdateSettings {
   enabled: boolean;
   repo: string;
+  /** A checkout to follow instead of the declared `repo`. */
+  path?: string | undefined;
   branch?: string | undefined;
   intervalMinutes: number;
   build: string[];
@@ -184,6 +187,10 @@ export class SelfUpdater {
       }
     }
     if (!this.o.settings().enabled) return;
+    // A switch restarts right away, usually before its own prune finishes.
+    void this.prune().catch((error: unknown) =>
+      this.o.logger.warn({ err: error }, "pruning old OCD builds failed"),
+    );
     const every = this.o.settings().intervalMinutes * 60_000;
     const first = setTimeout(() => void this.check().catch(() => undefined), 30_000);
     const poll = setInterval(() => void this.check().catch(() => undefined), every);
@@ -198,10 +205,21 @@ export class SelfUpdater {
     for (const t of this.timers.splice(0)) clearTimeout(t);
   }
 
+  /** OCD's own checkout: `selfUpdate.path`, else the declared `selfUpdate.repo`. */
+  private sourcePath(): string | null {
+    const settings = this.o.settings();
+    return settings.path ? normalizeDirectory(settings.path) : this.o.repoPath(settings.repo);
+  }
+
   /** A task landed in this repository: look for the new version soon. */
   landed(repo: string): void {
     const settings = this.o.settings();
-    if (!settings.enabled || repo !== settings.repo || this.stopped) return;
+    if (!settings.enabled || this.stopped) return;
+    const landedIn = this.o.repoPath(repo);
+    const ours = settings.path
+      ? landedIn !== null && normalizeDirectory(landedIn) === this.sourcePath()
+      : repo === settings.repo;
+    if (!ours) return;
     const t = setTimeout(() => void this.check().catch(() => undefined), 5_000);
     t.unref();
     this.timers.push(t);
@@ -219,11 +237,13 @@ export class SelfUpdater {
     const settings = this.o.settings();
     if (!settings.enabled)
       throw conflict("update_disabled", "selfUpdate.enabled is off in ocd.jsonc");
-    const repoPath = this.o.repoPath(settings.repo);
-    if (!repoPath)
+    const repoPath = this.sourcePath();
+    if (!repoPath || (settings.path && !existsSync(repoPath)))
       throw conflict(
         "update_no_repo",
-        `selfUpdate.repo "${settings.repo}" is not a declared repository`,
+        settings.path
+          ? `selfUpdate.path ${settings.path} does not exist`
+          : `selfUpdate.repo "${settings.repo}" is not a declared repository`,
       );
     const branch = settings.branch ?? (await this.defaultBranch(repoPath));
     const fetched = await run("git", ["fetch", "--quiet", "origin", branch], {
@@ -393,7 +413,7 @@ export class SelfUpdater {
   }
 
   private async prune(): Promise<void> {
-    const repoPath = this.o.repoPath(this.o.settings().repo);
+    const repoPath = this.sourcePath();
     const keep = new Set(
       [this.state.current, this.state.previous, this.state.pending?.sha, this.building]
         .filter((s): s is string => !!s)

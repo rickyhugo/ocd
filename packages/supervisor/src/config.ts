@@ -212,7 +212,16 @@ export const SupervisorConfig = z
         repo: z
           .string()
           .default("ocd")
-          .describe("The declared repository (under repos) that holds OCD's own source."),
+          .describe(
+            "The declared repository (under repos) that holds OCD's own source. Ignored when path is set.",
+          ),
+        path: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "A checkout of OCD's own repository to follow instead of a declared repo (`~` is expanded), so a machine that only uses OCD need not dispatch work to it. `ocd setup` sets it.",
+          ),
         branch: z
           .string()
           .optional()

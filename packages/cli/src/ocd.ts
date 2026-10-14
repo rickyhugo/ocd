@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -58,8 +59,15 @@ import {
 } from "./platform/index.ts";
 import { followInterval, followTranscript } from "./peek.ts";
 import { addRepo, removeRepo } from "./repo-config.ts";
+import { SetupStop, runSetup, systemSetupDeps, terminalPrompter } from "./setup.ts";
 
 const HELP = `ocd — local agent control plane
+
+Setup
+  ocd setup [--yes]                 Set up (or check and repair) everything on this machine: prerequisites,
+                                    ocd.jsonc, self-update, the manager directory and its plugin, \`ocd\` on
+                                    PATH, the background service and notifications. Asks before each change
+                                    outside ~/.ocd; --yes takes the defaults
 
 Supervisor
   ocd daemon                        Run the supervisor in the foreground
@@ -350,6 +358,7 @@ function parseCli(argv: string[]) {
       "reasoning-summaries": { type: "boolean" },
       follow: { type: "boolean" },
       interval: { type: "string" },
+      yes: { type: "boolean", short: "y" },
     },
   });
 }
@@ -377,6 +386,38 @@ async function run(
   }
 
   switch (command) {
+    case "setup": {
+      const yes = flags.yes ?? false;
+      if (!yes && !(process.stdin.isTTY && process.stdout.isTTY))
+        fail("setup asks questions; run it in a terminal, or pass --yes to take the defaults");
+      const rl = yes ? null : createInterface({ input: process.stdin, output: process.stdout });
+      const say = (line: string) => console.log(line);
+      try {
+        const { problems } = await runSetup(
+          systemSetupDeps({
+            home: homedir(),
+            ocdHome: paths.home,
+            configPath: paths.config,
+            platform: platform.name,
+            cliPath: cliPath(),
+            service: platform.service,
+            locate: (name) => locateBinary(name),
+            loginPath: async () => (await loginShellPath()).path,
+            prompt: terminalPrompter(rl, say),
+            say,
+          }),
+        );
+        if (problems.length) process.exitCode = 1;
+      } catch (error) {
+        // Ctrl-C / Ctrl-D at a prompt: stop quietly; re-running picks up where it stopped.
+        if (error instanceof SetupStop || (error as Error).name === "AbortError")
+          fail("setup stopped");
+        throw error;
+      } finally {
+        rl?.close();
+      }
+      return;
+    }
     case "daemon": {
       const background = flags.background ?? false;
       // Before anything is spawned: workers, gh and notifications inherit it.
