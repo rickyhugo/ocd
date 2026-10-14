@@ -2,7 +2,11 @@
 // OpenCode's mark (a thick white "o" on near-black, grey contents) drawn to
 // bother anyone with OCD: flat and clean, but nothing where it belongs. The
 // "o" leans, its bars are jumbled, one is escaping through the wall and two
-// have fallen out into a crooked pile. One corner of the square is off too.
+// have fallen out into a crooked pile.
+//
+// Full bleed: the artwork fills the whole square and macOS applies its own
+// rounded mask. (macOS 26 shrinks icons that bring their own rounded corners
+// and transparent margin onto a grey tile.)
 // Usage: swift packages/cli/assets/make-icon.swift <out.png>
 import CoreGraphics
 import Foundation
@@ -19,32 +23,6 @@ func rgb(_ hex: UInt32, _ a: CGFloat = 1) -> CGColor {
   CGColor(
     srgbRed: CGFloat((hex >> 16) & 0xff) / 255, green: CGFloat((hex >> 8) & 0xff) / 255,
     blue: CGFloat(hex & 0xff) / 255, alpha: a)
-}
-
-/// A rounded rectangle whose corners need not match (bl, br, tr, tl; y up).
-func roundedRect(_ r: CGRect, _ bl: CGFloat, _ br: CGFloat, _ tr: CGFloat, _ tl: CGFloat)
-  -> CGPath
-{
-  let p = CGMutablePath()
-  p.move(to: CGPoint(x: r.minX + bl, y: r.minY))
-  p.addLine(to: CGPoint(x: r.maxX - br, y: r.minY))
-  p.addArc(
-    tangent1End: CGPoint(x: r.maxX, y: r.minY), tangent2End: CGPoint(x: r.maxX, y: r.minY + br),
-    radius: br)
-  p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - tr))
-  p.addArc(
-    tangent1End: CGPoint(x: r.maxX, y: r.maxY), tangent2End: CGPoint(x: r.maxX - tr, y: r.maxY),
-    radius: tr)
-  p.addLine(to: CGPoint(x: r.minX + tl, y: r.maxY))
-  p.addArc(
-    tangent1End: CGPoint(x: r.minX, y: r.maxY), tangent2End: CGPoint(x: r.minX, y: r.maxY - tl),
-    radius: tl)
-  p.addLine(to: CGPoint(x: r.minX, y: r.minY + bl))
-  p.addArc(
-    tangent1End: CGPoint(x: r.minX, y: r.minY), tangent2End: CGPoint(x: r.minX + bl, y: r.minY),
-    radius: bl)
-  p.closeSubpath()
-  return p
 }
 
 /// Draws `body` rotated by `degrees` (counter-clockwise) around `centre`.
@@ -67,20 +45,14 @@ func bar(_ c: CGPoint, _ w: CGFloat, _ h: CGFloat, _ color: UInt32, tilt: CGFloa
 
 let dark: UInt32 = 0x131010
 
-// Body: the macOS grid's 824×824 rounded square; the top-right corner is
-// rounded less than the other three.
-let body = CGRect(x: 100, y: 100, width: 824, height: 824)
-let shape = roundedRect(body, 185, 185, 120, 185)
-ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: rgb(0x000000, 0.35))
-ctx.addPath(shape)
+// Body: the whole square, edge to edge; artwork scaled up from the 824px
+// rounded-square layout so it keeps its place inside macOS's mask.
 ctx.setFillColor(rgb(dark))
-ctx.fillPath()
-ctx.restoreGState()
-
+ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
 ctx.saveGState()
-ctx.addPath(shape)
-ctx.clip()
+ctx.translateBy(x: 512, y: 512)
+ctx.scaleBy(x: 1024 / 824, y: 1024 / 824)
+ctx.translateBy(x: -512, y: -512)
 
 // The "o" (OpenCode's proportions), leaning 8° and sitting high and left. Its
 // walls are not equally thick. Everything inside leans with it, and more.

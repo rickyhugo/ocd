@@ -64,16 +64,16 @@ describe("OCD's notifier app", () => {
     const home = join(root, "home");
     const binary = await ensureNotifierApp({ terminalNotifier: wrapper, icns, home, exec });
     expect(binary).toBe(join(home, "notifier/OCD.app/Contents/MacOS/terminal-notifier"));
-    expect(readFileSync(join(home, "notifier/OCD.app/Contents/Resources/OCD.icns"), "utf8")).toBe(
-      "ocd icon",
-    );
+    const iconFile = calls
+      .find((c) => c[2]?.startsWith("Set :CFBundleIconFile "))![2]!
+      .slice("Set :CFBundleIconFile ".length);
+    expect(iconFile).toMatch(/^OCD-[0-9a-f]{12}$/);
+    expect(
+      readFileSync(join(home, `notifier/OCD.app/Contents/Resources/${iconFile}.icns`), "utf8"),
+    ).toBe("ocd icon");
     const plistEdits = calls.filter((c) => c[0] === "/usr/libexec/PlistBuddy").map((c) => c[2]);
     expect(plistEdits).toEqual(
-      expect.arrayContaining([
-        "Set :CFBundleIdentifier dev.ocd.notifier",
-        "Set :CFBundleName OCD",
-        "Set :CFBundleIconFile OCD",
-      ]),
+      expect.arrayContaining(["Set :CFBundleIdentifier dev.ocd.notifier", "Set :CFBundleName OCD"]),
     );
     expect(calls.some((c) => c[0] === "/usr/bin/codesign" && c.includes("--sign"))).toBe(true);
 
