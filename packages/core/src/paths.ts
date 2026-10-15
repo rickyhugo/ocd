@@ -33,7 +33,7 @@ export function apiTokenPath(socketPath: string): string {
   return join(dirname(socketPath), "api.token");
 }
 
-// sockaddr_un.sun_path is 104 bytes on macOS, including the terminator.
+// sockaddr_un.sun_path is at most 104 bytes on the supported systems, including the terminator.
 const MAX_SOCKET_PATH_BYTES = 103;
 
 export function resolveOcdPaths(env: NodeJS.ProcessEnv = process.env): OcdPaths {

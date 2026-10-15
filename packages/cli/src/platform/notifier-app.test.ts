@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import type { Exec } from "./exec.ts";
-import { ensureNotifierApp, iconAssets, terminalNotifierApp } from "./notifier-app.ts";
+import { assetsDir, ICON_FILES } from "./index.ts";
+import { ensureNotifierApp, terminalNotifierApp } from "./notifier-app.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -100,8 +101,7 @@ describe("OCD's notifier app", () => {
   });
 
   it("ships the icon next to the CLI", () => {
-    const { icns, png } = iconAssets(new URL("../ocd.ts", import.meta.url).href);
-    expect(existsSync(icns)).toBe(true);
-    expect(existsSync(png)).toBe(true);
+    const dir = assetsDir(new URL("../ocd.ts", import.meta.url).href);
+    for (const file of Object.values(ICON_FILES)) expect(existsSync(join(dir, file))).toBe(true);
   });
 });

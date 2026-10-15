@@ -51,7 +51,7 @@ import {
   servicePath,
   shellQuote,
   focusManager,
-  iconAssets,
+  assetsDir,
   locateBinary,
   loginShellPath,
   toolPath,
@@ -73,7 +73,7 @@ Supervisor
   ocd daemon                        Run the supervisor in the foreground
   ocd service install [--force]|status|uninstall
                                     Run the supervisor in the background and at login
-                                    (LaunchAgent on macOS, systemd user unit on Linux). install and uninstall
+                                    (a login service of the operating system). install and uninstall
                                     (like restart) work only from the service's own home, never a worker sandbox;
                                     reinstalling a running service refuses while Claude Code / Codex workers run unless --force
   ocd stop                          Stop the supervisor and report worker outcomes
@@ -161,7 +161,7 @@ Environment: OCD_HOME (default ~/.ocd), OCD_SOCKET, OCD_CONFIG (default $OCD_HOM
 
 /** How long `task land --wait` polls before giving up. */
 const LAND_WAIT_LIMIT_MS = 60 * 60_000;
-/** Exit status that tells launchd / systemd to start the service again (EX_TEMPFAIL). */
+/** Exit status that tells the service manager to start the service again (EX_TEMPFAIL). */
 const EXIT_RESTART = 75;
 
 const paths = resolveOcdPaths();
@@ -188,7 +188,7 @@ function stableCliPath(home: string): string {
 
 /** Notifications open the manager when clicked and carry OCD's icon. */
 function notifierOptions() {
-  return { onClick: focusCommand(), icon: iconAssets(import.meta.url), home: paths.home };
+  return { onClick: focusCommand(), assets: assetsDir(import.meta.url), home: paths.home };
 }
 
 /** After a switch to a new version: OpenCode reloads its plugins (the OCD plugin runs from the install). */
@@ -266,7 +266,7 @@ async function confirmInteractive(prompt: string): Promise<boolean> {
 }
 
 /**
- * The background service is global (one LaunchAgent label / systemd unit), so
+ * The background service is global (one per user), so
  * it is only managed from its own home, never from a worker's sandbox.
  */
 function guardServiceHome(definitionPath: string): void {
@@ -398,7 +398,7 @@ async function run(
             home: homedir(),
             ocdHome: paths.home,
             configPath: paths.config,
-            platform: platform.name,
+            platform,
             cliPath: cliPath(),
             service: platform.service,
             locate: (name) => locateBinary(name),
@@ -455,7 +455,7 @@ async function run(
             error instanceof DatabaseTooNewError ||
             error instanceof ConfigError)
         ) {
-          // Under launchd a clean exit avoids a restart loop; tell the human instead.
+          // Under a service manager a clean exit avoids a restart loop; tell the human instead.
           console.error(`ocd: not started: ${error.message}`);
           await (
             await platform.notifier({ ...notifierOptions(), onClick: undefined })
@@ -481,16 +481,15 @@ async function run(
         console.error(`ocd: stopped. ${report.workerPolicy}`);
         for (const w of report.workers) console.error(`  ${w.taskId} (${w.harness}): ${w.outcome}`);
       }
-      // A non-zero exit makes launchd / systemd start the service again, now on the new version.
+      // A non-zero exit makes the service manager start the service again, now on the new version.
       if (daemon.restartRequested) console.error("ocd: restarting for an update");
       process.exit(daemon.restartRequested ? EXIT_RESTART : 0);
       return;
     }
-    case "service":
-    case "launchagent": {
+    case "service": {
       const service = platform.service;
       if (!service)
-        fail(`no background service manager for ${process.platform}; run \`ocd daemon\` instead`);
+        fail(`no background service manager for ${platform.name}; run \`ocd daemon\` instead`);
       if (sub === "install" || sub === "uninstall") {
         guardServiceHome((await service.status()).definition);
       }
@@ -744,14 +743,8 @@ async function run(
       };
       print(report, json, () => {
         const hints: string[] = [];
-        if (platform.name === "macos" && !notifier.clickable)
-          hints.push(
-            "  brew install terminal-notifier  # makes notifications open the manager session",
-          );
-        if (platform.name === "linux" && !notifier.clickable)
-          hints.push(
-            "  libnotify 0.7.9+ (notify-send --action) makes notifications open the manager session",
-          );
+        if (!notifier.clickable && platform.clickableHint)
+          hints.push(`  ${platform.clickableHint}`);
         const off = (key: string) => `off (turn on with ${key}.enabled in ocd.jsonc)`;
         const harnessOff = (["opencode", "claude", "codex"] as const)
           .filter((h) => !config[h].enabled)

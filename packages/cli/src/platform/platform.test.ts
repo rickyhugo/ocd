@@ -1,4 +1,12 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -257,5 +265,59 @@ describe("ocd focus", () => {
     expect(steps).toEqual([
       "nothing to focus: turn on tmux.enabled or set notifications.focusApp in ocd.jsonc",
     ]);
+  });
+});
+
+describe("notification prerequisites", () => {
+  const tools =
+    (...names: string[]) =>
+    (name: string) =>
+      names.includes(name) ? `/bin/${name}` : null;
+
+  it("macOS offers Homebrew's terminal-notifier when it is missing", () => {
+    const exec = recordingExec().exec;
+    const check = new MacPlatform({ exec, locate: tools("brew") }).notifierPrerequisite();
+    expect(check.ready).toBe(false);
+    expect(check.install).toMatchObject({
+      command: "/bin/brew",
+      args: ["install", "terminal-notifier"],
+    });
+    expect(
+      new MacPlatform({ exec, locate: tools() }).notifierPrerequisite().install,
+    ).toBeUndefined();
+    const found = new MacPlatform({ exec, locate: tools("terminal-notifier") });
+    expect(found.notifierPrerequisite()).toEqual({
+      ready: true,
+      summary: "terminal-notifier /bin/terminal-notifier",
+    });
+  });
+
+  it("Linux reports notify-send, with nothing to install", () => {
+    const exec = recordingExec().exec;
+    const present = new LinuxPlatform({ exec, locate: tools("notify-send") });
+    expect(present.notifierPrerequisite().ready).toBe(true);
+    const missing = new LinuxPlatform({ exec, locate: tools() }).notifierPrerequisite();
+    expect(missing.ready).toBe(false);
+    expect(missing.install).toBeUndefined();
+  });
+
+  it("macOS asks for notification permission until OCD's notifier app exists", async () => {
+    const { exec, calls } = recordingExec();
+    const mac = new MacPlatform({ exec, locate: tools() });
+    const home = temp();
+    const approval = mac.notificationApproval(home);
+    expect(approval?.message).toContain("System Settings");
+    await approval?.open();
+    expect(calls[0]?.[0]).toBe("/usr/bin/open");
+    mkdirSync(join(home, "notifier", "OCD.app"), { recursive: true });
+    expect(mac.notificationApproval(home)).toBeNull();
+    expect(new LinuxPlatform({ exec }).notificationApproval()).toBeNull();
+  });
+
+  it("picks the icon format each platform needs from the assets directory", async () => {
+    const { exec, calls } = recordingExec({ "/bin/notify-send --help": { stdout: "--action" } });
+    const linux = new LinuxPlatform({ exec, locate: tools("notify-send") });
+    await (await linux.notifier({ assets: "/assets" })).notify({ title: "t", body: "b" });
+    expect(calls.at(-1)).toContain("--icon=/assets/ocd-icon.png");
   });
 });

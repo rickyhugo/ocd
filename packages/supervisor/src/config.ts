@@ -59,10 +59,7 @@ export const SupervisorConfig = z
       .prefault({}),
     notifications: z
       .object({
-        enabled: z
-          .boolean()
-          .default(true)
-          .describe("Send desktop notifications (macOS and Linux)."),
+        enabled: z.boolean().default(true).describe("Send desktop notifications."),
         digestWindowMs: z
           .number()
           .int()
@@ -75,7 +72,7 @@ export const SupervisorConfig = z
           .string()
           .optional()
           .describe(
-            "Terminal app to bring forward when a notification is clicked: a macOS bundle id (com.mitchellh.ghostty) or a Linux window class (kitty). Detected from tmux by default.",
+            "Terminal app to bring forward when a notification is clicked: its bundle id (com.mitchellh.ghostty) or window class (kitty). Detected from tmux by default.",
           ),
       })
       .strict()
