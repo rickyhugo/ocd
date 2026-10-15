@@ -77,6 +77,8 @@ export interface SelfUpdaterOptions {
   smokeTest?: (buildDir: string) => Promise<void>;
   /** After a switch, in the new supervisor (e.g. `opencode reload` for the plugin). */
   afterApplied?: () => Promise<void>;
+  /** Wait before the one retry of `afterApplied` (a reload can fail transiently). Default 30 s. */
+  afterAppliedRetryMs?: number;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -179,11 +181,7 @@ export class SelfUpdater {
           "OCD: Updated",
           `Now running ${short(applied.sha)}${applied.from ? ` (was ${short(applied.from)})` : ""}.`,
         );
-        void this.o
-          .afterApplied?.()
-          .catch((error: unknown) =>
-            this.o.logger.warn({ err: error }, "after-update step failed"),
-          );
+        void this.runAfterApplied(applied.sha);
       }
     }
     if (!this.o.settings().enabled) return;
@@ -198,6 +196,34 @@ export class SelfUpdater {
     const apply = setInterval(() => void this.tryApply(false).catch(() => undefined), 20_000);
     for (const t of [first, poll, apply]) t.unref();
     this.timers.push(first, poll, apply);
+  }
+
+  /** Retries once; if the plugin still cannot be reloaded, says so (once per build, via the key). */
+  private async runAfterApplied(sha: string): Promise<void> {
+    const step = this.o.afterApplied;
+    if (!step) return;
+    try {
+      await step();
+      return;
+    } catch (error) {
+      this.o.logger.warn({ err: error }, "after-update step failed; retrying");
+    }
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, this.o.afterAppliedRetryMs ?? 30_000);
+      t.unref();
+      this.timers.push(t);
+    });
+    if (this.stopped) return;
+    try {
+      await step();
+    } catch (error) {
+      this.o.logger.warn({ err: error }, "after-update step failed");
+      this.o.notify(
+        `update-reload-failed:${sha}`,
+        "OpenCode did not reload OCD's plugin",
+        `OCD ${short(sha)} is running, but OpenCode still has the previous plugin. Run \`opencode reload\`.`,
+      );
+    }
   }
 
   stop(): void {

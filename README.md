@@ -29,17 +29,12 @@ Known gaps:
 - **Sleep:** there is no wake detection. Periodic reconciliation should pick
   workers up again after the Mac sleeps, but this has not been tried across a
   real sleep.
-- **Logs** rotate only when the supervisor starts (5 MB, 3 kept), so one that
-  runs for weeks grows a single file.
 - **Node path:** the service runs the Node binary that installed it. After
   upgrading Node, re-run `ocd service install`.
 - **Model names** in profiles are checked only when a task starts, not by
   `ocd doctor`.
 - **Usage:** subscription limits are tracked (see [Usage limits](#usage-limits)),
   but token counts and cost per task are not.
-- **Plugin reload:** if `opencode reload` fails after a self-update, it is
-  only logged, and the manager keeps the previous plugin until OpenCode
-  reloads. Run `opencode reload` yourself if an update seems missing.
 
 What comes next is in [PLAN.md](PLAN.md#next).
 
@@ -199,7 +194,9 @@ Linux a systemd user unit (`~/.config/systemd/user/ocd-supervisor.service`).
 Either runs `ocd daemon --background` with absolute paths to the Node binary
 and CLI that installed it, and restarts it after a crash, not after `ocd stop`. If it cannot
 start (another daemon running, pending migration, invalid config) it sends a
-notification and exits instead of restarting in a loop. Logs: `~/.ocd/logs`.
+notification and exits instead of restarting in a loop. Logs: `~/.ocd/logs`;
+`supervisor.log` rotates at startup and while running (5 MB, 3 kept). The service
+manager's own `launchd.out.log` / `launchd.err.log` are not rotated.
 `ocd restart` refuses while Claude Code or Codex workers are running (they
 are processes of the supervisor and would be interrupted) unless you pass
 `--force`; OpenCode workers survive it. A restart never resumes coding runs automatically; OpenCode workers are
@@ -231,7 +228,9 @@ also checks every `intervalMinutes`), the supervisor:
    test);
 3. points `~/.ocd/install/current` at it and restarts the background service,
    which runs the CLI through that link, then runs `opencode reload` so the
-   plugin and TUI pick it up, and notifies you ("OCD: Updated").
+   plugin and TUI pick it up, and notifies you ("OCD: Updated"). If the reload
+   fails it is retried once after 30 s; if that fails too you get "OpenCode
+   did not reload OCD's plugin" and should run `opencode reload` yourself.
 
 A restart interrupts Claude Code and Codex workers, so while any run the
 update waits: you get one notification ("OCD: Update ready"), and the

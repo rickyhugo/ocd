@@ -324,7 +324,7 @@ Usage estimates are not hard billing caps; document harness-specific limits.
 - Add user LaunchAgent install/status/uninstall with explicit worker-stop semantics.
 - Validate sleep/wake, log rotation, DB backup/restore, and low concurrency.
   (Backup and restore are tested. Sleep/wake has not been tried across a real
-  sleep, and logs rotate only at startup; see the README's known gaps.)
+  sleep; see the README's known gaps. Logs rotate at startup and while running.)
 - Keep automatic merging and destructive cleanup out of scope. (Still true; see
   below for what changed around it.)
 
@@ -384,8 +384,6 @@ Not yet verified in real use:
 
 Known small fixes:
 
-- A failed `opencode reload` after a self-update should notify, not only log.
-- Logs should rotate while running, not only at startup.
 - `ocd doctor` could check profile model names against each harness's list.
 
 Possible later work, not committed to:
