@@ -37,6 +37,11 @@ Known gaps:
   `ocd doctor`.
 - **Usage:** subscription limits are tracked (see [Usage limits](#usage-limits)),
   but token counts and cost per task are not.
+- **Plugin reload:** if `opencode reload` fails after a self-update, it is
+  only logged, and the manager keeps the previous plugin until OpenCode
+  reloads. Run `opencode reload` yourself if an update seems missing.
+
+What comes next is in [PLAN.md](PLAN.md#next).
 
 ## Packages
 

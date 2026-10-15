@@ -366,6 +366,35 @@ and what work is thrown away.
 - **Notifications** come from OCD's own copy of terminal-notifier, so they carry
   OCD's name and icon, and arrive batched into short digests.
 
+## Next
+
+The current phase is daily use on one Mac. It should answer what is still
+unverified, and the small fixes below are known.
+
+Not yet verified in real use:
+
+- **Codex:** a full task through OCD. The adapter is checked against real
+  codex (turns, steering, interrupts), but no task has run end to end.
+- **Sleep:** workers are picked up again after the Mac sleeps, without false
+  "stalled" alerts (acceptance test 14).
+- **Setup:** `scripts/install.sh` and an interactive `ocd setup` on a machine
+  without OCD; Linux (systemd unit, notify-send) has never run.
+- **TUI:** the sidebar usage line (`◔`) and the `/limits` dialog, rendered in
+  OpenCode.
+
+Known small fixes:
+
+- A failed `opencode reload` after a self-update should notify, not only log.
+- Logs should rotate while running, not only at startup.
+- `ocd doctor` could check profile model names against each harness's list.
+
+Possible later work, not committed to:
+
+- Token counts and cost per task.
+- Remote notification channels.
+- Choosing a profile by usage-limit headroom in the supervisor (today the
+  manager reads the usage section of its briefing and profile descriptions).
+
 ## Acceptance tests
 
 1. One manager dispatches tasks to two registered repos without changing its cwd.
