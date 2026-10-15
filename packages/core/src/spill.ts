@@ -1,5 +1,6 @@
 import type { OcdClient } from "./client.ts";
 import { redact, truncate } from "./redact.ts";
+import type { TaskEventType } from "./events.ts";
 import type { Attention, AttentionKind, Task, TaskEvent } from "./schemas.ts";
 import { OPEN_STATES, type TaskState } from "./states.ts";
 
@@ -84,7 +85,7 @@ const ATTENTION_LABEL: Record<AttentionKind, string> = {
  * are shown, never event data (which can carry notes or error text). If tasks
  * gain a recorded progress field, show it next to (or instead of) this.
  */
-const MILESTONES: Record<string, string> = {
+const MILESTONES: Partial<Record<TaskEventType, string>> = {
   "workspace.ready": "worktree ready",
   "session.created": "worker session started",
   "prompt.intent": "instructions sent",

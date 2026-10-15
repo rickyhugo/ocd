@@ -1,4 +1,4 @@
-import type { Task, TaskEvent, TaskProgress } from "@ocd/core";
+import type { Task, TaskEvent, TaskEventType, TaskProgress } from "@ocd/core";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -37,7 +37,7 @@ function task(id: string, state: Task["state"], extra: Partial<Task> = {}): Task
 }
 
 let seq = 0;
-const event = (type: string, minutes: number, data: unknown = null): TaskEvent => ({
+const event = (type: TaskEventType, minutes: number, data: unknown = null): TaskEvent => ({
   id: ++seq,
   taskId: "a",
   type,
@@ -202,7 +202,9 @@ describe("progress panel model", () => {
       "Asked for permission",
     );
     expect(milestone(event("pull_request.opened", 1))).toBe("PR opened");
-    expect(milestone(event("something.new", 1))).toBeNull();
+    expect(milestone(event("task.cancelled", 1))).toBe("Cancelled");
+    expect(milestone(event("task.accepted", 1))).toBe("Accepted");
+    expect(milestone(event("something.new" as TaskEventType, 1))).toBeNull();
   });
 
   it("bounds milestones and panel height; only overflowing panels scroll", () => {

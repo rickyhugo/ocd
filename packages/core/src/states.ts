@@ -16,6 +16,21 @@ export const TASK_STATES = [
 
 export type TaskState = (typeof TASK_STATES)[number];
 
+// Status families other than task state. The persisted strings are in users'
+// databases and the API; the supervisor schema, store and wire schemas share
+// these lists (zod enums and types live in schemas.ts).
+
+/** A worker run: launching until the harness session is confirmed, then until it ends. */
+export const RUN_STATES = ["launching", "acknowledged", "prompted", "ended", "lost"] as const;
+
+export const ATTENTION_STATUSES = ["open", "resolved", "expired", "rejected"] as const;
+
+export const MEMORY_STATUSES = ["proposed", "confirmed", "retired"] as const;
+
+export const OUTBOX_KINDS = ["notify", "manager_wake"] as const;
+
+export const OUTBOX_STATUSES = ["pending", "delivered", "dead"] as const;
+
 const TRANSITIONS: Record<TaskState, readonly TaskState[]> = {
   queued: ["starting", "cancelled", "needs_attention"],
   // "queued" again only when reconciliation proves the launch was not admitted.

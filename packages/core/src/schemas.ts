@@ -1,6 +1,14 @@
 import { z } from "zod";
 
-import { TASK_STATES } from "./states.ts";
+import {
+  ATTENTION_STATUSES,
+  MEMORY_STATUSES,
+  OUTBOX_KINDS,
+  OUTBOX_STATUSES,
+  RUN_STATES,
+  TASK_STATES,
+} from "./states.ts";
+import type { TaskEventType } from "./events.ts";
 import type { HarnessUsage, UsageStatus } from "./usage.ts";
 
 // Wire contracts shared by the supervisor API, the CLI, and the plugin. Inputs
@@ -248,10 +256,13 @@ export interface Task {
   finishedAt: string | null;
 }
 
+export const RunState = z.enum(RUN_STATES);
+export type RunState = z.infer<typeof RunState>;
+
 export interface TaskEvent {
   id: number;
   taskId: string;
-  type: string;
+  type: TaskEventType;
   data: unknown;
   createdAt: string;
 }
@@ -263,7 +274,7 @@ export interface WorkerRun {
   harness: HarnessName;
   harnessVersion: string | null;
   sessionId: string | null;
-  state: "launching" | "acknowledged" | "prompted" | "ended" | "lost";
+  state: RunState;
   supervisorInstance: string;
   startedAt: string;
   endedAt: string | null;
@@ -430,7 +441,7 @@ export const AttentionKind = z.enum([
 ]);
 export type AttentionKind = z.infer<typeof AttentionKind>;
 
-export const AttentionStatus = z.enum(["open", "resolved", "expired", "rejected"]);
+export const AttentionStatus = z.enum(ATTENTION_STATUSES);
 export type AttentionStatus = z.infer<typeof AttentionStatus>;
 
 export interface Attention {
@@ -478,6 +489,9 @@ export type MemoryScope = z.infer<typeof MemoryScope>;
 export const MemorySource = z.enum(["human", "manager", "worker"]);
 export type MemorySource = z.infer<typeof MemorySource>;
 
+export const MemoryStatus = z.enum(MEMORY_STATUSES);
+export type MemoryStatus = z.infer<typeof MemoryStatus>;
+
 export const RememberInput = z
   .object({
     scope: MemoryScope,
@@ -499,7 +513,7 @@ export interface Memory {
   taskId: string | null;
   content: string;
   source: MemorySource;
-  status: "proposed" | "confirmed" | "retired";
+  status: MemoryStatus;
   recordedBy: Actor;
   supersededBy: string | null;
   createdAt: string;
@@ -652,12 +666,18 @@ export interface SupervisorStatus {
   usage?: UsageStatus | null;
 }
 
+export const OutboxKind = z.enum(OUTBOX_KINDS);
+export type OutboxKind = z.infer<typeof OutboxKind>;
+
+export const OutboxStatus = z.enum(OUTBOX_STATUSES);
+export type OutboxStatus = z.infer<typeof OutboxStatus>;
+
 export interface OutboxEntry {
   id: string;
-  kind: "notify" | "manager_wake";
+  kind: OutboxKind;
   dedupeKey: string;
   payload: unknown;
-  status: "pending" | "delivered" | "dead";
+  status: OutboxStatus;
   attempts: number;
   nextAttemptAt: string;
   lastError: string | null;

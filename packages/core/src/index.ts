@@ -1,5 +1,6 @@
 export * from "./client.ts";
 export * from "./diff.ts";
+export * from "./events.ts";
 export * from "./land.ts";
 export * from "./paths.ts";
 export * from "./redact.ts";
