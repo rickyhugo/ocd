@@ -842,6 +842,7 @@ export class LandingService {
       if (a.id !== except) this.o.store.settleAttention(a.id, { status: "expired" });
     }
   }
+
   /** The human declined a direct push: tell the manager not to ask again. */
   declineLanding(task: Task, attentionId: string, message: string | undefined): void {
     this.o.store.enqueue([
