@@ -303,6 +303,7 @@ describe("tool input schemas", () => {
       "repo",
       "title",
       "instructions",
+      "acceptance_criteria",
     ]);
   });
 

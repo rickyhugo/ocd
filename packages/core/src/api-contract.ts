@@ -10,8 +10,10 @@ import {
   GiveBackInput,
   LandTaskInput,
   MemoryScope,
+  MemoryStatus,
   MergePullRequestInput,
   OpenPullRequestInput,
+  OutboxStatus,
   RecallInput,
   RememberInput,
   RequestChangesInput,
@@ -117,7 +119,7 @@ const AttentionListQuery = z.object({
   limit: count(AttentionFilter.shape.limit),
 });
 const MemoryListQuery = z.object({
-  status: nonEmpty(z.enum(["proposed", "confirmed", "retired"]).optional()),
+  status: nonEmpty(MemoryStatus.optional()),
   scope: nonEmpty(MemoryScope.optional()),
   repo: nonEmpty(z.string().optional()),
 });
@@ -126,7 +128,7 @@ const DecisionListQuery = z.object({
   taskId: nonEmpty(z.string().optional()),
 });
 const OutboxListQuery = z.object({
-  status: nonEmpty(z.enum(["pending", "delivered", "dead"]).optional()),
+  status: nonEmpty(OutboxStatus.optional()),
 });
 
 export const UpdateApplyInput = z.object({ force: z.boolean().default(false) });

@@ -108,9 +108,10 @@ export function buildTools(
         instructions: DispatchTaskInput.shape.instructions.describe(
           "Complete instructions for the worker",
         ),
-        acceptance_criteria: DispatchTaskInput.shape.acceptanceCriteria.describe(
-          "Checks the result must satisfy",
-        ),
+        // Required here, unlike the API's default of []: the manager always says how the result is judged.
+        acceptance_criteria: DispatchTaskInput.shape.acceptanceCriteria
+          .unwrap()
+          .describe("Checks the result must satisfy"),
         depends_on: DispatchTaskInput.shape.dependsOn.describe(
           "Task IDs that must be accepted first",
         ),
