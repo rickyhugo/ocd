@@ -72,7 +72,7 @@ export const SupervisorConfig = z
           .string()
           .optional()
           .describe(
-            "Terminal app to bring forward when a notification is clicked: the id the desktop knows it by (bundle id, window class or app id). Detected from tmux by default.",
+            "Terminal app to bring forward when a notification is clicked: its bundle id (com.mitchellh.ghostty) or window class (kitty). Detected from tmux by default.",
           ),
       })
       .strict()
