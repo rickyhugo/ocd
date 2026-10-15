@@ -20,7 +20,7 @@ import { normalizeDirectory } from "./config.ts";
 import { conflict, forbidden } from "./errors.ts";
 import { iso } from "./ids.ts";
 import type { Logger } from "./logger.ts";
-import { git, run } from "./workspace.ts";
+import { type GitRunner, gitText, systemGit } from "./git.ts";
 
 // OCD updating itself. New commits on its own repository's branch are built
 // into ~/.ocd/install/builds/<sha> (a detached worktree of that repository, so
@@ -78,6 +78,8 @@ export interface SelfUpdaterOptions {
   /** Real path of the CLI the running supervisor was started from. */
   runningFrom: string;
   logger: Logger;
+  /** Defaults to the real git; tests substitute a fake. */
+  git?: GitRunner;
   clock?: () => number;
   /** Boots a build in a throwaway sandbox and throws if it does not come up. */
   smokeTest?: (buildDir: string) => Promise<void>;
@@ -92,6 +94,7 @@ const dirName = (sha: string) => sha.slice(0, 12);
 
 export class SelfUpdater {
   private readonly o: SelfUpdaterOptions;
+  private readonly git: GitRunner;
   private state: InstallState;
   private building: string | null = null;
   private checking: Promise<UpdateStatus> | null = null;
@@ -103,6 +106,7 @@ export class SelfUpdater {
 
   constructor(options: SelfUpdaterOptions) {
     this.o = options;
+    this.git = options.git ?? systemGit;
     this.state = this.load();
     const builds = join(options.installDir, "builds") + sep;
     this.runningBuild = options.runningFrom.startsWith(builds)
@@ -278,14 +282,18 @@ export class SelfUpdater {
           : `selfUpdate.repo "${settings.repo}" is not a declared repository`,
       );
     const branch = settings.branch ?? (await this.defaultBranch(repoPath));
-    const fetched = await run("git", ["fetch", "--quiet", "origin", branch], {
+    const fetched = await this.git.run(["fetch", "--quiet", "origin", branch], {
       cwd: repoPath,
       env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
       timeoutMs: 120_000,
     });
     if (fetched.code !== 0)
       this.o.logger.warn({ stderr: fetched.stderr.slice(-300) }, "self-update fetch failed");
-    const target = await git(repoPath, ["rev-parse", "--verify", `origin/${branch}^{commit}`]);
+    const target = await this.text(repoPath, [
+      "rev-parse",
+      "--verify",
+      `origin/${branch}^{commit}`,
+    ]);
     this.state.checkedAt = iso(this.now);
     this.save();
     const known =
@@ -297,8 +305,12 @@ export class SelfUpdater {
     return this.status();
   }
 
+  private text(cwd: string, args: string[]): Promise<string> {
+    return gitText(this.git, cwd, args);
+  }
+
   private async defaultBranch(repoPath: string): Promise<string> {
-    const r = await run("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
+    const r = await this.git.run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
       cwd: repoPath,
     });
     const ref = r.stdout.trim();
@@ -315,7 +327,7 @@ export class SelfUpdater {
     try {
       mkdirSync(this.buildsDir, { recursive: true });
       await this.removeBuild(repoPath, dir);
-      await git(repoPath, ["worktree", "add", "--detach", "--force", dir, sha]);
+      await this.text(repoPath, ["worktree", "add", "--detach", "--force", dir, sha]);
       for (const command of settings.build) {
         const r = await shell(command, dir, 20 * 60_000);
         output += `$ ${command}\n${r.output}\n`;
@@ -324,7 +336,7 @@ export class SelfUpdater {
       }
       await (this.o.smokeTest ?? bootSmokeTest)(dir);
       const subjects = (
-        await git(repoPath, [
+        await this.text(repoPath, [
           "log",
           "--format=%s",
           "-n",
@@ -463,7 +475,7 @@ export class SelfUpdater {
 
   private async removeBuild(repoPath: string, dir: string): Promise<void> {
     if (existsSync(dir))
-      await run("git", ["worktree", "remove", "--force", dir], { cwd: repoPath });
+      await this.git.run(["worktree", "remove", "--force", dir], { cwd: repoPath });
     rmSync(dir, { recursive: true, force: true });
   }
 }

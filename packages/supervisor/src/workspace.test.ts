@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { parsePorcelainZ } from "./workspace.ts";
+import { parsePorcelainZ } from "./git.ts";
 
 describe("git status parsing", () => {
   it("keeps the first path intact when the status column starts with a space", () => {

@@ -22,6 +22,7 @@ import { OcdClient, type OcdPaths, type Actor, type RepoConfig } from "@ocd/core
 
 import type { SupervisorConfigInput } from "./config.ts";
 import { startDaemon, type Daemon, type DaemonOptions } from "./daemon.ts";
+import { systemGit, type ExecResult, type GitRunner } from "./git.ts";
 import { createLogger } from "./logger.ts";
 import { RecordingManagerChannel, RecordingNotifier } from "./notify.ts";
 
@@ -230,4 +231,21 @@ export async function waitForState(
 
 export function rmrf(path: string): void {
   rmSync(path, { recursive: true, force: true });
+}
+
+/**
+ * The real git, except that a command matching `when` gets `result` instead of
+ * running: a way to fail or hang one step of an otherwise real repository.
+ */
+export function failingGit(
+  when: (args: string[]) => boolean,
+  result: Partial<ExecResult> = { code: 1, stderr: "simulated failure" },
+): GitRunner {
+  return {
+    run: async (args, options) =>
+      when(args)
+        ? { code: 1, stdout: "", stderr: "", timedOut: false, ...result }
+        : systemGit.run(args, options),
+    capped: (args, options) => systemGit.capped(args, options),
+  };
 }
