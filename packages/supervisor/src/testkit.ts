@@ -30,7 +30,7 @@ import { RecordingManagerChannel, RecordingNotifier } from "./notify.ts";
 
 export function tempDir(prefix = "ocd-test-"): string {
   // Short base path keeps Unix socket paths under the 104-byte limit.
-  return realpathSync(mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), prefix)));
+  return realpathSync(mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), prefix)));
 }
 
 export function testPaths(home: string): OcdPaths {

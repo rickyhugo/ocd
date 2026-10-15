@@ -9,8 +9,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { execCommand, type Exec } from "./exec.ts";
 
@@ -107,10 +106,4 @@ export async function ensureNotifierApp(options: {
     rmSync(tmp, { recursive: true, force: true });
     return existsSync(binary) ? binary : null;
   }
-}
-
-/** Assets shipped with the CLI (packages/cli/assets), given the CLI module's own URL. */
-export function iconAssets(moduleUrl: string): { icns: string; png: string } {
-  const dir = join(dirname(fileURLToPath(moduleUrl)), "..", "assets");
-  return { icns: join(dir, "ocd.icns"), png: join(dir, "ocd-icon.png") };
 }

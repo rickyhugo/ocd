@@ -24,7 +24,7 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Why `ocd service install|uninstall` and `ocd restart` must not run here, or
- * null. The LaunchAgent label and systemd unit are global, so these commands
+ * null. The background service is global (one per user), so these commands
  * may only act from the home the service is (or would be) defined for: the
  * default home, or the one the installed definition points at. A worker's
  * sandbox home (see workerOcdEnv) is never allowed: it would kickstart,

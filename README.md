@@ -368,7 +368,10 @@ service can reach the desktop.
 
 The platform layer (`packages/cli/src/platform`) is the only place that knows
 about the OS: notifier, window activation and service manager sit behind one
-`Platform` interface with macOS and Linux implementations.
+`Platform` interface with macOS and Linux implementations. Setup and doctor
+get notification prerequisites, install offers and hints from it as data, and
+a test fails if OS or tool names appear in application code outside that
+directory.
 
 The daemon also writes an online backup to `~/.ocd/backups/auto-*.db` every
 `backups.intervalHours` (24) and keeps the newest `backups.keep` (7).

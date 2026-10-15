@@ -25,7 +25,7 @@ import {
 } from "@ocd/supervisor";
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
 
-import type { ServiceManager } from "./platform/index.ts";
+import type { Platform, ServiceManager } from "./platform/index.ts";
 import { FORMAT, portable, readConfig, writeConfig } from "./repo-config.ts";
 
 // `ocd setup`: one command from a fresh machine to a working OCD, and the
@@ -70,7 +70,8 @@ export interface SetupDeps {
   /** OCD's home (~/.ocd or OCD_HOME). */
   ocdHome: string;
   configPath: string;
-  platform: "macos" | "linux" | "unsupported";
+  /** What the desktop needs for notifications; see Platform. */
+  platform: Pick<Platform, "notifierPrerequisite" | "notificationApproval">;
   nodeVersion: string;
   /** The Node binary running this CLI; the service runs the same one. */
   nodePath: string;
@@ -125,9 +126,6 @@ interface Detected {
   path: string | null;
   ready: boolean;
 }
-
-const MACOS_NOTIFICATION_SETTINGS =
-  "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
 
 export interface SetupResult {
   /** Things that are not right yet; empty when everything is set up. */
@@ -257,36 +255,18 @@ class Setup {
   }
 
   private async notifierPrerequisite(): Promise<void> {
-    if (this.d.platform === "linux") {
-      if (this.d.locate("notify-send")) this.ok("notify-send (desktop notifications)");
-      else this.skip("notify-send not found: no desktop notifications (install libnotify)");
-      return;
-    }
-    if (this.d.platform !== "macos") return;
-    const found = this.d.locate("terminal-notifier");
-    if (found) {
-      this.ok(`terminal-notifier ${found}`);
-      return;
-    }
-    const brew = this.d.locate("brew");
-    const fallback = "notifications use osascript: no OCD icon, and clicking one does nothing";
-    if (!brew) {
-      this.skip(`${fallback} (install terminal-notifier for both)`);
-      return;
-    }
-    if (
-      await this.d.prompt.confirm(
-        "Install terminal-notifier with Homebrew? Notifications then carry OCD's name and icon and open the manager when clicked",
-        true,
-      )
-    ) {
-      const r = await this.d.run(brew, ["install", "terminal-notifier"], {
-        interactive: true,
-        timeoutMs: 15 * 60_000,
-      });
-      if (r.code === 0) this.ok("terminal-notifier installed");
-      else this.warn(`brew install terminal-notifier failed; ${fallback}`);
-    } else this.skip(fallback);
+    const check = this.d.platform.notifierPrerequisite();
+    if (!check) return;
+    if (check.ready) return this.ok(check.summary);
+    const install = check.install;
+    if (!install) return this.skip(check.summary);
+    if (!(await this.d.prompt.confirm(install.question, true))) return this.skip(install.declined);
+    const r = await this.d.run(install.command, install.args, {
+      interactive: true,
+      timeoutMs: 15 * 60_000,
+    });
+    if (r.code === 0) this.ok(install.installed);
+    else this.warn(install.failed);
   }
 
   // ── b. configuration ──
@@ -779,7 +759,7 @@ class Setup {
 
   private async notifications(): Promise<void> {
     this.section("Notifications");
-    const appBefore = existsSync(join(this.d.ocdHome, "notifier", "OCD.app"));
+    const approval = this.d.platform.notificationApproval(this.d.ocdHome);
     const r = await this.d.run(this.d.nodePath, [this.target, "doctor", "--notify"], {
       timeoutMs: 120_000,
     });
@@ -789,11 +769,9 @@ class Setup {
       .find((l) => l.startsWith("test notification"));
     if (line === "test notification sent") this.ok(line);
     else this.warn(line ?? `no test notification: ${tail(r)}`);
-    if (this.d.platform === "macos" && !appBefore) {
-      this.doing(
-        'allow notifications for "OCD" in System Settings → Notifications (opening it now)',
-      );
-      await this.d.run("/usr/bin/open", [MACOS_NOTIFICATION_SETTINGS], { timeoutMs: 15_000 });
+    if (approval) {
+      this.doing(approval.message);
+      await approval.open();
     }
   }
 

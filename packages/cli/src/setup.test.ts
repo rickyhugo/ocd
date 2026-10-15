@@ -19,6 +19,7 @@ import { loadConfig } from "@ocd/supervisor";
 import { parse } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import type { NotificationApproval, NotifierPrerequisite } from "./platform/index.ts";
 import {
   codexModels,
   runSetup,
@@ -48,6 +49,8 @@ function machine(
     checkout?: boolean;
     service?: ServiceState | null;
     tools?: string[];
+    prerequisite?: NotifierPrerequisite | null;
+    approval?: NotificationApproval | null;
     run?: (cmd: string, args: string[]) => RunResult | undefined;
   } = {},
 ) {
@@ -95,7 +98,10 @@ function machine(
     home,
     ocdHome,
     configPath: join(ocdHome, "ocd.jsonc"),
-    platform: "linux",
+    platform: {
+      notifierPrerequisite: () => options.prerequisite ?? null,
+      notificationApproval: () => options.approval ?? null,
+    },
     nodeVersion: "24.21.0",
     nodePath: "/usr/local/bin/node",
     cwd: app,
@@ -336,6 +342,58 @@ describe("setup helpers", () => {
     expect(await p.choose("e", ["x/1", "x/2"], "x/1")).toBe("x/2");
     expect(await p.choose("f", ["x/1"], "x/1")).toBe("some/other-model");
     expect(await p.choose("g", ["x/1"], "x/1")).toBe("x/1");
+  });
+
+  describe("notification prerequisite", () => {
+    const install = {
+      question: "Install the notifier?",
+      command: "/bin/fetch",
+      args: ["notifier"],
+      installed: "notifier installed",
+      failed: "notifier install failed",
+      declined: "notifications are plain",
+    };
+    const missing: NotifierPrerequisite = { ready: false, summary: "notifier missing", install };
+
+    it("runs the platform's install command after consent, and reports it as given", async () => {
+      const m = machine({ prerequisite: missing });
+      await runSetup(m.deps);
+      expect(m.asked).toContain("Install the notifier?");
+      expect(m.calls).toContainEqual(["/bin/fetch", "notifier"]);
+      expect(m.out.join("\n")).toContain("notifier installed");
+    });
+
+    it("does not run it when declined", async () => {
+      const m = machine({ prerequisite: missing, answers: { "Install the notifier?": false } });
+      await runSetup(m.deps);
+      expect(m.calls).not.toContainEqual(["/bin/fetch", "notifier"]);
+      expect(m.out.join("\n")).toContain("notifications are plain");
+    });
+
+    it("reports what is found or missing without asking when there is nothing to install", async () => {
+      const found = machine({ prerequisite: { ready: true, summary: "notifier /bin/n" } });
+      await runSetup(found.deps);
+      expect(found.out.join("\n")).toContain("notifier /bin/n");
+      const bare = machine({ prerequisite: { ready: false, summary: "no notifier here" } });
+      await runSetup(bare.deps);
+      expect(bare.asked.some((q) => q.includes("notifier"))).toBe(false);
+      expect(bare.out.join("\n")).toContain("no notifier here");
+    });
+
+    it("opens the one-time approval step the platform asks for", async () => {
+      let opened = 0;
+      const m = machine({
+        approval: {
+          message: "approve it",
+          open: async () => {
+            opened++;
+          },
+        },
+      });
+      await runSetup(m.deps);
+      expect(opened).toBe(1);
+      expect(m.out.join("\n")).toContain("approve it");
+    });
   });
 
   it("lists Codex's listed models in its order", () => {
