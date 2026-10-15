@@ -93,12 +93,19 @@
       },
       "additionalProperties": false
     },
+    "workerIdleMinutes": {
+      "default": 10,
+      "description": "Worker processes the supervisor owns stop after this long idle; their sessions resume on the next instruction.",
+      "type": "number",
+      "minimum": 1
+    },
     "opencode": {
       "default": {},
       "type": "object",
       "properties": {
         "enabled": {
           "default": true,
+          "description": "Offer OpenCode workers (profiles with harness opencode) and wake the manager through the OpenCode service.",
           "type": "boolean"
         },
         "serviceFile": {
@@ -107,12 +114,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "workerIdleMinutes": {
-      "default": 10,
-      "description": "Claude Code and Codex worker processes stop after this long idle; their sessions resume on the next instruction.",
-      "type": "number",
-      "minimum": 1
     },
     "claude": {
       "default": {},
@@ -230,7 +231,7 @@
       "properties": {
         "enabled": {
           "default": false,
-          "description": "OCD updates itself: new commits on the repository's branch are built into ~/.ocd/install, smoke-tested, and switched to by restarting the background service once no Claude Code or Codex worker is running. Off by default. Restart to apply.",
+          "description": "OCD updates itself: new commits on the repository's branch are built into ~/.ocd/install, smoke-tested, and switched to by restarting the background service once no worker that a restart would interrupt is running. Off by default. Restart to apply.",
           "type": "boolean"
         },
         "repo": {
@@ -284,13 +285,13 @@
       "additionalProperties": false
     },
     "usageLimits": {
-      "description": "Tracking the subscription usage limits Claude Code and Codex report. Restart to apply.",
+      "description": "Tracking the subscription usage limits the harnesses report. Restart to apply.",
       "default": {},
       "type": "object",
       "properties": {
         "notifyAt": {
           "default": [80, 95],
-          "description": "Percentages of a subscription usage window (Claude Code's 5-hour and weekly limits, Codex's) that send a notification, once per window. [] turns these notifications off; reaching a limit is always reported.",
+          "description": "Percentages of a subscription usage window (5-hour, weekly, ...) that send a notification, once per window. [] turns these notifications off; reaching a limit is always reported.",
           "type": "array",
           "items": {
             "type": "number",
@@ -300,7 +301,7 @@
         },
         "pollMinutes": {
           "default": 15,
-          "description": "How often Codex's limits are read while no Codex worker reports them (no model call, no tokens). 0 reads them only from running workers. Claude Code reports its limits only while a worker runs.",
+          "description": "How often limits are read, for the harnesses that can be read without a model call (no tokens). 0 reads them only from running workers; other harnesses report them only while a worker runs.",
           "type": "number",
           "minimum": 0
         }
@@ -400,14 +401,16 @@
         "properties": {
           "harness": {
             "type": "string",
-            "enum": ["opencode", "claude", "codex", "fake"],
-            "description": "Harness that runs the worker: opencode (sessions in the OpenCode service), claude (Claude Code CLI), codex (codex app-server), or fake (tests)."
+            "minLength": 1,
+            "maxLength": 40,
+            "description": "Harness that runs the worker: one of the harnesses OCD knows (listed here by the schema).",
+            "enum": ["opencode", "claude", "codex", "fake"]
           },
           "model": {
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "description": "Model id. For OpenCode: provider/model, optionally #variant (see `opencode models`)."
+            "description": "Model id as the harness spells it, optionally with a #variant suffix (`ocd doctor` checks it against the harness's own model list)."
           },
           "description": {
             "description": "When to use this profile. Shown to the manager, which picks profiles by name.",
@@ -415,7 +418,7 @@
             "maxLength": 500
           },
           "agent": {
-            "description": "Harness agent preset, e.g. OpenCode's build agent.",
+            "description": "Harness agent preset, for harnesses that have them.",
             "type": "string",
             "minLength": 1,
             "maxLength": 100
@@ -427,7 +430,7 @@
           },
           "permissionPolicy": {
             "default": "deny",
-            "description": "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded. yolo: the harness skips its permission checks and sandbox entirely (Claude Code --dangerously-skip-permissions, Codex approvalPolicy never + danger-full-access, OpenCode allow-all rule); nothing is asked or recorded.",
+            "description": "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded. yolo: the harness skips its permission checks and sandbox entirely (its own most permissive mode; see the README's permissions section); nothing is asked or recorded.",
             "type": "string",
             "enum": ["deny", "ask", "allow", "yolo"]
           },
@@ -456,7 +459,7 @@
             "then": {
               "properties": {
                 "model": {
-                  "pattern": "^[^/\\s]+/\\S+$",
+                  "pattern": "^[^/\\s]+\\/\\S+$",
                   "description": "OpenCode models are written provider/model"
                 }
               }

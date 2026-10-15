@@ -1,3 +1,4 @@
+import { MANAGER_HOST } from "@ocd/adapters";
 import {
   API_VERSION,
   Actor,
@@ -158,7 +159,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     ) {
       throw forbidden(
         "not_manager",
-        `Only OpenCode sessions started in ${managerDirectory} may use OCD control tools`,
+        `Only ${MANAGER_HOST.label} sessions started in ${managerDirectory} may use OCD control tools`,
       );
     }
     store.activateManager(req.sessionId, managerDirectory);
@@ -204,7 +205,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     usage: deps.usage?.status() ?? null,
   }));
   app.get("/v1/usage", async () => deps.usage?.status() ?? { harnesses: [], notifyAt: [] });
-  /** Reads the limits that can be read without a model call (Codex) now. */
+  /** Reads the limits that can be read without a model call now. */
   app.post("/v1/usage/refresh", async (req) => {
     requireCaller(req);
     return deps.usage ? deps.usage.refresh() : { harnesses: [], notifyAt: [] };
@@ -219,7 +220,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     requireCaller(req);
     return updater().check();
   });
-  /** Switch to the pending version now; `force` interrupts Claude Code / Codex workers. Human only. */
+  /** Switch to the pending version now; `force` interrupts workers a restart would interrupt. Human only. */
   app.post("/v1/update/apply", async (req) => {
     requireCaller(req);
     if (req.actor !== "human") throw forbidden("human_only", "Only a human can apply an update");

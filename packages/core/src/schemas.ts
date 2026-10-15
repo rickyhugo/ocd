@@ -10,8 +10,12 @@ export const Slug = z
   .string()
   .regex(/^[a-z0-9][a-z0-9._-]{0,62}$/, "Use lowercase letters, digits, '.', '_' or '-' (max 63)");
 
-export const HarnessName = z.enum(["opencode", "claude", "codex", "fake"]);
-export type HarnessName = z.infer<typeof HarnessName>;
+/**
+ * A harness's name. Core does not know which exist: the adapters' registry
+ * does, and the supervisor's config validation checks profiles against it.
+ */
+export const HarnessName = z.string().min(1).max(40);
+export type HarnessName = string;
 
 export const PermissionPolicy = z.enum(["deny", "ask", "allow", "yolo"]);
 export type PermissionPolicy = z.infer<typeof PermissionPolicy>;
@@ -72,14 +76,14 @@ export interface Repository {
 export const ProfileConfig = z
   .object({
     harness: HarnessName.describe(
-      "Harness that runs the worker: opencode (sessions in the OpenCode service), claude (Claude Code CLI), codex (codex app-server), or fake (tests).",
+      "Harness that runs the worker: one of the harnesses OCD knows (listed here by the schema).",
     ),
     model: z
       .string()
       .min(1)
       .max(200)
       .describe(
-        "Model id. For OpenCode: provider/model, optionally #variant (see `opencode models`).",
+        "Model id as the harness spells it, optionally with a #variant suffix (`ocd doctor` checks it against the harness's own model list).",
       ),
     description: z
       .string()
@@ -91,14 +95,14 @@ export const ProfileConfig = z
       .min(1)
       .max(100)
       .optional()
-      .describe("Harness agent preset, e.g. OpenCode's build agent."),
+      .describe("Harness agent preset, for harnesses that have them."),
     instructions: z
       .string()
       .max(8000)
       .optional()
       .describe("Standing guidance added to every worker prompt using this profile."),
     permissionPolicy: PermissionPolicy.default("deny").describe(
-      "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded. yolo: the harness skips its permission checks and sandbox entirely (Claude Code --dangerously-skip-permissions, Codex approvalPolicy never + danger-full-access, OpenCode allow-all rule); nothing is asked or recorded.",
+      "ask: permission requests go to the human. deny: they are rejected and recorded. allow: each request is approved once, automatically, and recorded. yolo: the harness skips its permission checks and sandbox entirely (its own most permissive mode; see the README's permissions section); nothing is asked or recorded.",
     ),
     envAllowlist: z
       .array(EnvVarName)
@@ -108,11 +112,7 @@ export const ProfileConfig = z
         "Environment variables passed to the worker in addition to a minimal base set (PATH, HOME, ...).",
       ),
   })
-  .strict()
-  .refine((p) => p.harness !== "opencode" || /^[^/\s]+\/\S+$/.test(p.model), {
-    message: "OpenCode models are written provider/model",
-    path: ["model"],
-  });
+  .strict();
 export type ProfileConfig = z.input<typeof ProfileConfig>;
 
 export const ProfilesConfig = z.record(Slug, ProfileConfig);
@@ -622,7 +622,7 @@ export interface UpdateStatus {
   previous: string | null;
   /** A built and smoke-tested version waiting to be switched to. */
   pending: { sha: string; subjects: string[]; builtAt: string } | null;
-  /** Claude Code / Codex workers that a restart would interrupt; the update waits for them. */
+  /** Workers (processes the supervisor owns) that a restart would interrupt; the update waits for them. */
   blockedBy: { taskId: string; title: string; harness: string }[];
   building: string | null;
   lastError: { sha: string; message: string; at: string } | null;
@@ -648,7 +648,7 @@ export interface SupervisorStatus {
   /** Pull requests are on (github.enabled): tasks can land through a PR. */
   pullRequests?: boolean;
   update?: UpdateStatus | null;
-  /** Subscription usage limits the harnesses reported (Claude Code, Codex). */
+  /** Subscription usage limits the harnesses reported. */
   usage?: UsageStatus | null;
 }
 

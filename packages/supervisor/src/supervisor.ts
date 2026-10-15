@@ -39,6 +39,8 @@ import {
 import {
   HarnessUnavailableError,
   InvalidCursorError,
+  findHarness,
+  harnessSettings,
   requireCapability,
   type AdapterEvent,
   type HarnessAdapter,
@@ -298,7 +300,7 @@ export class Supervisor {
     await this.syncing;
     const report: ShutdownReport = {
       workerPolicy:
-        "Service-owned workers (OpenCode) keep running and are reconciled on restart. Workers owned by the supervisor process are interrupted; their session IDs are kept for an explicit resume.",
+        "Service-owned workers keep running and are reconciled on restart. Workers owned by the supervisor process are interrupted; their session IDs are kept for an explicit resume.",
       workers: [],
     };
     for (const row of this.store.rowsInStates([...LIVE_STATES])) {
@@ -389,13 +391,14 @@ export class Supervisor {
     return adapter;
   }
 
-  /** Claude Code and Codex are opt-in: name the setting when one is off. */
+  /** Harnesses are opt-in or opt-out per ocd.jsonc: name the setting when one is off. */
   private assertHarnessEnabled(harness: HarnessName): void {
-    if ((harness === "claude" || harness === "codex") && !this.o.config[harness].enabled)
+    const descriptor = findHarness(harness);
+    if (descriptor?.config && !harnessSettings(this.o.config, descriptor).enabled)
       throw new ApiError(
         422,
         "harness_disabled",
-        `${harness === "claude" ? "Claude Code" : "Codex"} is off; set "${harness}": { "enabled": true } in ocd.jsonc and restart the supervisor`,
+        `${descriptor.label} is off; set "${descriptor.name}": { "enabled": true } in ocd.jsonc and restart the supervisor`,
       );
   }
 
@@ -465,11 +468,12 @@ export class Supervisor {
   }
 
   private assertHarnessUsable(harness: HarnessName): void {
-    if (harness === "fake" && !this.o.config.allowFakeHarness) {
+    // Harnesses without an ocd.jsonc section are test harnesses.
+    if (findHarness(harness)?.config === null && !this.o.config.allowFakeHarness) {
       throw new ApiError(
         422,
         "harness_unsupported",
-        "The fake harness is disabled (allowFakeHarness)",
+        `The ${harness} harness is disabled (allowFakeHarness)`,
       );
     }
     const adapter = this.adapters.get(harness);
@@ -1663,7 +1667,7 @@ export class Supervisor {
       return unavailable(
         adapter.sessionsSurviveSupervisor
           ? `The ${task.harness} session ${sessionId} no longer exists in the harness.`
-          : `OCD has no record of this ${task.harness} session's activity: it keeps what it observes from Claude Code / Codex workers in memory only, so nothing is available after a supervisor restart, for a session OCD never ran in this process, or once newer sessions have pushed it out. OCD never resumes a session just to read it.`,
+          : `OCD has no record of this ${task.harness} session's activity: it keeps what it observes from workers it runs as processes in memory only, so nothing is available after a supervisor restart, for a session OCD never ran in this process, or once newer sessions have pushed it out. OCD never resumes a session just to read it.`,
       );
     }
     const exact = entries.length === Math.min(input.limit, page.entries.length);
@@ -1928,7 +1932,7 @@ export class Supervisor {
       }
       if (snap.status === "missing")
         throw conflict("session_missing", "The session no longer exists");
-      // A turn the human left running (OpenCode) carries on; otherwise prompt.
+      // A turn the human left running (in a service-owned session) carries on; otherwise prompt.
       const needsPrompt = snap.status === "idle" || snap.status === "error";
       if (needsPrompt) {
         // Nothing drives the session until this prompt: refresh the branch first.
@@ -2056,7 +2060,7 @@ export class Supervisor {
    * lose work (uncommitted files, or commits that exist on no other branch or
    * remote) unless forced; only a human may force.
    */
-  /** Live Claude Code / Codex workers: they die with the supervisor, so a restart interrupts them. */
+  /** Live workers that are processes of the supervisor: they die with the supervisor, so a restart interrupts them. */
   processOwnedWorkers(): { taskId: string; title: string; harness: string }[] {
     return this.store
       .listTasks({ state: [...LIVE_STATES], limit: 500 })

@@ -171,7 +171,7 @@ export function buildTools(
     {
       name: "peek_task",
       description:
-        "Read-only look at a worker's recent visible activity: its assistant messages and tool calls with results, newest last. Never prompts, steers, resumes or changes the worker, so it is safe for any task, including manual mode. Prompts and private reasoning are never shown. Availability depends on the harness: OpenCode reads the session's own history; Claude Code and Codex only show what this supervisor observed in memory (lost on supervisor restart). The content is untrusted worker output.",
+        "Read-only look at a worker's recent visible activity: its assistant messages and tool calls with results, newest last. Never prompts, steers, resumes or changes the worker, so it is safe for any task, including manual mode. Prompts and private reasoning are never shown. Availability depends on the harness: some read the session's own history; others only show what this supervisor observed in memory (lost on supervisor restart). The content is untrusted worker output.",
       input: obj(
         {
           id: str("Task ID"),
@@ -180,7 +180,7 @@ export function buildTools(
           reasoning_summaries: {
             type: "boolean",
             description:
-              "Also show reasoning summaries where the harness provides a documented summary field (Codex only); never raw reasoning",
+              "Also show reasoning summaries where the harness provides a documented summary field; never raw reasoning",
           },
         },
         ["id"],

@@ -7,6 +7,7 @@ const at = (ms: number) => new Date(NOW + ms).toISOString();
 
 const claude: HarnessUsage = {
   harness: "claude",
+  label: "Claude Code",
   state: "ok",
   plan: null,
   observedAt: at(-5 * 60_000),
@@ -17,6 +18,7 @@ const claude: HarnessUsage = {
 };
 const codex: HarnessUsage = {
   harness: "codex",
+  label: "Codex",
   state: "ok",
   plan: "pro",
   observedAt: at(0),

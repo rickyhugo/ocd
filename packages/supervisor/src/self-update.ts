@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
+import { configurableHarnesses } from "@ocd/adapters";
 import { redact, truncate, type UpdateStatus } from "@ocd/core";
 
 import { normalizeDirectory } from "./config.ts";
@@ -27,7 +28,7 @@ import { type GitRunner, gitText, systemGit } from "./git.ts";
 // the user's checkout is never touched), booted once in a throwaway sandbox,
 // and switched to by repointing ~/.ocd/install/current and restarting the
 // background service, which runs the CLI through that link. The switch waits
-// while Claude Code or Codex workers run, since a restart interrupts them.
+// while workers run that a restart would interrupt.
 
 export interface SelfUpdateSettings {
   enabled: boolean;
@@ -70,7 +71,7 @@ export interface SelfUpdaterOptions {
   settings: () => SelfUpdateSettings;
   /** Path of a declared repository, or null. */
   repoPath: (name: string) => string | null;
-  /** Live Claude Code / Codex workers that a restart would interrupt. */
+  /** Live workers that a restart would interrupt. */
   blockers: () => { taskId: string; title: string; harness: string }[];
   notify: (key: string, title: string, body: string) => void;
   /** Stops gracefully and exits so the service manager starts the new version; null outside a service. */
@@ -83,7 +84,7 @@ export interface SelfUpdaterOptions {
   clock?: () => number;
   /** Boots a build in a throwaway sandbox and throws if it does not come up. */
   smokeTest?: (buildDir: string) => Promise<void>;
-  /** After a switch, in the new supervisor (e.g. reloading the manager's plugin). */
+  /** After a switch, in the new supervisor (e.g. reloading the manager host's plugins). */
   afterApplied?: AfterUpdateStep;
   /** Wait before the one retry of `afterApplied` (it can fail transiently). Default 30 s. */
   afterAppliedRetryMs?: number;
@@ -383,7 +384,7 @@ export class SelfUpdater {
       this.o.notify(
         `update-waiting:${pending.sha}`,
         "OCD: Update ready",
-        `${short(pending.sha)} waits for ${blockers.length} Claude Code/Codex worker${blockers.length === 1 ? "" : "s"} to finish. Apply now from the sidebar or with \`ocd update apply\`.`,
+        `${short(pending.sha)} waits for ${blockers.length} worker${blockers.length === 1 ? "" : "s"} to finish. Apply now from the sidebar or with \`ocd update apply\`.`,
       );
       return this.status();
     }
@@ -541,7 +542,7 @@ export async function bootSmokeTest(buildDir: string): Promise<void> {
   writeFileSync(
     config,
     JSON.stringify({
-      opencode: { enabled: false },
+      ...Object.fromEntries(configurableHarnesses().map((h) => [h.name, { enabled: false }])),
       notifications: { enabled: false },
       backups: { intervalHours: 0 },
     }),

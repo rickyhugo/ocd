@@ -1,10 +1,16 @@
+import { execFile } from "node:child_process";
+
 import {
-  ClaudeAdapter,
-  CodexAdapter,
-  FakeAdapter,
-  OpenCodeAdapter,
-  discoverOpenCode,
+  HARNESSES,
+  MANAGER_HOST,
+  buildHarnessAdapters,
+  checkModel,
+  configurableHarnesses,
+  harnessSettings,
   type HarnessAdapter,
+  type HarnessDescriptor,
+  type ListedModel,
+  type ModelCheck,
 } from "@ocd/adapters";
 import type { AdapterStatus } from "@ocd/core";
 import type { Logger, ManagerChannel, SupervisorConfig } from "@ocd/supervisor";
@@ -18,81 +24,117 @@ export function buildAdapters({
   config: SupervisorConfig;
   logger: Logger;
 }): HarnessAdapter[] {
-  const adapters: HarnessAdapter[] = [];
-  if (config.opencode.enabled) {
-    const serviceFile = config.opencode.serviceFile;
-    adapters.push(
-      new OpenCodeAdapter({
-        connect: () => discoverOpenCode(serviceFile ? { serviceFile } : {}),
-        onError: (error, context) => logger.warn({ err: error, context }, "opencode adapter error"),
-      }),
-    );
-  }
-  if (config.claude.enabled) {
-    adapters.push(
-      new ClaudeAdapter({
-        command: [findBinary("claude", config.claude.binary)],
-        idleStopMs: config.workerIdleMinutes * 60_000,
-        onError: (error, context) => logger.warn({ err: error, context }, "claude adapter error"),
-      }),
-    );
-  }
-  if (config.codex.enabled) {
-    adapters.push(
-      new CodexAdapter({
-        command: [findBinary("codex", config.codex.binary), "app-server"],
-        idleStopMs: config.workerIdleMinutes * 60_000,
-        onError: (error, context) => logger.warn({ err: error, context }, "codex adapter error"),
-      }),
-    );
-  }
-  if (config.allowFakeHarness) adapters.push(new FakeAdapter());
-  return adapters;
+  return buildHarnessAdapters(config, {
+    idleStopMs: config.workerIdleMinutes * 60_000,
+    findBinary,
+    onError: (harness, error, context) =>
+      logger.warn({ err: error, context }, `${harness} adapter error`),
+  });
 }
 
-/** The registered manager is an OpenCode session, so wake-ups go through the OpenCode adapter. */
+/** Wake-ups for the registered manager go through the manager host's adapter. */
 export function buildManagerChannel(adapters: HarnessAdapter[]): ManagerChannel | null {
-  const opencode = adapters.find((a): a is OpenCodeAdapter => a instanceof OpenCodeAdapter);
-  return opencode ? { wake: (sessionId, text) => opencode.wakeManager(sessionId, text) } : null;
+  return MANAGER_HOST.channel(adapters);
 }
 
 /**
- * Read-only checks of the enabled harnesses: binary versions, logins, and the
- * OpenCode service. Never starts workers or spends tokens.
+ * Read-only checks of the enabled harnesses: binary versions, logins, and
+ * whatever service they need. Never starts workers or spends tokens.
  */
-export async function probeHarnesses(
-  config: Pick<SupervisorConfig, "opencode" | "claude" | "codex">,
-): Promise<AdapterStatus[]> {
+export async function probeHarnesses(config: SupervisorConfig): Promise<AdapterStatus[]> {
   const statuses: AdapterStatus[] = [];
-  if (config.opencode.enabled) {
-    const serviceFile = config.opencode.serviceFile;
-    const opencode = await new OpenCodeAdapter({
-      connect: () => discoverOpenCode(serviceFile ? { serviceFile } : {}),
-    }).probe();
-    statuses.push({
-      ...opencode,
-      problems: [
-        `service ${opencode.available ? "reachable" : "not reachable"}`,
-        ...opencode.problems,
-      ],
-    });
+  for (const harness of configurableHarnesses()) {
+    const settings = harnessSettings(config, harness);
+    if (!settings.enabled) continue;
+    const status = await harness.create({ settings, idleStopMs: 0, findBinary }).probe();
+    statuses.push(harness.decorateProbe ? harness.decorateProbe(status) : status);
   }
-  if (config.claude.enabled)
-    statuses.push(
-      await new ClaudeAdapter({ command: [findBinary("claude", config.claude.binary)] }).probe(),
-    );
-  if (config.codex.enabled)
-    statuses.push(
-      await new CodexAdapter({
-        command: [findBinary("codex", config.codex.binary), "app-server"],
-      }).probe(),
-    );
   return statuses;
+}
+
+/** How long a harness gets to list its models. */
+const LIST_TIMEOUT_MS = 20_000;
+
+/** Runs a read-only listing command; null when it failed or timed out. */
+export type RunList = (binary: string, args: string[]) => Promise<string | null>;
+
+const runList: RunList = (binary, args) =>
+  new Promise((resolve) =>
+    execFile(
+      binary,
+      args,
+      { timeout: LIST_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
+      (error, stdout) => resolve(error ? null : String(stdout)),
+    ),
+  );
+
+export interface ModelReport {
+  profile: string;
+  harness: string;
+  model: string;
+  status: ModelCheck;
+  /** Why the model could not be checked, when that is not simply "no list command". */
+  note?: string;
+}
+
+/**
+ * Checks every profile's model against its harness's own model list (the
+ * read-only listing command, no tokens), skipping harnesses that are off.
+ * Harnesses without a list command check aliases only.
+ */
+export async function checkProfileModels(
+  config: SupervisorConfig,
+  list: RunList = runList,
+): Promise<ModelReport[]> {
+  const reports: ModelReport[] = [];
+  for (const harness of HARNESSES) {
+    const profiles = Object.entries(config.profiles).filter(([, p]) => p.harness === harness.name);
+    const settings = harnessSettings(config, harness);
+    if (profiles.length === 0 || !settings.enabled) continue;
+    const { listed, note } = await listModels(harness, settings.binary as string | undefined, list);
+    for (const [profile, p] of profiles) {
+      const status = checkModel(harness.models, p.model, listed);
+      reports.push({
+        profile,
+        harness: harness.name,
+        model: p.model,
+        status,
+        ...(status === "unchecked" && note ? { note } : {}),
+      });
+    }
+  }
+  return reports;
+}
+
+async function listModels(
+  harness: HarnessDescriptor,
+  configuredBinary: string | undefined,
+  list: RunList,
+): Promise<{ listed: ListedModel[] | null; note?: string }> {
+  if (!harness.models.list) return { listed: null };
+  const stdout = await list(findBinary(harness.binary, configuredBinary), harness.models.list.args);
+  if (stdout === null) return { listed: null, note: "its model list could not be read" };
+  const listed = harness.models.list.parse(stdout);
+  return listed.length
+    ? { listed }
+    : { listed: null, note: "its model list was empty or unreadable" };
+}
+
+/** The `ocd doctor` lines for model checks: a warning per unlisted model, a note when not checkable. */
+export function modelLines(reports: ModelReport[], label: (harness: string) => string): string[] {
+  return reports.map((r) => {
+    const who = `profile ${r.profile} (${label(r.harness)} ${r.model})`;
+    if (r.status === "ok") return `${"model".padEnd(9)} ok ${who}`;
+    if (r.status === "unknown")
+      return `${"model".padEnd(9)} WARN ${who}: not in the harness's model list`;
+    return `${"model".padEnd(9)} -- ${who}: not checkable${r.note ? ` (${r.note})` : ""}`;
+  });
 }
 
 /**
  * What makes `ocd doctor` exit non-zero: an invalid config, no git, or an
- * enabled harness or tool that is unavailable. Tools that are off do not count.
+ * enabled harness or tool that is unavailable. Tools that are off do not
+ * count, and neither do model warnings.
  */
 export function doctorProblems(input: {
   configError: string | null;

@@ -14,6 +14,14 @@ import {
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import type { Interface } from "node:readline/promises";
 
+import {
+  MANAGER_HOST,
+  configurableHarnesses,
+  defaultModel,
+  pickableModels,
+  type HarnessDescriptor,
+  type ListedModel,
+} from "@ocd/adapters";
 import { Slug } from "@ocd/core";
 import {
   ConfigError,
@@ -95,23 +103,20 @@ export interface SetupDeps {
 /** Setup cannot continue; the message says what to do first. */
 export class SetupStop extends Error {}
 
-type Tool = "claude" | "codex" | "github" | "tmux";
+/** A harness's name, or "github" / "tmux". */
+type Tool = string;
 const TOOLS: { key: Tool; label: string; binary: string; login: string[] | null; hint: string }[] =
   [
-    {
-      key: "claude",
-      label: "Claude Code",
-      binary: "claude",
-      login: ["auth", "status", "--json"],
-      hint: "run `claude` and /login",
-    },
-    {
-      key: "codex",
-      label: "Codex",
-      binary: "codex",
-      login: ["login", "status"],
-      hint: "run `codex login`",
-    },
+    // Harnesses that run a vendor's CLI are optional: found, logged in, then offered.
+    ...configurableHarnesses()
+      .filter((h) => !h.config!.defaultEnabled && h.login)
+      .map((h) => ({
+        key: h.name,
+        label: h.label,
+        binary: h.binary,
+        login: h.login!.args,
+        hint: h.login!.hint,
+      })),
     {
       key: "github",
       label: "GitHub CLI (pull requests)",
@@ -139,7 +144,7 @@ export async function runSetup(deps: SetupDeps): Promise<SetupResult> {
 class Setup {
   private readonly d: SetupDeps;
   private readonly problems: string[] = [];
-  private opencode = "opencode";
+  private opencode: string = MANAGER_HOST.binary;
   private detected = {} as Record<Tool, Detected>;
   private config!: SupervisorConfig;
   /** The CLI everything should run: the install's `current` link, or this checkout's build. */
@@ -216,10 +221,10 @@ class Setup {
     if (!git) throw new SetupStop("git not found; install git");
     this.ok(`git ${git}`);
 
-    const opencode = this.d.locate("opencode");
+    const opencode = this.d.locate(MANAGER_HOST.binary);
     if (!opencode)
       throw new SetupStop(
-        "OpenCode not found; install it (https://opencode.ai) so `opencode` runs",
+        `${MANAGER_HOST.label} not found; install it (https://opencode.ai) so \`${MANAGER_HOST.binary}\` runs`,
       );
     this.opencode = opencode;
     this.ok(`OpenCode ${opencode}`);
@@ -338,15 +343,16 @@ class Setup {
       tools[tool.key] = await this.d.prompt.confirm(`Use ${tool.label}?`, true);
     }
     const profiles: Record<string, Record<string, string>> = {};
-    const oc = await this.pickModel("opencode");
-    if (oc) profiles["oc"] = { harness: "opencode", model: oc, permissionPolicy: "ask" };
-    if (tools.claude) {
-      const model = await this.pickModel("claude");
-      if (model) profiles["cc"] = { harness: "claude", model, permissionPolicy: "ask" };
-    }
-    if (tools.codex) {
-      const model = await this.pickModel("codex");
-      if (model) profiles["codex"] = { harness: "codex", model, permissionPolicy: "ask" };
+    for (const harness of configurableHarnesses()) {
+      // Harnesses on by default are always offered; the others when found, logged in and wanted.
+      if (!harness.config!.defaultEnabled && !tools[harness.name]) continue;
+      const model = await this.pickModel(harness);
+      if (model)
+        profiles[harness.profileName] = {
+          harness: harness.name,
+          model,
+          permissionPolicy: "ask",
+        };
     }
     const profile = Object.keys(profiles)[0];
     const repos = await this.askRepos(new Set(), profile);
@@ -373,9 +379,13 @@ class Setup {
         said: `manager directory ${directory}`,
       });
     }
-    const enabled = new Set<string>(["opencode"]);
+    const enabled = new Set<string>(
+      configurableHarnesses()
+        .filter((h) => h.config!.defaultEnabled)
+        .map((h) => h.name),
+    );
     for (const tool of TOOLS) {
-      if (c[tool.key].enabled) enabled.add(tool.key);
+      if ((c[tool.key] as { enabled: boolean }).enabled) enabled.add(tool.key);
       else if (
         this.detected[tool.key]?.ready &&
         (await this.d.prompt.confirm(
@@ -390,27 +400,24 @@ class Setup {
     const used = new Set(Object.values(c.profiles).map((p) => p.harness));
     const names = new Set(Object.keys(c.profiles));
     let firstProfile = Object.keys(c.profiles)[0];
-    for (const harness of ["opencode", "claude", "codex"] as const) {
-      if (!enabled.has(harness) || used.has(harness)) continue;
+    for (const harness of configurableHarnesses()) {
+      if (!enabled.has(harness.name) || used.has(harness.name)) continue;
       if (
         !(await this.d.prompt.confirm(
-          `No profile runs ${harnessLabel(harness)} workers. Add one?`,
-          harness === "opencode",
+          `No profile runs ${harness.label} workers. Add one?`,
+          harness.config!.defaultEnabled,
         ))
       )
         continue;
       const model = await this.pickModel(harness);
       if (!model) continue;
-      const name = unique(
-        harness === "opencode" ? "oc" : harness === "claude" ? "cc" : "codex",
-        names,
-      );
+      const name = unique(harness.profileName, names);
       names.add(name);
       firstProfile ??= name;
       edits.push({
         path: ["profiles", name],
-        value: { harness, model, permissionPolicy: "ask" },
-        said: `profile ${name} (${harness} ${model})`,
+        value: { harness: harness.name, model, permissionPolicy: "ask" },
+        said: `profile ${name} (${harness.name} ${model})`,
       });
     }
     if (Object.keys(c.repos).length === 0) {
@@ -425,34 +432,25 @@ class Setup {
     for (const edit of edits) this.doing(`added ${edit.said}`);
   }
 
-  private async pickModel(harness: "opencode" | "claude" | "codex"): Promise<string | null> {
-    let options: string[] = [];
-    if (harness === "claude") options = ["sonnet", "opus", "haiku"];
-    else if (harness === "opencode") {
-      const r = await this.d.run(this.opencode, ["models"], { timeoutMs: 30_000 });
-      options = r.stdout
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => /^[^/\s]+\/\S+$/.test(l));
-    } else {
-      const codex = this.detected.codex?.path;
-      const r = codex
-        ? await this.d.run(codex, ["debug", "models"], { timeoutMs: 30_000 })
-        : { code: 1, stdout: "", stderr: "" };
-      options = codexModels(r.stdout);
+  private async pickModel(harness: HarnessDescriptor): Promise<string | null> {
+    // The manager host's binary was located up front; the optional harnesses' while detecting.
+    const binary =
+      harness.name === MANAGER_HOST.harness ? this.opencode : this.detected[harness.name]?.path;
+    let listed: ListedModel[] | null = null;
+    if (harness.models.list && binary) {
+      const r = await this.d.run(binary, harness.models.list.args, { timeoutMs: 30_000 });
+      listed = harness.models.list.parse(r.stdout);
     }
-    const fallback =
-      harness === "opencode"
-        ? (options.find((m) => /sonnet/.test(m)) ?? options[0] ?? "")
-        : (options[0] ?? "");
+    const options = pickableModels(harness.models, listed);
+    const format = harness.models.format;
     const model = await this.d.prompt.choose(
-      `Model for ${harnessLabel(harness)} workers${harness === "opencode" ? " (provider/model)" : ""}`,
+      `Model for ${harness.label} workers${format?.hint ? ` (${format.hint})` : ""}`,
       options,
-      fallback,
+      defaultModel(harness.models, options),
     );
     if (!model) return null;
-    if (harness === "opencode" && !/^[^/\s]+\/\S+$/.test(model)) {
-      this.warn(`"${model}" is not a provider/model name; skipped`);
+    if (format && !format.pattern.test(model)) {
+      this.warn(`"${model}" is not valid (${format.message}); skipped`);
       return null;
     }
     return model;
@@ -561,7 +559,7 @@ class Setup {
       if (!hadSelfUpdate)
         text = text.replace(
           /\n(\s*)"selfUpdate"\s*:/,
-          '\n$1// OCD updates itself from this checkout, waiting while Claude Code / Codex workers run.\n$1"selfUpdate":',
+          '\n$1// OCD updates itself from this checkout, waiting while workers a restart would interrupt run.\n$1"selfUpdate":',
         );
       // Builds run `pnpm`; without it on PATH, fetch the version OCD pins.
       if (!this.d.locate("pnpm")) {
@@ -817,10 +815,6 @@ function realpathOr(path: string): string {
   }
 }
 
-function harnessLabel(harness: "opencode" | "claude" | "codex"): string {
-  return harness === "opencode" ? "OpenCode" : harness === "claude" ? "Claude Code" : "Codex";
-}
-
 /** An OCD plugin entry (a checkout's or an install's packages/plugin). */
 function isOcdPlugin(entry: string): boolean {
   return /(^|\/)packages\/plugin\/?$/.test(entry);
@@ -839,21 +833,6 @@ function repoName(path: string): string {
 function unique(name: string, taken: Set<string>): string {
   if (!taken.has(name)) return name;
   for (let i = 2; ; i++) if (!taken.has(`${name}-${i}`)) return `${name}-${i}`;
-}
-
-/** Listed Codex models, in Codex's own order (`codex debug models`). */
-export function codexModels(stdout: string): string[] {
-  try {
-    const models = (
-      JSON.parse(stdout) as { models?: { slug: string; visibility?: string; priority?: number }[] }
-    ).models;
-    return (models ?? [])
-      .filter((m) => m.visibility === undefined || m.visibility === "list")
-      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
-      .map((m) => m.slug);
-  } catch {
-    return [];
-  }
 }
 
 /** The pnpm version the checkout pins (devEngines.packageManager). */
@@ -884,6 +863,9 @@ export function starterConfig(input: {
     Object.entries(record)
       .map(([k, v]) => `    ${JSON.stringify(k)}: ${inline(v)},`)
       .join("\n");
+  const optional = configurableHarnesses()
+    .filter((h) => !h.config!.defaultEnabled)
+    .map((h) => h.label);
   const tools = TOOLS.filter((t) => input.tools[t.key])
     .map((t) => `  ${JSON.stringify(t.key)}: { "enabled": true },`)
     .join("\n");
@@ -894,7 +876,7 @@ export function starterConfig(input: {
     `  "manager": { "directory": ${JSON.stringify(input.manager)} },`,
     ...(tools
       ? [
-          "  // Optional tools (off unless turned on): Claude Code / Codex workers, gh, tmux.",
+          `  // Optional tools (off unless turned on): ${optional.join(" / ")} workers, gh, tmux.`,
           tools,
         ]
       : []),

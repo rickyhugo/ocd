@@ -1,13 +1,13 @@
 import type { HarnessName } from "./schemas.ts";
 
-// Subscription usage limits as the harnesses report them (Claude Code's
-// rate_limit_event, Codex's account/rateLimits), and the wording shared by the
+// Subscription usage limits as the harnesses report them (with a worker's
+// turns, or read without a model call), and the wording shared by the
 // CLI, the TUI and the manager briefing. OCD only records what a harness says;
 // it never estimates usage itself.
 
-/** One rolling usage window, e.g. Claude Code's 5-hour window or Codex's weekly one. */
+/** One rolling usage window, e.g. a 5-hour or a weekly one. */
 export interface UsageWindow {
-  /** Stable per harness: five_hour, seven_day, seven_day_opus, codex:10080, … */
+  /** Stable per harness, as the harness names it (five_hour, seven_day, …). */
   id: string;
   /** "5-hour", "weekly", "weekly Opus" */
   label: string;
@@ -23,9 +23,11 @@ export type UsageState = "ok" | "warning" | "limited";
 
 export interface HarnessUsage {
   harness: HarnessName;
+  /** The harness's display name; the supervisor fills it in from the registry. */
+  label?: string;
   state: UsageState;
   windows: UsageWindow[];
-  /** Subscription plan, when the harness says (Codex). */
+  /** Subscription plan, when the harness says. */
   plan: string | null;
   /** When OCD last heard from the harness about it. */
   observedAt: string;
@@ -35,17 +37,12 @@ export interface UsageStatus {
   harnesses: HarnessUsage[];
   /** usageLimits.notifyAt: percentages that send a notification once per window. */
   notifyAt: number[];
+  /** What to say while nothing is reported yet: which harnesses report limits, and how. */
+  emptyHint?: string;
 }
 
-const HARNESS_LABELS: Record<HarnessName, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-  opencode: "OpenCode",
-  fake: "Fake harness",
-};
-
-export function harnessLabel(harness: HarnessName): string {
-  return HARNESS_LABELS[harness];
+export function harnessLabel(usage: Pick<HarnessUsage, "harness" | "label">): string {
+  return usage.label ?? usage.harness;
 }
 
 /** "5-hour" / "weekly" / "3-day" from a window length in minutes. */
@@ -102,7 +99,7 @@ export function usageLines(harnesses: HarnessUsage[], now: number): string[] {
     const state =
       h.state === "limited" ? "LIMIT REACHED · " : h.state === "warning" ? "near a limit · " : "";
     const windows = h.windows.map((w) => windowText(w, now)).join(" · ") || "no windows reported";
-    return `${harnessLabel(h.harness)}: ${state}${windows} · seen ${ago(h.observedAt, now)}`;
+    return `${harnessLabel(h)}: ${state}${windows} · seen ${ago(h.observedAt, now)}`;
   });
 }
 

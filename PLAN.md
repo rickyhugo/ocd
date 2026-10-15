@@ -88,7 +88,7 @@ Introduce these package boundaries as implementation grows:
 packages/
   core/        # Zod contracts, task states, profiles, typed API client
   supervisor/  # API, Drizzle schema/migrations, scheduling, recovery, outbox
-  adapters/    # OpenCode, Claude Code, Codex, and fake implementations
+  adapters/    # OpenCode, Claude Code, Codex, and fake implementations; one descriptor each + the registry
   plugin/      # OpenCode V2 tools, contextual briefing, manager integration
   cli/         # Repository/profile setup, status, attention, lifecycle controls
 ```
@@ -211,6 +211,14 @@ model, instructions/agent preset where supported, and a permission policy.
 | OpenCode    | V2 authenticated client and managed service                            | Live events have no replay or automatic reconnection; reconcile state                    |
 | Claude Code | CLI print mode with structured JSON streaming and explicit session IDs | Headless permissions need an explicit bridge or deny policy; do not default to bypass    |
 | Codex       | App-server JSON-RPC over stdio                                         | Map thread/turn IDs and server approval requests; avoid experimental WebSocket transport |
+
+Everything that differs between harnesses lives in one descriptor next to its
+adapter (name, label, config section, how to build and probe it, model rules and
+listing, login check) and is listed once in the registry
+(`packages/adapters/src/registry.ts`). The supervisor, CLI, `ocd setup`/`doctor`
+and the config schema iterate the registry and never name a harness; a test
+guards this. OpenCode's other role, hosting the manager (wake-ups, the plugin,
+`opencode reload`), sits behind `MANAGER_HOST`. See `docs/adding-a-harness.md`.
 
 Use each installed harness's normal authentication, subject to its vendor terms
 and usage limits. Do not copy subscription tokens between products or infer that
@@ -381,10 +389,6 @@ Not yet verified in real use:
   without OCD; Linux (systemd unit, notify-send) has never run.
 - **TUI:** the sidebar usage line (`◔`) and the `/limits` dialog, rendered in
   OpenCode.
-
-Known small fixes:
-
-- `ocd doctor` could check profile model names against each harness's list.
 
 Possible later work, not committed to:
 
