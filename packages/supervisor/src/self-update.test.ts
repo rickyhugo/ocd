@@ -19,6 +19,11 @@ async function waitUntil(ok: () => boolean, ms = 10_000): Promise<void> {
   }
 }
 
+const RELOAD_FAILED = {
+  headline: "OpenCode did not reload OCD's plugin",
+  detail: "Run `opencode reload`.",
+};
+
 const roots: string[] = [];
 afterEach(() => {
   for (const r of roots.splice(0)) rmrf(r);
@@ -73,7 +78,7 @@ function updater(
     runningFrom: join(w.installDir, "builds", "seed", "packages/cli/dist/ocd.mjs"),
     logger: createLogger({ level: "silent" } as never),
     smokeTest: async () => void calls.smoke++,
-    afterApplied: async () => void calls.after++,
+    afterApplied: { run: async () => void calls.after++, failed: RELOAD_FAILED },
     ...rest,
   });
   return { u, calls, blockers };
@@ -111,6 +116,47 @@ describe("self-update", () => {
     again.u.start();
     again.u.stop();
     expect(again.calls.notify).toEqual([]);
+  });
+
+  it("retries a failed after-update reload once, then notifies; a retry that works stays quiet", async () => {
+    const w = world();
+    seedInstall(w);
+    const sha = w.land("feat: reload");
+    await updater(w).u.check();
+    const failing = updater(w, {
+      afterAppliedRetryMs: 5,
+      afterApplied: {
+        run: async () => {
+          throw new Error("opencode reload: Directory not found");
+        },
+        failed: RELOAD_FAILED,
+      },
+    });
+    failing.u.start();
+    await new Promise((r) => setTimeout(r, 100));
+    failing.u.stop();
+    expect(failing.calls.notify).toEqual([`update-applied:${sha}`, `update-after-failed:${sha}`]);
+
+    const w2 = world();
+    seedInstall(w2);
+    w2.land("feat: reload again");
+    await updater(w2).u.check();
+    let attempts = 0;
+    const flaky = updater(w2, {
+      afterAppliedRetryMs: 5,
+      afterApplied: {
+        run: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("transient");
+        },
+        failed: RELOAD_FAILED,
+      },
+    });
+    flaky.u.start();
+    await new Promise((r) => setTimeout(r, 100));
+    flaky.u.stop();
+    expect(attempts).toBe(2);
+    expect(flaky.calls.notify).toHaveLength(1);
   });
 
   it("waits for Claude Code / Codex workers, says so, and applies on force or when they finish", async () => {
@@ -200,10 +246,12 @@ describe("self-update", () => {
     next.u.start();
     next.u.stop();
     const builds = () => readdirSync(join(w.installDir, "builds")).toSorted();
-    await waitUntil(() => !builds().includes("0123456789ab"));
-    expect(builds()).toEqual(
-      [first, second].flatMap((s) => [s.slice(0, 12), `${s.slice(0, 12)}.log`]).toSorted(),
-    );
+    // The seed build and the leftover go too; wait for the whole prune, not its first removal.
+    const kept = [first, second]
+      .flatMap((s) => [s.slice(0, 12), `${s.slice(0, 12)}.log`])
+      .toSorted();
+    await waitUntil(() => builds().join() === kept.join());
+    expect(builds()).toEqual(kept);
   });
 
   it("refuses a build whose supervisor does not boot", async () => {

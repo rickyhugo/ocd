@@ -436,7 +436,17 @@ async function run(
           managerChannel: buildManagerChannel,
           pullRequests: ({ config }) => (config.github.enabled ? new GhPullRequests() : undefined),
           notifier: await platform.notifier(notifierOptions()),
-          selfUpdate: { runningFrom: cliPath(), service: background, afterApplied: reloadOpenCode },
+          selfUpdate: {
+            runningFrom: cliPath(),
+            service: background,
+            afterApplied: {
+              run: reloadOpenCode,
+              failed: {
+                headline: "OpenCode did not reload OCD's plugin",
+                detail: "OpenCode still has the previous plugin. Run `opencode reload`.",
+              },
+            },
+          },
         });
       } catch (error) {
         if (

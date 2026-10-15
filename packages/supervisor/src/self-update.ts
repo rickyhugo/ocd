@@ -58,6 +58,12 @@ const EMPTY: InstallState = {
   checkedAt: null,
 };
 
+export interface AfterUpdateStep {
+  run: () => Promise<void>;
+  /** The notification when it still fails after one retry: what to do by hand. */
+  failed: { headline: string; detail: string };
+}
+
 export interface SelfUpdaterOptions {
   /** ~/.ocd/install */
   installDir: string;
@@ -75,8 +81,10 @@ export interface SelfUpdaterOptions {
   clock?: () => number;
   /** Boots a build in a throwaway sandbox and throws if it does not come up. */
   smokeTest?: (buildDir: string) => Promise<void>;
-  /** After a switch, in the new supervisor (e.g. `opencode reload` for the plugin). */
-  afterApplied?: () => Promise<void>;
+  /** After a switch, in the new supervisor (e.g. reloading the manager's plugin). */
+  afterApplied?: AfterUpdateStep;
+  /** Wait before the one retry of `afterApplied` (it can fail transiently). Default 30 s. */
+  afterAppliedRetryMs?: number;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -179,11 +187,7 @@ export class SelfUpdater {
           "OCD: Updated",
           `Now running ${short(applied.sha)}${applied.from ? ` (was ${short(applied.from)})` : ""}.`,
         );
-        void this.o
-          .afterApplied?.()
-          .catch((error: unknown) =>
-            this.o.logger.warn({ err: error }, "after-update step failed"),
-          );
+        void this.runAfterApplied(applied.sha);
       }
     }
     if (!this.o.settings().enabled) return;
@@ -198,6 +202,34 @@ export class SelfUpdater {
     const apply = setInterval(() => void this.tryApply(false).catch(() => undefined), 20_000);
     for (const t of [first, poll, apply]) t.unref();
     this.timers.push(first, poll, apply);
+  }
+
+  /** Retries once; if the step still fails, says what to do by hand (once per build, via the key). */
+  private async runAfterApplied(sha: string): Promise<void> {
+    const step = this.o.afterApplied;
+    if (!step) return;
+    try {
+      await step.run();
+      return;
+    } catch (error) {
+      this.o.logger.warn({ err: error }, "after-update step failed; retrying");
+    }
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, this.o.afterAppliedRetryMs ?? 30_000);
+      t.unref();
+      this.timers.push(t);
+    });
+    if (this.stopped) return;
+    try {
+      await step.run();
+    } catch (error) {
+      this.o.logger.warn({ err: error }, "after-update step failed");
+      this.o.notify(
+        `update-after-failed:${sha}`,
+        step.failed.headline,
+        `OCD ${short(sha)} is running. ${step.failed.detail}`,
+      );
+    }
   }
 
   stop(): void {
