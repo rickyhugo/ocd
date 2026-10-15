@@ -1,3 +1,4 @@
+export * from "./api-contract.ts";
 export * from "./client.ts";
 export * from "./diff.ts";
 export * from "./events.ts";

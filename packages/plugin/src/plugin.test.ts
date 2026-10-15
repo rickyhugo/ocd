@@ -268,6 +268,55 @@ describe("tool input and output guards", () => {
   });
 });
 
+describe("tool input schemas", () => {
+  const tools = new Map(buildTools(() => ({}) as OcdClient).map((t) => [t.name, t]));
+  const properties = (name: string) =>
+    Object.keys((tools.get(name)!.input["properties"] ?? {}) as object);
+
+  it("are generated from the schema each tool parses with", () => {
+    for (const tool of tools.values()) {
+      expect(tool.input["type"], tool.name).toBe("object");
+      expect(tool.input["additionalProperties"], tool.name).toBe(false);
+      expect(tool.input["$schema"], tool.name).toBeUndefined();
+    }
+  });
+
+  it("keep the field names the manager prompts use", () => {
+    expect(properties("dispatch_task")).toEqual([
+      "repo",
+      "profile",
+      "title",
+      "instructions",
+      "acceptance_criteria",
+      "depends_on",
+    ]);
+    expect(properties("peek_task")).toEqual(["id", "limit", "before", "reasoning_summaries"]);
+    expect(properties("remember")).toEqual([
+      "scope",
+      "content",
+      "source",
+      "repo",
+      "task_id",
+      "supersedes",
+    ]);
+    expect(tools.get("dispatch_task")!.input["required"]).toEqual([
+      "repo",
+      "title",
+      "instructions",
+      "acceptance_criteria",
+    ]);
+  });
+
+  it("reject what the supervisor would", async () => {
+    const out = await runTool(
+      tools.get("list_tasks")!,
+      { state: ["nonsense"] },
+      { sessionID: "s", callID: "c", directory: "/d" },
+    );
+    expect(out).toMatch(/OCD error/);
+  });
+});
+
 describe("BriefingCache under a failing supervisor", () => {
   it("caches errors briefly and prunes old entries", async () => {
     const dir = tempDir();

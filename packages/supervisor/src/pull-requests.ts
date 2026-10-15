@@ -1,4 +1,4 @@
-import type { GitHubCliStatus } from "@ocd/core";
+import type { GitHubCliStatus, MergeMethod } from "@ocd/core";
 
 import { GhError, probeGh, resolveGh, runGh, safeGhText } from "./github-cli.ts";
 
@@ -11,8 +11,6 @@ export interface PullRequestInput {
   body: string;
   draft: boolean;
 }
-
-export type MergeMethod = "squash" | "merge" | "rebase";
 
 export interface PullRequestStatus {
   state: "open" | "merged" | "closed";
