@@ -17,10 +17,14 @@ import type {
   HarnessName,
   MemoryScope,
   MemorySource,
+  MemoryStatus,
+  OutboxKind,
+  OutboxStatus,
+  RunState,
   Profile,
+  TaskEventType,
   TaskResult,
   TaskState,
-  WorkerRun,
 } from "@ocd/core";
 
 // Timestamps are ISO-8601 UTC strings. JSON columns hold validated values only.
@@ -98,7 +102,7 @@ export const workerRuns = sqliteTable(
     harness: text("harness").$type<HarnessName>().notNull(),
     harnessVersion: text("harness_version"),
     sessionId: text("session_id"),
-    state: text("state").$type<WorkerRun["state"]>().notNull(),
+    state: text("state").$type<RunState>().notNull(),
     supervisorInstance: text("supervisor_instance").notNull(),
     startedAt: text("started_at").notNull().default(now),
     endedAt: text("ended_at"),
@@ -114,7 +118,7 @@ export const taskEvents = sqliteTable(
     taskId: text("task_id")
       .notNull()
       .references(() => tasks.id),
-    type: text("type").notNull(),
+    type: text("type").$type<TaskEventType>().notNull(),
     data: text("data", { mode: "json" }),
     createdAt: text("created_at").notNull().default(now),
   },
@@ -142,7 +146,7 @@ export const memories = sqliteTable(
     taskId: text("task_id").references(() => tasks.id),
     content: text("content").notNull(),
     source: text("source").$type<MemorySource>().notNull(),
-    status: text("status").$type<"proposed" | "confirmed" | "retired">().notNull(),
+    status: text("status").$type<MemoryStatus>().notNull(),
     recordedBy: text("recorded_by").$type<Actor>().notNull(),
     supersededBy: text("superseded_by"),
     createdAt: text("created_at").notNull().default(now),
@@ -180,10 +184,10 @@ export const outbox = sqliteTable(
   "outbox",
   {
     id: text("id").primaryKey(),
-    kind: text("kind").$type<"notify" | "manager_wake">().notNull(),
+    kind: text("kind").$type<OutboxKind>().notNull(),
     dedupeKey: text("dedupe_key").notNull().unique(),
     payload: text("payload", { mode: "json" }).notNull(),
-    status: text("status").$type<"pending" | "delivered" | "dead">().notNull(),
+    status: text("status").$type<OutboxStatus>().notNull(),
     attempts: integer("attempts").notNull().default(0),
     nextAttemptAt: text("next_attempt_at").notNull().default(now),
     lastError: text("last_error"),

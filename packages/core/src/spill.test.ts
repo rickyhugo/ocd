@@ -9,6 +9,7 @@ import {
   type SpillInput,
   type Task,
   type TaskEvent,
+  type TaskEventType,
 } from "./index.ts";
 
 const NOW = Date.parse("2026-10-13T12:00:00Z");
@@ -79,7 +80,12 @@ function attention(over: Partial<Attention> & Pick<Attention, "kind">): Attentio
   };
 }
 
-function event(taskId: string, type: string, minutesAgo: number, data: unknown = {}): TaskEvent {
+function event(
+  taskId: string,
+  type: TaskEventType,
+  minutesAgo: number,
+  data: unknown = {},
+): TaskEvent {
   seq += 1;
   return { id: seq, taskId, type, data, createdAt: at(minutesAgo) };
 }
@@ -227,7 +233,7 @@ describe("/spill snapshot", () => {
           event("t_ev", "workspace.ready", 20),
           event("t_ev", "worker.steered", 8, { note: "private note" }),
           event("t_ev", "state.running", 7),
-          event("t_ev", "some.unknown", 6, { text: "leak" }),
+          event("t_ev", "some.unknown" as TaskEventType, 6, { text: "leak" }),
         ],
       },
     });

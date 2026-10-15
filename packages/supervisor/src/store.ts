@@ -12,10 +12,12 @@ import {
   type Manager,
   type Memory,
   type OutboxEntry,
+  type OutboxKind,
   type Profile,
   type Repository,
   type Task,
   type TaskEvent,
+  type TaskEventType,
   type TaskState,
   type WorkerRun,
 } from "@ocd/core";
@@ -46,7 +48,7 @@ type AttentionRow = typeof attentionRequests.$inferSelect;
 type MemoryRow = typeof memories.$inferSelect;
 
 export interface OutboxInput {
-  kind: "notify" | "manager_wake";
+  kind: OutboxKind;
   dedupeKey: string;
   payload: NotifyPayload | WakePayload;
 }
@@ -95,7 +97,7 @@ export interface TransitionOptions {
   /** Compare-and-set: the transition only applies from one of these states. */
   from?: readonly TaskState[];
   patch?: Partial<Omit<TaskRow, "id" | "state">>;
-  event?: { type: string; data?: unknown };
+  event?: { type: TaskEventType; data?: unknown };
   outbox?: OutboxInput[];
   attention?: { input: AttentionInput; notify: boolean; wake: boolean; notice?: Notice }[];
 }
@@ -419,7 +421,7 @@ export class Store {
   patchTask(
     taskId: string,
     patch: Partial<Omit<TaskRow, "id" | "state">>,
-    event?: { type: string; data?: unknown },
+    event?: { type: TaskEventType; data?: unknown },
   ): void {
     this.tx(() => {
       this.db
@@ -440,7 +442,7 @@ export class Store {
     this.db.update(tasks).set({ lastActivityAt: at }).where(eq(tasks.id, taskId)).run();
   }
 
-  appendEvent(taskId: string, type: string, data?: unknown): void {
+  appendEvent(taskId: string, type: TaskEventType, data?: unknown): void {
     this.db
       .insert(taskEvents)
       .values({ taskId, type, data: data ?? null, createdAt: this.now() })
