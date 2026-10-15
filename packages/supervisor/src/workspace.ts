@@ -1,151 +1,10 @@
-import { execFile, spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 import type { Repository, Verification } from "@ocd/core";
 
 import { ApiError } from "./errors.ts";
-
-const BASE_ENV_KEYS = [
-  "PATH",
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "SHELL",
-  "LANG",
-  "LC_ALL",
-  "LC_CTYPE",
-  "TERM",
-  "TMPDIR",
-];
-
-/** Only selected variables reach worker and verification processes; unrelated credentials are not inherited. */
-export function filteredEnv(
-  allowlist: readonly string[] = [],
-  source: NodeJS.ProcessEnv = process.env,
-): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of [...BASE_ENV_KEYS, ...allowlist]) {
-    const value = source[key];
-    if (value !== undefined) env[key] = value;
-  }
-  return env;
-}
-
-export interface ExecResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-}
-
-export function run(
-  cmd: string,
-  args: string[],
-  options: { cwd: string; env?: Record<string, string>; timeoutMs?: number },
-): Promise<ExecResult> {
-  return new Promise((resolve) => {
-    execFile(
-      cmd,
-      args,
-      {
-        cwd: options.cwd,
-        env: options.env ?? { ...filteredEnv(), GIT_TERMINAL_PROMPT: "0" },
-        timeout: options.timeoutMs ?? 60_000,
-        maxBuffer: 16 * 1024 * 1024,
-      },
-      (error, stdout, stderr) => {
-        const err = error as
-          | (NodeJS.ErrnoException & { code?: number | string; killed?: boolean })
-          | null;
-        resolve({
-          code: err ? (typeof err.code === "number" ? err.code : null) : 0,
-          stdout: String(stdout),
-          stderr: String(stderr),
-          timedOut: Boolean(err?.killed),
-        });
-      },
-    );
-  });
-}
-
-export async function git(
-  cwd: string,
-  args: string[],
-  options: { trim?: boolean } = {},
-): Promise<string> {
-  const result = await run("git", args, { cwd });
-  if (result.code !== 0)
-    throw new Error(
-      `git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`,
-    );
-  return options.trim === false ? result.stdout : result.stdout.trim();
-}
-
-/**
- * Runs git and keeps at most `maxBytes` of stdout; once over, the process is
- * killed and `overflow` is set, so a huge diff never lands in memory whole.
- * `code` is git's exit status (null when killed or not started).
- */
-export function gitCapped(
-  cwd: string,
-  args: string[],
-  maxBytes: number,
-  timeoutMs = 60_000,
-): Promise<{ stdout: Buffer; overflow: boolean; code: number | null }> {
-  return new Promise((resolve) => {
-    const child = spawn("git", args, {
-      cwd,
-      env: { ...filteredEnv(), GIT_TERMINAL_PROMPT: "0" },
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let overflow = false;
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    child.stdout.on("data", (chunk: Buffer) => {
-      if (overflow) return;
-      const room = maxBytes - size;
-      if (chunk.length > room) {
-        if (room > 0) chunks.push(chunk.subarray(0, room));
-        size = maxBytes;
-        overflow = true;
-        child.kill("SIGKILL");
-        return;
-      }
-      chunks.push(chunk);
-      size += chunk.length;
-    });
-    const done = (code: number | null) => {
-      clearTimeout(timer);
-      resolve({ stdout: Buffer.concat(chunks), overflow, code });
-    };
-    child.on("error", () => done(null));
-    child.on("close", (code) => done(code));
-  });
-}
-
-/** Splits NUL-separated git output (`-z`) into its non-empty fields. */
-function nulFields(output: string): string[] {
-  return output.split("\0").filter(Boolean);
-}
-
-/**
- * Paths from `git status --porcelain=v1 -z`. Each entry is "XY path"; renames
- * and copies are followed by the original path as a separate entry. Never trim
- * this output: the status column may start with a space.
- */
-export function parsePorcelainZ(output: string): string[] {
-  const fields = output.split("\0");
-  const paths: string[] = [];
-  for (let i = 0; i < fields.length; i += 1) {
-    const entry = fields[i]!;
-    if (entry.length < 4) continue;
-    paths.push(entry.slice(3));
-    if (entry[0] === "R" || entry[0] === "C") i += 1;
-  }
-  return paths;
-}
+import { type GitRunner, gitText, nulFields, parsePorcelainZ, systemGit } from "./git.ts";
 
 export class WorkspaceError extends ApiError {
   constructor(code: string, message: string) {
@@ -164,9 +23,15 @@ const MAX_UNTRACKED_FILES = 50;
 /** One managed git worktree per editing task. Never deletes anything. */
 export class WorkspaceManager {
   private readonly root: string;
+  private readonly git: GitRunner;
 
-  constructor(root: string) {
+  constructor(root: string, git: GitRunner = systemGit) {
     this.root = root;
+    this.git = git;
+  }
+
+  private text(cwd: string, args: string[], options?: { trim?: boolean }): Promise<string> {
+    return gitText(this.git, cwd, args, options);
   }
 
   /** Canonicalizes and validates a repository path before it joins the allowlist. */
@@ -175,7 +40,7 @@ export class WorkspaceManager {
     const real = realpathSync(path);
     let top: string;
     try {
-      top = realpathSync(await git(real, ["rev-parse", "--show-toplevel"]));
+      top = realpathSync(await this.text(real, ["rev-parse", "--show-toplevel"]));
     } catch {
       throw new ApiError(400, "not_a_repo", `${real} is not a git repository`);
     }
@@ -229,7 +94,8 @@ export class WorkspaceManager {
           `${path} is a worktree for ${registered.branch ?? "a detached HEAD"}, not ${branch}`,
         );
       }
-      const baseRef = recordedBaseRef ?? (await git(repoPath, ["merge-base", "HEAD", branch]));
+      const baseRef =
+        recordedBaseRef ?? (await this.text(repoPath, ["merge-base", "HEAD", branch]));
       return { path, branch, baseRef };
     }
     if (existsSync(path))
@@ -245,7 +111,7 @@ export class WorkspaceManager {
       );
     const branchExists =
       (
-        await run("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+        await this.git.run(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
           cwd: repoPath,
         })
       ).code === 0;
@@ -256,13 +122,13 @@ export class WorkspaceManager {
       );
     const baseRef =
       recordedBaseRef ??
-      (await git(repoPath, ["rev-parse", "--verify", `${repo.baseRef ?? "HEAD"}^{commit}`]));
-    await git(repoPath, ["worktree", "add", "-b", branch, path, baseRef]);
+      (await this.text(repoPath, ["rev-parse", "--verify", `${repo.baseRef ?? "HEAD"}^{commit}`]));
+    await this.text(repoPath, ["worktree", "add", "-b", branch, path, baseRef]);
     return { path: realpathSync(path), branch, baseRef };
   }
 
   private async worktrees(repoPath: string): Promise<{ path: string; branch: string | null }[]> {
-    const out = await git(repoPath, ["worktree", "list", "--porcelain"]);
+    const out = await this.text(repoPath, ["worktree", "list", "--porcelain"]);
     const result: { path: string; branch: string | null }[] = [];
     for (const block of out.split("\n\n")) {
       const lines = block.split("\n");
@@ -277,17 +143,21 @@ export class WorkspaceManager {
   /** Independent facts about the workspace, separate from the worker's claims. */
   async verify(workspace: { path: string; baseRef: string }): Promise<Verification> {
     const dirtyFiles = parsePorcelainZ(
-      await git(workspace.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+      await this.text(workspace.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
         trim: false,
       }),
     );
     const committed = nulFields(
-      await git(workspace.path, ["diff", "--name-only", "-z", `${workspace.baseRef}...HEAD`], {
-        trim: false,
-      }),
+      await this.text(
+        workspace.path,
+        ["diff", "--name-only", "-z", `${workspace.baseRef}...HEAD`],
+        {
+          trim: false,
+        },
+      ),
     );
     const commitsAhead = Number(
-      await git(workspace.path, ["rev-list", "--count", `${workspace.baseRef}..HEAD`]),
+      await this.text(workspace.path, ["rev-list", "--count", `${workspace.baseRef}..HEAD`]),
     );
     return {
       changedFiles: [...new Set([...committed, ...dirtyFiles])].sort(),
@@ -314,17 +184,21 @@ export class WorkspaceManager {
     const worktreeExists = workspacePath !== null && existsSync(workspacePath);
     const dirtyFiles = worktreeExists
       ? parsePorcelainZ(
-          await git(workspacePath, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-            trim: false,
-          }),
+          await this.text(
+            workspacePath,
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            {
+              trim: false,
+            },
+          ),
         )
       : [];
     const ref = `refs/heads/${branch}`;
     const branchExists =
-      (await run("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoPath })).code === 0;
+      (await this.git.run(["show-ref", "--verify", "--quiet", ref], { cwd: repoPath })).code === 0;
     const unmergedCommits = branchExists
       ? Number(
-          await git(repoPath, [
+          await this.text(repoPath, [
             "rev-list",
             "--count",
             ref,
@@ -352,17 +226,22 @@ export class WorkspaceManager {
         existsSync(workspacePath) ||
         (await this.worktrees(repoPath)).some((w) => w.path === workspacePath);
       if (registered) {
-        await git(repoPath, ["worktree", "remove", ...(force ? ["--force"] : []), workspacePath]);
+        await this.text(repoPath, [
+          "worktree",
+          "remove",
+          ...(force ? ["--force"] : []),
+          workspacePath,
+        ]);
       }
     }
     const ref = `refs/heads/${branch}`;
     const exists = async () =>
-      (await run("git", ["show-ref", "--verify", "--quiet", ref], { cwd: repoPath })).code === 0;
+      (await this.git.run(["show-ref", "--verify", "--quiet", ref], { cwd: repoPath })).code === 0;
     if (await exists()) {
       // Callers have checked safety; `-d` would still refuse commits that only
       // live on a remote-tracking or other branch.
       try {
-        await git(repoPath, ["branch", "-D", branch]);
+        await this.text(repoPath, ["branch", "-D", branch]);
       } catch (error) {
         if (await exists()) throw error;
       }
@@ -371,16 +250,16 @@ export class WorkspaceManager {
 
   /** Commits everything in the worktree (used only when explicitly asked). */
   async commitAll(workspacePath: string, message: string): Promise<boolean> {
-    await git(workspacePath, ["add", "-A"]);
+    await this.text(workspacePath, ["add", "-A"]);
     const staged =
-      (await run("git", ["diff", "--cached", "--quiet"], { cwd: workspacePath })).code !== 0;
-    if (staged) await git(workspacePath, ["commit", "-m", message]);
+      (await this.git.run(["diff", "--cached", "--quiet"], { cwd: workspacePath })).code !== 0;
+    if (staged) await this.text(workspacePath, ["commit", "-m", message]);
     return staged;
   }
 
   /** Pushes the task branch with the user's own git credentials (full environment). */
   async push(workspacePath: string, remote: string, branch: string): Promise<void> {
-    const result = await run("git", ["push", "-u", remote, `${branch}:${branch}`], {
+    const result = await this.git.run(["push", "-u", remote, `${branch}:${branch}`], {
       cwd: workspacePath,
       env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
       timeoutMs: 120_000,
@@ -391,7 +270,7 @@ export class WorkspaceManager {
 
   /** Deletes a pushed task branch from the remote; false if it was already gone. */
   async deleteRemoteBranch(repoPath: string, remote: string, branch: string): Promise<boolean> {
-    const result = await run("git", ["push", remote, "--delete", branch], {
+    const result = await this.git.run(["push", remote, "--delete", branch], {
       cwd: repoPath,
       env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
       timeoutMs: 120_000,
@@ -424,13 +303,15 @@ export class WorkspaceManager {
   }> {
     const opts = ["-c", "core.quotePath=false"];
     const plain = ["--no-ext-diff", "--no-textconv", "--no-color", "--no-renames"];
-    const mergeBase = await git(path, ["merge-base", baseRef, "HEAD"]);
+    const mergeBase = await this.text(path, ["merge-base", baseRef, "HEAD"]);
     const head = await this.head(path);
     const [numstat, nameStatus, untrackedZ, dirtyZ] = await Promise.all([
-      git(path, [...opts, "diff", ...plain, "-z", "--numstat", mergeBase], { trim: false }),
-      git(path, [...opts, "diff", ...plain, "-z", "--name-status", mergeBase], { trim: false }),
-      git(path, ["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }),
-      git(path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { trim: false }),
+      this.text(path, [...opts, "diff", ...plain, "-z", "--numstat", mergeBase], { trim: false }),
+      this.text(path, [...opts, "diff", ...plain, "-z", "--name-status", mergeBase], {
+        trim: false,
+      }),
+      this.text(path, ["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }),
+      this.text(path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { trim: false }),
     ]);
     const dirty = new Set(parsePorcelainZ(dirtyZ));
     // `-z --name-status` alternates status and path fields (no renames here).
@@ -455,12 +336,11 @@ export class WorkspaceManager {
         uncommitted: dirty.has(file),
       };
     });
-    const tracked = await gitCapped(
-      path,
-      [...opts, "diff", ...plain, mergeBase],
-      maxBytes + 1,
-      120_000,
-    );
+    const tracked = await this.git.capped([...opts, "diff", ...plain, mergeBase], {
+      cwd: path,
+      maxBytes: maxBytes + 1,
+      timeoutMs: 120_000,
+    });
     const parts: Buffer[] = [tracked.stdout];
     let size = tracked.stdout.length;
     let truncated = tracked.overflow;
@@ -468,8 +348,7 @@ export class WorkspaceManager {
     if (untracked.length > MAX_UNTRACKED_FILES) truncated = true;
     for (const file of untracked.slice(0, MAX_UNTRACKED_FILES)) {
       // `git diff --no-index` exits 1 when the files differ, which they always do here.
-      const r = await run(
-        "git",
+      const r = await this.git.run(
         [...opts, "diff", ...plain, "--no-index", "--numstat", "--", "/dev/null", file],
         { cwd: path },
       );
@@ -482,10 +361,9 @@ export class WorkspaceManager {
         uncommitted: true,
       });
       if (size > maxBytes) continue;
-      const diff = await gitCapped(
-        path,
+      const diff = await this.git.capped(
         [...opts, "diff", ...plain, "--no-index", "--", "/dev/null", file],
-        maxBytes + 1 - size,
+        { cwd: path, maxBytes: maxBytes + 1 - size },
       );
       parts.push(diff.stdout);
       size += diff.stdout.length;
@@ -508,19 +386,19 @@ export class WorkspaceManager {
 
   /** The commit a worktree's HEAD points at. */
   async head(path: string): Promise<string> {
-    return git(path, ["rev-parse", "--verify", "HEAD^{commit}"]);
+    return this.text(path, ["rev-parse", "--verify", "HEAD^{commit}"]);
   }
 
   /** Files that differ between `from` and HEAD's changes since their merge base. */
   async filesChangedSince(path: string, from: string): Promise<string[]> {
     return nulFields(
-      await git(path, ["diff", "--name-only", "-z", `${from}...HEAD`], { trim: false }),
+      await this.text(path, ["diff", "--name-only", "-z", `${from}...HEAD`], { trim: false }),
     );
   }
 
   /** Fetches one branch of the remote with the user's credentials; false when it fails. */
   async fetchBranch(path: string, remote: string, branch: string): Promise<boolean> {
-    const result = await run("git", ["fetch", "--quiet", remote, branch], {
+    const result = await this.git.run(["fetch", "--quiet", remote, branch], {
       cwd: path,
       env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
       timeoutMs: 120_000,
@@ -534,7 +412,12 @@ export class WorkspaceManager {
     from: string,
     to: string,
   ): Promise<{ sha: string; subject: string; merge: boolean }[]> {
-    const out = await git(path, ["log", "--reverse", "--format=%H%x09%P%x09%s", `${from}..${to}`]);
+    const out = await this.text(path, [
+      "log",
+      "--reverse",
+      "--format=%H%x09%P%x09%s",
+      `${from}..${to}`,
+    ]);
     return out
       .split("\n")
       .filter(Boolean)
@@ -555,8 +438,7 @@ export class WorkspaceManager {
     theirs: string,
     mergeBase?: string,
   ): Promise<string | null> {
-    const result = await run(
-      "git",
+    const result = await this.git.run(
       [
         "merge-tree",
         "--write-tree",
@@ -594,8 +476,7 @@ export class WorkspaceManager {
     const nothingToPush = () =>
       new WorkspaceError("nothing_to_push", `The task's changes are already in ${onto}`);
     const commitTree = async (tree: string, parents: string[], message: string, env = {}) => {
-      const result = await run(
-        "git",
+      const result = await this.git.run(
         ["commit-tree", tree, ...parents.flatMap((p) => ["-p", p]), "-m", message],
         { cwd: path, env: { ...(process.env as Record<string, string>), ...env } },
       );
@@ -606,18 +487,19 @@ export class WorkspaceManager {
     if (method !== "rebase") {
       const tree = await this.mergeTree(path, onto, head);
       if (!tree) throw conflict();
-      if (tree === (await git(path, ["rev-parse", "--verify", `${onto}^{tree}`])))
+      if (tree === (await this.text(path, ["rev-parse", "--verify", `${onto}^{tree}`])))
         throw nothingToPush();
       return commitTree(tree, method === "squash" ? [onto] : [onto, head], options.message);
     }
-    const ontoSha = await git(path, ["rev-parse", "--verify", `${onto}^{commit}`]);
+    const ontoSha = await this.text(path, ["rev-parse", "--verify", `${onto}^{commit}`]);
     const isAncestor =
-      (await run("git", ["merge-base", "--is-ancestor", ontoSha, head], { cwd: path })).code === 0;
+      (await this.git.run(["merge-base", "--is-ancestor", ontoSha, head], { cwd: path })).code ===
+      0;
     if (isAncestor) {
-      const headSha = await git(path, ["rev-parse", "--verify", `${head}^{commit}`]);
+      const headSha = await this.text(path, ["rev-parse", "--verify", `${head}^{commit}`]);
       const sameTree =
-        (await git(path, ["rev-parse", "--verify", `${head}^{tree}`])) ===
-        (await git(path, ["rev-parse", "--verify", `${ontoSha}^{tree}`]));
+        (await this.text(path, ["rev-parse", "--verify", `${head}^{tree}`])) ===
+        (await this.text(path, ["rev-parse", "--verify", `${ontoSha}^{tree}`]));
       if (sameTree) throw nothingToPush();
       return headSha;
     }
@@ -628,13 +510,13 @@ export class WorkspaceManager {
         "The task branch contains merge commits, which rebase cannot replay; use squash or merge",
       );
     let tip = ontoSha;
-    let tipTree = await git(path, ["rev-parse", "--verify", `${ontoSha}^{tree}`]);
+    let tipTree = await this.text(path, ["rev-parse", "--verify", `${ontoSha}^{tree}`]);
     for (const commit of commits) {
       const tree = await this.mergeTree(path, tip, commit.sha, `${commit.sha}^`);
       if (!tree) throw conflict();
       if (tree === tipTree) continue; // became empty: already in the target
       const [name, email, date, ...body] = (
-        await git(path, ["log", "-1", "--format=%an%x00%ae%x00%aI%x00%B", commit.sha], {
+        await this.text(path, ["log", "-1", "--format=%an%x00%ae%x00%aI%x00%B", commit.sha], {
           trim: false,
         })
       ).split("\0");
@@ -655,7 +537,7 @@ export class WorkspaceManager {
    * moved, branch protection) is reported as `push_rejected`.
    */
   async pushCommit(path: string, remote: string, commit: string, branch: string): Promise<void> {
-    const result = await run("git", ["push", remote, `${commit}:refs/heads/${branch}`], {
+    const result = await this.git.run(["push", remote, `${commit}:refs/heads/${branch}`], {
       cwd: path,
       env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" },
       timeoutMs: 300_000,
@@ -673,7 +555,7 @@ export class WorkspaceManager {
    */
   async landedIn(repoPath: string, branch: string, bases: string[]): Promise<string | null> {
     for (const base of bases) {
-      const baseTree = await run("git", ["rev-parse", "--verify", "--quiet", `${base}^{tree}`], {
+      const baseTree = await this.git.run(["rev-parse", "--verify", "--quiet", `${base}^{tree}`], {
         cwd: repoPath,
       });
       if (baseTree.code !== 0) continue;
@@ -685,7 +567,7 @@ export class WorkspaceManager {
 
   /** The remote's default branch (e.g. main), falling back to "main". */
   async defaultBranch(repoPath: string, remote: string): Promise<string> {
-    const result = await run("git", ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], {
+    const result = await this.git.run(["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], {
       cwd: repoPath,
     });
     const ref = result.stdout.trim();

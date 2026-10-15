@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { createLogger } from "./logger.ts";
 import { SelfUpdater, type SelfUpdaterOptions } from "./self-update.ts";
-import { makeRepo, rmrf, tempDir } from "./testkit.ts";
+import { failingGit, makeRepo, rmrf, tempDir } from "./testkit.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim();
@@ -197,6 +197,22 @@ describe("self-update", () => {
     const fixed = w.land("fix: build");
     const { u: u2 } = updater(w);
     expect((await u2.check()).current).toBe(fixed);
+  });
+
+  it("reports a failed update, not a crash, when creating the build worktree hangs", async () => {
+    const w = world();
+    seedInstall(w);
+    const sha = w.land("feat: unlucky");
+    const hung = failingGit((args) => args[0] === "worktree" && args[1] === "add", {
+      code: null,
+      timedOut: true,
+    });
+    const { u, calls } = updater(w, { git: hung });
+
+    const s = await u.check();
+    expect(s).toMatchObject({ current: null, pending: null });
+    expect(s.lastError).toMatchObject({ sha, message: expect.stringContaining("worktree add") });
+    expect(calls).toMatchObject({ smoke: 0, restart: 0, notify: [`update-failed:${sha}`] });
   });
 
   it("follows a checkout given by path, without OCD being a declared repository", async () => {

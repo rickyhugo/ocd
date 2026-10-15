@@ -16,7 +16,8 @@ import type { LiveConfig } from "./config.ts";
 import { SimulatedCrash } from "./errors.ts";
 import type { Logger } from "./logger.ts";
 import type { Store } from "./store.ts";
-import { git, run, type WorkspaceManager } from "./workspace.ts";
+import { type GitRunner, gitText, systemGit } from "./git.ts";
+import type { WorkspaceManager } from "./workspace.ts";
 
 // The branch-sync watchdog (docs/branch-sync.md). It compares each open task
 // branch with its repository's configured baseRef and, only when enabled,
@@ -102,10 +103,6 @@ function statusEntries(output: string): { xy: string; path: string }[] {
   return entries;
 }
 
-async function succeeds(cwd: string, args: string[]): Promise<boolean> {
-  return (await run("git", args, { cwd })).code === 0;
-}
-
 /** Read-only facts about a task branch, or the reason it cannot be evaluated safely. */
 type Probe =
   | {
@@ -131,6 +128,8 @@ type Probe =
 export interface BranchSyncerOptions {
   store: Store;
   workspaces: WorkspaceManager;
+  /** Defaults to the real git; tests substitute a fake. */
+  git?: GitRunner;
   live: LiveConfig;
   logger: Logger;
   maxTasksPerTick: number;
@@ -144,8 +143,19 @@ export class BranchSyncer {
   private readonly o: BranchSyncerOptions;
   private readonly repoLocks = new Map<string, Promise<unknown>>();
 
+  private readonly git: GitRunner;
+
   constructor(o: BranchSyncerOptions) {
     this.o = o;
+    this.git = o.git ?? systemGit;
+  }
+
+  private text(cwd: string, args: string[], options?: { trim?: boolean }): Promise<string> {
+    return gitText(this.git, cwd, args, options);
+  }
+
+  private async succeeds(cwd: string, args: string[]): Promise<boolean> {
+    return (await this.git.run(args, { cwd })).code === 0;
   }
 
   private get store(): Store {
@@ -331,7 +341,7 @@ export class BranchSyncer {
   private async recoverIntent(task: Task, previous: BranchSync | null): Promise<Task | null> {
     if (!previous?.intent || !task.workspacePath || !existsSync(task.workspacePath)) return null;
     const { intent } = previous;
-    const head = await git(task.workspacePath, ["rev-parse", "HEAD"]).catch(() => null);
+    const head = await this.text(task.workspacePath, ["rev-parse", "HEAD"]).catch(() => null);
     const cleared: BranchSync = { ...previous, intent: null };
     if (head === intent.to) {
       const lastRefresh = { ...intent, at: this.store.now(), trigger: "recovered" };
@@ -364,30 +374,35 @@ export class BranchSyncer {
     if (busy)
       return skip(`a git operation is in progress in the worktree (${busy}); finish or abort it`);
     const branchRef = `refs/heads/${this.o.workspaces.branchFor(task.id)}`;
-    const headRef = (await run("git", ["symbolic-ref", "-q", "HEAD"], { cwd: path })).stdout.trim();
+    const headRef = (
+      await this.git.run(["symbolic-ref", "-q", "HEAD"], { cwd: path })
+    ).stdout.trim();
     if (headRef !== branchRef)
       return skip(`the worktree has ${headRef || "a detached HEAD"} checked out, not ${branchRef}`);
-    const head = await git(path, ["rev-parse", "HEAD"]);
+    const head = await this.text(path, ["rev-parse", "HEAD"]);
     if (!repo.baseRef)
       return skip(
         `repos.${repo.name}.baseRef is not set, so there is no integration branch to track`,
         { head },
       );
     const fullName = (
-      await run("git", ["rev-parse", "--symbolic-full-name", repo.baseRef], { cwd: repo.path })
+      await this.git.run(["rev-parse", "--symbolic-full-name", repo.baseRef], { cwd: repo.path })
     ).stdout.trim();
     if (fullName.startsWith("refs/heads/ocd/"))
       return skip(
         `baseRef ${repo.baseRef} is an OCD task branch; only an integration branch is tracked`,
         { head },
       );
-    const tip = await run("git", ["rev-parse", "--verify", "--quiet", `${repo.baseRef}^{commit}`], {
-      cwd: repo.path,
-    });
+    const tip = await this.git.run(
+      ["rev-parse", "--verify", "--quiet", `${repo.baseRef}^{commit}`],
+      {
+        cwd: repo.path,
+      },
+    );
     if (tip.code !== 0)
       return skip(`baseRef ${repo.baseRef} does not resolve to a commit`, { head });
     const baseTip = tip.stdout.trim();
-    const behind = Number(await git(path, ["rev-list", "--count", `HEAD..${baseTip}`]));
+    const behind = Number(await this.text(path, ["rev-list", "--count", `HEAD..${baseTip}`]));
     const facts = {
       kind: "facts" as const,
       path,
@@ -401,14 +416,14 @@ export class BranchSyncer {
     if (behind === 0) return facts;
     if (
       !task.baseRef ||
-      !(await succeeds(path, ["merge-base", "--is-ancestor", task.baseRef, baseTip]))
+      !(await this.succeeds(path, ["merge-base", "--is-ancestor", task.baseRef, baseTip]))
     ) {
       return skip(
         `the task started from ${task.baseRef ? short(task.baseRef) : "an unknown base"}, which is not in ${repo.baseRef} any more (rewritten or retargeted); not merging unrelated history`,
         { baseTip, head },
       );
     }
-    if (await succeeds(path, ["merge-base", "--is-ancestor", "HEAD", baseTip]))
+    if (await this.succeeds(path, ["merge-base", "--is-ancestor", "HEAD", baseTip]))
       return { ...facts, fastForward: true };
     // The same pair already conflicted: do not recompute (or report) it again.
     if (previous?.state === "conflict" && previous.head === head && previous.baseTip === baseTip)
@@ -430,7 +445,7 @@ export class BranchSyncer {
       return { problem: `${recorded} is not OCD's worktree for this task` };
     if (path === realpathSync(repo.path))
       return { problem: "the path is the repository's primary checkout" };
-    const list = await git(repo.path, ["worktree", "list", "--porcelain"]);
+    const list = await this.text(repo.path, ["worktree", "list", "--porcelain"]);
     const registered = list.split("\n\n").some((block) => {
       const lines = block.split("\n");
       const at = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
@@ -447,14 +462,13 @@ export class BranchSyncer {
   }
 
   private async inProgress(path: string): Promise<string | null> {
-    const gitDir = await git(path, ["rev-parse", "--absolute-git-dir"]);
+    const gitDir = await this.text(path, ["rev-parse", "--absolute-git-dir"]);
     return IN_PROGRESS.find((name) => existsSync(join(gitDir, name))) ?? null;
   }
 
   /** Merges in memory (git merge-tree): nothing in the worktree, index or refs changes. */
   private async predictMerge(path: string, head: string, baseTip: string) {
-    const result = await run(
-      "git",
+    const result = await this.git.run(
       ["merge-tree", "--write-tree", "--name-only", "--no-messages", head, baseTip],
       {
         cwd: path,
@@ -469,7 +483,7 @@ export class BranchSyncer {
 
   /** Uncommitted or untracked entries, and ignored ones (which a checkout would overwrite silently). */
   private async worktreeFiles(path: string) {
-    const out = await git(
+    const out = await this.text(
       path,
       [
         "--no-optional-locks",
@@ -516,7 +530,7 @@ export class BranchSyncer {
     const targetTree = probe.fastForward ? baseTip : probe.merge?.tree;
     if (!targetTree) return deferred("the merge result is unknown");
     const touched = (
-      await git(path, ["diff", "--name-only", "-z", head, targetTree], { trim: false })
+      await this.text(path, ["diff", "--name-only", "-z", head, targetTree], { trim: false })
     )
       .split("\0")
       .filter(Boolean);
@@ -537,9 +551,9 @@ export class BranchSyncer {
       return deferred(`the task became ${fresh?.state ?? "missing"}`);
     const busy = await this.inProgress(path);
     if (busy) return deferred(`a git operation started in the worktree (${busy})`);
-    if ((await git(path, ["rev-parse", "HEAD"])) !== head)
+    if ((await this.text(path, ["rev-parse", "HEAD"])) !== head)
       return deferred("the branch moved while checking; retried next time");
-    const tip = await run("git", ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`], {
+    const tip = await this.git.run(["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`], {
       cwd: path,
     });
     if (tip.stdout.trim() !== baseTip)
@@ -549,7 +563,7 @@ export class BranchSyncer {
 
     const target = probe.fastForward
       ? baseTip
-      : await git(path, [
+      : await this.text(path, [
           "commit-tree",
           targetTree,
           "-p",
@@ -565,13 +579,12 @@ export class BranchSyncer {
       this.store.appendEvent(task.id, "branch_sync.intent", { ...intent, baseRef, trigger });
     });
     // Repository hooks are not run from the daemon (core.hooksPath=/dev/null).
-    const result = await run(
-      "git",
+    const result = await this.git.run(
       ["-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "--quiet", target],
       { cwd: path },
     );
     this.o.at?.("after_branch_sync_write", task.id);
-    const now = (await git(path, ["rev-parse", "HEAD"]).catch(() => null)) ?? "unknown";
+    const now = (await this.text(path, ["rev-parse", "HEAD"]).catch(() => null)) ?? "unknown";
     if (result.code !== 0 || now !== target) {
       const message = truncate(
         redact((result.stderr || result.stdout).trim() || `HEAD is ${now}`),

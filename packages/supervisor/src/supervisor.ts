@@ -63,7 +63,8 @@ import type { MemoryService } from "./memory.ts";
 import { changedFilesText, notification, type Notice } from "./notification.ts";
 import type { OutboxWorker } from "./outbox.ts";
 import type { AttentionInput, Store } from "./store.ts";
-import { WorkspaceError, filteredEnv, type WorkspaceManager } from "./workspace.ts";
+import { filteredEnv } from "./env.ts";
+import { WorkspaceError, type WorkspaceManager } from "./workspace.ts";
 
 export type CrashPoint =
   | "after_intent"

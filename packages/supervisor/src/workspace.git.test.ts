@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vite-plus/test";
 
-import { makeRepo, rmrf, tempDir } from "./testkit.ts";
+import { failingGit, makeRepo, rmrf, tempDir } from "./testkit.ts";
 import { WorkspaceManager } from "./workspace.ts";
 
 describe("workspace git behaviour", () => {
@@ -160,6 +160,36 @@ describe("workspace git behaviour", () => {
           manager.landingCommit(ws, { onto: "main", head, method, message }),
         ).rejects.toMatchObject({ code: "nothing_to_push" });
       }
+    } finally {
+      rmrf(root);
+    }
+  });
+
+  it("surfaces a git that cannot merge in memory, and a push that times out, as errors rather than wrong results", async () => {
+    const { root, repo, addTask, commit } = setup();
+    try {
+      const ws = addTask("t1");
+      commit(ws, "b.txt", "b\n");
+      const head = sh(ws, "rev-parse", "HEAD");
+      const options = { onto: "main", head, method: "squash" as const, message: "land" };
+
+      // An old git rejects `merge-tree --write-tree` (usage error, exit 129): not a conflict.
+      const old = new WorkspaceManager(
+        join(root, "ws"),
+        failingGit((args) => args[0] === "merge-tree", {
+          code: 129,
+          stderr: "usage: git merge-tree",
+        }),
+      );
+      await expect(old.landingCommit(ws, options)).rejects.toThrow(/2\.40 or newer/);
+
+      const slow = new WorkspaceManager(
+        join(root, "ws"),
+        failingGit((args) => args[0] === "push", { code: null, timedOut: true }),
+      );
+      await expect(slow.pushCommit(repo, "origin", head, "main")).rejects.toMatchObject({
+        code: "push_rejected",
+      });
     } finally {
       rmrf(root);
     }
