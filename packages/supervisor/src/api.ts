@@ -2,35 +2,20 @@ import { MANAGER_HOST } from "@ocd/adapters";
 import {
   API_VERSION,
   Actor,
-  AttentionFilter,
-  CancelTaskInput,
-  CleanupTaskInput,
-  DiscardTaskInput,
-  LandTaskInput,
-  RequestChangesInput,
-  MergePullRequestInput,
-  OpenPullRequestInput,
-  PeekTaskInput,
-  DecisionInput,
-  DispatchTaskInput,
   HEADER_ACTOR,
   HEADER_API_VERSION,
   HEADER_AUTHORIZATION,
   HEADER_DIRECTORY,
   HEADER_SESSION,
-  RecallInput,
-  RememberInput,
-  ResolveAttentionInput,
-  GiveBackInput,
-  ResumeTaskInput,
-  SendToWorkerInput,
-  TaskFilter,
   TaskStateSchema,
   redact,
+  routes,
   usageLines,
-  type Briefing,
+  type AnyRoute,
   type ApiErrorBody,
+  type Briefing,
   type ManagerInfo,
+  type ParsedRequest,
   type ShutdownReport,
   type TaskDetail,
   type TaskProgress,
@@ -41,9 +26,10 @@ import Fastify, {
   LogController,
   type FastifyBaseLogger,
   type FastifyInstance,
+  type FastifyReply,
   type FastifyRequest,
 } from "fastify";
-import { z, ZodError } from "zod";
+import { ZodError } from "zod";
 
 import { normalizeDirectory, type LiveConfig } from "./config.ts";
 import { ApiError, conflict, forbidden } from "./errors.ts";
@@ -77,13 +63,6 @@ export interface ApiDeps {
   /** Subscription usage limits; absent in tests that do not need it. */
   usage?: UsageTracker;
 }
-
-const UpdateApplyInput = z.object({ force: z.boolean().default(false) });
-const IdParams = z.object({ id: z.string().min(1).max(100) });
-
-const csv = (value: unknown) => (typeof value === "string" && value ? value.split(",") : undefined);
-const bool = (value: unknown) => (value === "true" ? true : value === "false" ? false : undefined);
-const int = (value: unknown) => (typeof value === "string" && value ? Number(value) : undefined);
 
 export function buildApi(deps: ApiDeps): FastifyInstance {
   const { store, supervisor, memory } = deps;
@@ -198,263 +177,202 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     void reply.status(status).send(body);
   });
 
+  /**
+   * Registers a handler against its contract entry: path and method come from
+   * the route, and params, query and body are parsed with its schemas before
+   * the handler runs. Manager calls are checked first unless `caller: false`.
+   */
+  function register<R extends AnyRoute>(
+    route: R,
+    handler: (ctx: ParsedRequest<R> & { req: FastifyRequest; reply: FastifyReply }) => unknown,
+    options: { caller?: boolean } = {},
+  ): void {
+    app.route({
+      method: route.method,
+      url: route.path,
+      handler: async (req, reply) => {
+        if (options.caller !== false) requireCaller(req);
+        return handler({
+          req,
+          reply,
+          params: route.params?.parse(req.params),
+          query: route.query?.parse(req.query),
+          body: route.body?.parse(req.body ?? {}),
+        } as ParsedRequest<R> & { req: FastifyRequest; reply: FastifyReply });
+      },
+    });
+  }
+
   // -- status and lifecycle --------------------------------------------------
-  app.get("/v1/status", async () => ({
-    ...supervisor.status(),
-    update: deps.updater?.status() ?? null,
-    usage: deps.usage?.status() ?? null,
-  }));
-  app.get("/v1/usage", async () => deps.usage?.status() ?? { harnesses: [], notifyAt: [] });
-  /** Reads the limits that can be read without a model call now. */
-  app.post("/v1/usage/refresh", async (req) => {
-    requireCaller(req);
-    return deps.usage ? deps.usage.refresh() : { harnesses: [], notifyAt: [] };
+  register(
+    routes.status,
+    () => ({
+      ...supervisor.status(),
+      update: deps.updater?.status() ?? null,
+      usage: deps.usage?.status() ?? null,
+    }),
+    { caller: false },
+  );
+  register(routes.usage, () => deps.usage?.status() ?? { harnesses: [], notifyAt: [] }, {
+    caller: false,
   });
+  /** Reads the limits that can be read without a model call now. */
+  register(routes.refreshUsage, () =>
+    deps.usage ? deps.usage.refresh() : { harnesses: [], notifyAt: [] },
+  );
   const updater = () => {
     if (!deps.updater)
       throw conflict("update_unavailable", "This supervisor does not manage OCD's own updates");
     return deps.updater;
   };
-  app.get("/v1/update", async () => deps.updater?.status() ?? null);
-  app.post("/v1/update/check", async (req) => {
-    requireCaller(req);
-    return updater().check();
-  });
+  register(routes.updateStatus, () => deps.updater?.status() ?? null, { caller: false });
+  register(routes.checkUpdate, () => updater().check());
   /** Switch to the pending version now; `force` interrupts workers a restart would interrupt. Human only. */
-  app.post("/v1/update/apply", async (req) => {
-    requireCaller(req);
+  register(routes.applyUpdate, ({ req, body }) => {
     if (req.actor !== "human") throw forbidden("human_only", "Only a human can apply an update");
-    const { force } = UpdateApplyInput.parse(req.body ?? {});
-    return updater().tryApply(force);
+    return updater().tryApply(body.force);
   });
-  app.post("/v1/update/rollback", async (req) => {
-    requireCaller(req);
+  register(routes.rollbackUpdate, ({ req }) => {
     if (req.actor !== "human") throw forbidden("human_only", "Only a human can roll back");
     return updater().rollback();
   });
-  app.post("/v1/pause", async (req) => {
-    requireCaller(req);
+  register(routes.pause, () => {
     supervisor.setPaused(true);
     return { paused: true };
   });
-  app.post("/v1/resume", async (req) => {
-    requireCaller(req);
+  register(routes.resume, () => {
     supervisor.setPaused(false);
     return { paused: false };
   });
-  app.post("/v1/shutdown", async (req, reply) => {
-    if (req.actor !== "human")
-      throw forbidden("human_only", "Only a human can stop the supervisor");
-    const report = await deps.requestShutdown();
-    return reply.send(report);
-  });
+  register(
+    routes.shutdown,
+    async ({ req, reply }) => {
+      if (req.actor !== "human")
+        throw forbidden("human_only", "Only a human can stop the supervisor");
+      const report = await deps.requestShutdown();
+      return reply.send(report);
+    },
+    { caller: false },
+  );
 
   // -- repositories and profiles (declared in ocd.jsonc) ---------------------------
-  app.get("/v1/repos", async (req) => {
-    requireCaller(req);
-    return store.listRepos();
-  });
-  app.get("/v1/profiles", async (req) => {
-    requireCaller(req);
-    return deps.live.listProfiles();
-  });
+  register(routes.listRepos, () => store.listRepos());
+  register(routes.listProfiles, () => deps.live.listProfiles());
 
   // -- tasks -------------------------------------------------------------------
-  app.post("/v1/tasks", async (req, reply) => {
-    requireCaller(req);
-    const result = supervisor.dispatch(DispatchTaskInput.parse(req.body));
+  register(routes.dispatch, ({ body, reply }) => {
+    const result = supervisor.dispatch(body);
     return reply.status(result.created ? 201 : 200).send(result);
   });
-  app.get("/v1/tasks", async (req) => {
-    requireCaller(req);
-    const q = req.query as Record<string, unknown>;
-    const filter = TaskFilter.parse({
-      state: csv(q["state"])?.map((s) => TaskStateSchema.parse(s)),
-      repo: q["repo"],
-      open: bool(q["open"]),
-      limit: int(q["limit"]),
-    });
+  register(routes.listTasks, ({ query }) => {
     const states =
-      filter.state ??
-      (filter.open
+      query.state ??
+      (query.open
         ? TaskStateSchema.options.filter((s) => s !== "completed" && s !== "cancelled")
         : undefined);
     return store.listTasks({
       ...(states ? { state: states } : {}),
-      ...(filter.repo ? { repo: filter.repo } : {}),
-      limit: filter.limit,
+      ...(query.repo ? { repo: query.repo } : {}),
+      limit: query.limit,
     });
   });
-  app.get("/v1/tasks/:id", async (req): Promise<TaskDetail> => {
-    requireCaller(req);
-    const { id } = IdParams.parse(req.params);
-    return {
-      task: store.requireTask(id),
-      runs: store.runs(id),
-      events: store.events(id),
-      attention: store.listAttention({ taskId: id }),
-    };
-  });
-  app.get("/v1/tasks/:id/progress", async (req): Promise<TaskProgress> => {
-    requireCaller(req);
-    return supervisor.taskProgress(IdParams.parse(req.params).id);
-  });
+  register(routes.inspectTask, ({ params }): TaskDetail => ({
+    task: store.requireTask(params.id),
+    runs: store.runs(params.id),
+    events: store.events(params.id),
+    attention: store.listAttention({ taskId: params.id }),
+  }));
+  register(routes.taskProgress, ({ params }): TaskProgress => supervisor.taskProgress(params.id));
   // Read-only: any authenticated caller that may inspect tasks may peek, in
   // every task state (manual mode included); it never changes the worker.
-  app.get("/v1/tasks/:id/transcript", async (req) => {
-    requireCaller(req);
-    const { id } = IdParams.parse(req.params);
-    const q = req.query as Record<string, unknown>;
-    const input = PeekTaskInput.parse({
-      limit: int(q["limit"]),
-      before: typeof q["before"] === "string" && q["before"] ? q["before"] : undefined,
-      reasoningSummaries: bool(q["reasoningSummaries"]),
-    });
-    return supervisor.peek(id, input);
-  });
-  app.post("/v1/tasks/:id/send", async (req) => {
-    requireCaller(req);
-    return supervisor.sendToWorker(
-      IdParams.parse(req.params).id,
-      SendToWorkerInput.parse(req.body).instructions,
-    );
-  });
-  app.post("/v1/tasks/:id/cancel", async (req) => {
-    requireCaller(req);
-    if (
-      req.actor !== "human" &&
-      store.requireTask(IdParams.parse(req.params).id).state === "manual"
-    )
+  register(routes.peekTask, ({ params, query }) => supervisor.peek(params.id, query));
+  register(routes.sendToWorker, ({ params, body }) =>
+    supervisor.sendToWorker(params.id, body.instructions),
+  );
+  register(routes.cancelTask, ({ req, params, body }) => {
+    if (req.actor !== "human" && store.requireTask(params.id).state === "manual")
       throw forbidden("manual_mode", "The human is driving this task; only they can cancel it");
-    return supervisor.cancel(
-      IdParams.parse(req.params).id,
-      CancelTaskInput.parse(req.body ?? {}).reason,
-    );
+    return supervisor.cancel(params.id, body.reason);
   });
-  app.post("/v1/tasks/:id/cleanup", async (req) => {
-    requireCaller(req);
-    const { force } = CleanupTaskInput.parse(req.body ?? {});
-    return supervisor.cleanup(IdParams.parse(req.params).id, force, req.actor);
+  register(routes.cleanupTask, ({ req, params, body }) =>
+    supervisor.cleanup(params.id, body.force, req.actor),
+  );
+  register(routes.openPullRequest, ({ req, params, body }) =>
+    supervisor.openPullRequest(params.id, body, req.actor),
+  );
+  register(routes.mergePullRequest, ({ req, params, body }) =>
+    supervisor.mergePullRequest(params.id, { method: body.method }, req.actor),
+  );
+  register(routes.taskDiff, ({ params }) => supervisor.diff(params.id));
+  register(routes.requestChanges, ({ req, params, body }) =>
+    supervisor.requestChanges(params.id, body.feedback, req.actor),
+  );
+  register(routes.landPlan, ({ params }) => supervisor.landPlan(params.id));
+  register(routes.landTask, ({ req, params, body }) => supervisor.land(params.id, body, req.actor));
+  register(routes.discardTask, ({ req, params, body }) =>
+    supervisor.discard(params.id, body.reason, req.actor),
+  );
+  register(routes.acceptTask, ({ req, params }) => supervisor.accept(params.id, req.actor));
+  register(routes.takeOverTask, ({ req, params }) => supervisor.takeOver(params.id, req.actor), {
+    caller: false,
   });
-  app.post("/v1/tasks/:id/pull-request", async (req) => {
-    requireCaller(req);
-    const input = OpenPullRequestInput.parse(req.body ?? {});
-    return supervisor.openPullRequest(IdParams.parse(req.params).id, input, req.actor);
-  });
-  app.post("/v1/tasks/:id/merge", async (req) => {
-    requireCaller(req);
-    const { method } = MergePullRequestInput.parse(req.body ?? {});
-    return supervisor.mergePullRequest(IdParams.parse(req.params).id, { method }, req.actor);
-  });
-  app.get("/v1/tasks/:id/diff", async (req) => {
-    requireCaller(req);
-    return supervisor.diff(IdParams.parse(req.params).id);
-  });
-  app.post("/v1/tasks/:id/request-changes", async (req) => {
-    requireCaller(req);
-    const { feedback } = RequestChangesInput.parse(req.body ?? {});
-    return supervisor.requestChanges(IdParams.parse(req.params).id, feedback, req.actor);
-  });
-  app.get("/v1/tasks/:id/land", async (req) => {
-    requireCaller(req);
-    return supervisor.landPlan(IdParams.parse(req.params).id);
-  });
-  app.post("/v1/tasks/:id/land", async (req) => {
-    requireCaller(req);
-    const input = LandTaskInput.parse(req.body ?? {});
-    return supervisor.land(IdParams.parse(req.params).id, input, req.actor);
-  });
-  app.post("/v1/tasks/:id/discard", async (req) => {
-    requireCaller(req);
-    const { reason } = DiscardTaskInput.parse(req.body ?? {});
-    return supervisor.discard(IdParams.parse(req.params).id, reason, req.actor);
-  });
-  app.post("/v1/tasks/:id/accept", async (req) => {
-    requireCaller(req);
-    return supervisor.accept(IdParams.parse(req.params).id, req.actor);
-  });
-  app.post("/v1/tasks/:id/takeover", async (req) => {
-    return supervisor.takeOver(IdParams.parse(req.params).id, req.actor);
-  });
-  app.post("/v1/tasks/:id/giveback", async (req) => {
-    const { mode, note } = GiveBackInput.parse(req.body);
-    return supervisor.giveBack(IdParams.parse(req.params).id, mode, note, req.actor);
-  });
-  app.post("/v1/tasks/:id/resume", async (req) => {
-    const { mode } = ResumeTaskInput.parse(req.body);
-    return supervisor.resume(IdParams.parse(req.params).id, mode, req.actor);
-  });
+  register(
+    routes.giveBackTask,
+    ({ req, params, body }) => supervisor.giveBack(params.id, body.mode, body.note, req.actor),
+    { caller: false },
+  );
+  register(
+    routes.resumeTask,
+    ({ req, params, body }) => supervisor.resume(params.id, body.mode, req.actor),
+    { caller: false },
+  );
 
   // -- attention ---------------------------------------------------------------
-  app.get("/v1/attention", async (req) => {
-    requireCaller(req);
-    const q = req.query as Record<string, unknown>;
-    const filter = AttentionFilter.parse({
-      status: q["status"],
-      taskId: q["taskId"],
-      limit: int(q["limit"]),
-    });
-    return store.listAttention({
-      ...(filter.status ? { status: filter.status } : {}),
-      ...(filter.taskId ? { taskId: filter.taskId } : {}),
-      limit: filter.limit,
-    });
-  });
-  app.post("/v1/attention/:id/resolve", async (req) => {
-    requireCaller(req);
-    const { response } = ResolveAttentionInput.parse(req.body);
-    return supervisor.resolveAttention(IdParams.parse(req.params).id, response, req.actor);
-  });
+  register(routes.listAttention, ({ query }) =>
+    store.listAttention({
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.taskId ? { taskId: query.taskId } : {}),
+      limit: query.limit,
+    }),
+  );
+  register(routes.resolveAttention, ({ req, params, body }) =>
+    supervisor.resolveAttention(params.id, body.response, req.actor),
+  );
 
   // -- memory and decisions ----------------------------------------------------
-  app.post("/v1/memories", async (req) => {
-    requireCaller(req);
-    return memory.remember(RememberInput.parse(req.body), req.actor);
-  });
-  app.post("/v1/memories/search", async (req) => {
-    requireCaller(req);
-    return memory.recall(RecallInput.parse(req.body));
-  });
-  app.get("/v1/memories", async (req) => {
-    requireCaller(req);
-    const q = req.query as Record<string, string | undefined>;
-    const repo = q["repo"] ? store.requireRepo(q["repo"]) : null;
+  register(routes.remember, ({ req, body }) => memory.remember(body, req.actor));
+  register(routes.recall, ({ body }) => memory.recall(body));
+  register(routes.listMemories, ({ query }) => {
+    const repo = query.repo ? store.requireRepo(query.repo) : null;
     return store.listMemories({
-      ...(q["status"]
-        ? { status: z.enum(["proposed", "confirmed", "retired"]).parse(q["status"]) }
-        : {}),
-      ...(q["scope"] ? { scope: z.enum(["global", "repo", "task"]).parse(q["scope"]) } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.scope ? { scope: query.scope } : {}),
       ...(repo ? { repoId: repo.id } : {}),
     });
   });
-  app.post("/v1/memories/:id/confirm", async (req) =>
-    memory.confirm(IdParams.parse(req.params).id, req.actor),
-  );
-  app.delete("/v1/memories/:id", async (req) => {
-    requireCaller(req);
-    return { deleted: memory.forget(IdParams.parse(req.params).id, req.actor) };
+  register(routes.confirmMemory, ({ req, params }) => memory.confirm(params.id, req.actor), {
+    caller: false,
   });
-  app.post("/v1/decisions", async (req) => {
-    requireCaller(req);
-    return memory.recordDecision(DecisionInput.parse(req.body), req.actor);
-  });
-  app.get("/v1/decisions", async (req) => {
-    requireCaller(req);
-    const q = req.query as Record<string, string | undefined>;
-    const repo = q["repo"] ? store.requireRepo(q["repo"]) : null;
+  register(routes.forget, ({ req, params }) => ({ deleted: memory.forget(params.id, req.actor) }));
+  register(routes.recordDecision, ({ req, body }) => memory.recordDecision(body, req.actor));
+  register(routes.listDecisions, ({ query }) => {
+    const repo = query.repo ? store.requireRepo(query.repo) : null;
     return store.listDecisions({
       ...(repo ? { repoId: repo.id } : {}),
-      ...(q["taskId"] ? { taskId: q["taskId"] } : {}),
+      ...(query.taskId ? { taskId: query.taskId } : {}),
     });
   });
 
   // -- manager -----------------------------------------------------------------
-  app.get("/v1/manager", async (): Promise<ManagerInfo> => ({
-    directory: deps.live.managerDirectory,
-    active: store.activeManager(),
-  }));
-  app.get("/v1/briefing", async (req): Promise<Briefing> => {
-    requireCaller(req);
+  register(
+    routes.getManager,
+    (): ManagerInfo => ({
+      directory: deps.live.managerDirectory,
+      active: store.activeManager(),
+    }),
+    { caller: false },
+  );
+  register(routes.briefing, (): Briefing => {
     const briefing = memory.briefing();
     // Usage limits help the manager pick a profile whose harness has headroom.
     const usage = deps.usage?.status().harnesses ?? [];
@@ -472,13 +390,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     };
   });
 
-  app.get("/v1/outbox", async (req) => {
-    requireCaller(req);
-    const q = req.query as Record<string, string | undefined>;
-    return store.listOutbox(
-      q["status"] ? z.enum(["pending", "delivered", "dead"]).parse(q["status"]) : undefined,
-    );
-  });
+  register(routes.listOutbox, ({ query }) => store.listOutbox(query.status));
 
   return app;
 }

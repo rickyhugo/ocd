@@ -23,6 +23,7 @@ import {
   type HarnessName,
   type LandPlan,
   type LandResult,
+  type MergeMethod,
   type TaskDiff,
   type ShutdownReport,
   type SupervisorStatus,
@@ -57,7 +58,7 @@ import {
   type SyncTrigger,
 } from "./branch-sync.ts";
 import type { LiveConfig, SupervisorConfig } from "./config.ts";
-import type { MergeMethod, PullRequestHost } from "./pull-requests.ts";
+import type { PullRequestHost } from "./pull-requests.ts";
 import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } from "./errors.ts";
 import { iso, type Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
