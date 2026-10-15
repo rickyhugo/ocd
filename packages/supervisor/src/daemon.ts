@@ -38,7 +38,7 @@ import { NullNotifier, type ManagerChannel, type Notifier } from "./notify.ts";
 import { OutboxWorker } from "./outbox.ts";
 import { Store } from "./store.ts";
 import type { PullRequestHost } from "./pull-requests.ts";
-import { SelfUpdater } from "./self-update.ts";
+import { SelfUpdater, type AfterUpdateStep } from "./self-update.ts";
 import { Supervisor, type SupervisorHooks } from "./supervisor.ts";
 import { UsageTracker } from "./usage.ts";
 import { WorkspaceManager } from "./workspace.ts";
@@ -54,7 +54,7 @@ export interface DaemonOptions {
     runningFrom: string;
     service: boolean;
     smokeTest?: (buildDir: string) => Promise<void>;
-    afterApplied?: () => Promise<void>;
+    afterApplied?: AfterUpdateStep;
   };
   config?: Partial<SupervisorConfigInput>;
   /** Builds adapters once config is known. */

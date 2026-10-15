@@ -58,6 +58,12 @@ const EMPTY: InstallState = {
   checkedAt: null,
 };
 
+export interface AfterUpdateStep {
+  run: () => Promise<void>;
+  /** The notification when it still fails after one retry: what to do by hand. */
+  failed: { headline: string; detail: string };
+}
+
 export interface SelfUpdaterOptions {
   /** ~/.ocd/install */
   installDir: string;
@@ -75,9 +81,9 @@ export interface SelfUpdaterOptions {
   clock?: () => number;
   /** Boots a build in a throwaway sandbox and throws if it does not come up. */
   smokeTest?: (buildDir: string) => Promise<void>;
-  /** After a switch, in the new supervisor (e.g. `opencode reload` for the plugin). */
-  afterApplied?: () => Promise<void>;
-  /** Wait before the one retry of `afterApplied` (a reload can fail transiently). Default 30 s. */
+  /** After a switch, in the new supervisor (e.g. reloading the manager's plugin). */
+  afterApplied?: AfterUpdateStep;
+  /** Wait before the one retry of `afterApplied` (it can fail transiently). Default 30 s. */
   afterAppliedRetryMs?: number;
 }
 
@@ -198,12 +204,12 @@ export class SelfUpdater {
     this.timers.push(first, poll, apply);
   }
 
-  /** Retries once; if the plugin still cannot be reloaded, says so (once per build, via the key). */
+  /** Retries once; if the step still fails, says what to do by hand (once per build, via the key). */
   private async runAfterApplied(sha: string): Promise<void> {
     const step = this.o.afterApplied;
     if (!step) return;
     try {
-      await step();
+      await step.run();
       return;
     } catch (error) {
       this.o.logger.warn({ err: error }, "after-update step failed; retrying");
@@ -215,13 +221,13 @@ export class SelfUpdater {
     });
     if (this.stopped) return;
     try {
-      await step();
+      await step.run();
     } catch (error) {
       this.o.logger.warn({ err: error }, "after-update step failed");
       this.o.notify(
-        `update-reload-failed:${sha}`,
-        "OpenCode did not reload OCD's plugin",
-        `OCD ${short(sha)} is running, but OpenCode still has the previous plugin. Run \`opencode reload\`.`,
+        `update-after-failed:${sha}`,
+        step.failed.headline,
+        `OCD ${short(sha)} is running. ${step.failed.detail}`,
       );
     }
   }
