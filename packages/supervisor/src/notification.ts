@@ -79,3 +79,12 @@ export function attentionNotification(
     detail: notice.detail ?? attention.reason,
   });
 }
+
+/** An outbox entry that wakes the manager about a task; deduplicated per task and key. */
+export function managerWake(task: { id: string }, key: string, text: string) {
+  return {
+    kind: "manager_wake" as const,
+    dedupeKey: `wake:${task.id}:${key}`,
+    payload: { text: truncate(redact(text), 4000), taskId: task.id },
+  };
+}
