@@ -385,7 +385,8 @@ class Setup {
         .map((h) => h.name),
     );
     for (const tool of TOOLS) {
-      if ((c[tool.key] as { enabled: boolean }).enabled) enabled.add(tool.key);
+      if (((c as Record<string, unknown>)[tool.key] as { enabled: boolean }).enabled)
+        enabled.add(tool.key);
       else if (
         this.detected[tool.key]?.ready &&
         (await this.d.prompt.confirm(

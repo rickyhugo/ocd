@@ -316,14 +316,18 @@ const SupervisorConfigSchema = z
     }
   });
 
-/** Harness sections are keyed by harness name; read them with `harnessSettings`. */
-type HarnessSections = { [harness: string]: unknown };
+/**
+ * Harness sections are keyed by harness name. A loaded config does not type
+ * them (read them with `harnessSettings`), so a misspelled setting is still a
+ * type error; the input accepts any section, which the schema then checks.
+ */
+type HarnessSectionsInput = { [harness: string]: unknown };
 export const SupervisorConfig: z.ZodType<
-  z.output<typeof SupervisorConfigSchema> & HarnessSections,
-  z.input<typeof SupervisorConfigSchema> & HarnessSections
+  z.output<typeof SupervisorConfigSchema>,
+  z.input<typeof SupervisorConfigSchema> & HarnessSectionsInput
 > = SupervisorConfigSchema;
-export type SupervisorConfig = z.infer<typeof SupervisorConfigSchema> & HarnessSections;
-export type SupervisorConfigInput = z.input<typeof SupervisorConfigSchema> & HarnessSections;
+export type SupervisorConfig = z.infer<typeof SupervisorConfigSchema>;
+export type SupervisorConfigInput = z.input<typeof SupervisorConfigSchema> & HarnessSectionsInput;
 
 export class ConfigError extends Error {
   constructor(message: string) {
