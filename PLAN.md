@@ -377,7 +377,7 @@ and what work is thrown away.
 ## Next
 
 The current phase is daily use on one Mac. It should answer what is still
-unverified, and the small fixes below are known.
+unverified.
 
 Not yet verified in real use:
 
@@ -396,6 +396,25 @@ Possible later work, not committed to:
 - Remote notification channels.
 - Choosing a profile by usage-limit headroom in the supervisor (today the
   manager reads the usage section of its briefing and profile descriptions).
+
+Design debt, deferred until a feature needs it. The seams are in place:
+harnesses (`docs/adding-a-harness.md`), platform (`packages/cli/src/platform`,
+guarded by a test), git (`GitRunner`), the API contract (one route table in
+core), event and status names, and landing and peek as their own services.
+
+- `store.ts` holds every aggregate; split it into repositories (tasks,
+  attention, outbox, memory) over a shared transaction.
+- Pull requests assume GitHub (`github` config, `pr_*` codes, GitHub merge
+  states); a second forge needs a forge-neutral status and error codes next to
+  `PullRequestHost`.
+- `tui.tsx` mixes views with workflows (accept and clean up, land, approve);
+  move those into testable actions shared with the CLI.
+- `ocd.ts` is one command switch and `setup.ts` one long function; a command
+  registry and setup steps with `check()` / `apply()`.
+- Timers are only partly injectable (raw `setInterval`s, `Date.now()` in a few
+  places); one scheduler interface would make timing tests deterministic.
+- Domain errors extend the HTTP `ApiError`; give them codes from a shared union
+  and map them to HTTP status only in `api.ts`.
 
 ## Acceptance tests
 
