@@ -1,3 +1,4 @@
+import { HARNESSES } from "@ocd/adapters";
 import { z } from "zod";
 
 import { SupervisorConfig } from "./config.ts";
@@ -14,23 +15,30 @@ export function configJsonSchema(): Record<string, unknown> {
     io: "input",
     unrepresentable: "any",
   }) as Record<string, unknown>;
-  // Zod refinements are not exported; encode the OpenCode model format explicitly.
+  // Zod refinements are not exported; encode the harness names and each
+  // harness's model format (both from the registry) explicitly.
   const profiles = (schema["properties"] as Record<string, Record<string, unknown>>)["profiles"]!;
   const entry = profiles["additionalProperties"] as Record<string, unknown>;
-  entry["allOf"] = [
-    {
-      if: { properties: { harness: { const: "opencode" } } },
-      // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema keyword, never awaited
-      then: {
-        properties: {
-          model: {
-            pattern: "^[^/\\s]+/\\S+$",
-            description: "OpenCode models are written provider/model",
+  (entry["properties"] as Record<string, Record<string, unknown>>)["harness"]!["enum"] =
+    HARNESSES.map((h) => h.name);
+  entry["allOf"] = HARNESSES.flatMap((h) =>
+    h.models.format
+      ? [
+          {
+            if: { properties: { harness: { const: h.name } } },
+            // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema keyword, never awaited
+            then: {
+              properties: {
+                model: {
+                  pattern: h.models.format.pattern.source,
+                  description: h.models.format.message,
+                },
+              },
+            },
           },
-        },
-      },
-    },
-  ];
+        ]
+      : [],
+  );
   return {
     ...schema,
     $id: CONFIG_SCHEMA_URL,

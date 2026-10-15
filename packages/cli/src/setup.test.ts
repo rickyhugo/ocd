@@ -15,13 +15,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Interface } from "node:readline/promises";
 
-import { loadConfig } from "@ocd/supervisor";
+import { findHarness, harnessSettings } from "@ocd/adapters";
+import { loadConfig, type SupervisorConfig } from "@ocd/supervisor";
 import { parse } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import type { NotificationApproval, NotifierPrerequisite } from "./platform/index.ts";
 import {
-  codexModels,
   runSetup,
   starterConfig,
   terminalPrompter,
@@ -143,6 +143,9 @@ function defaultService(): ServiceState {
   return { installed: false, loaded: false, definition: null };
 }
 
+const enabled = (config: SupervisorConfig, name: string) =>
+  harnessSettings(config, findHarness(name)!).enabled;
+
 describe("ocd setup", () => {
   it("sets up a fresh machine with the defaults, and a second run changes nothing", async () => {
     const m = machine({ tools: ["claude"] });
@@ -151,7 +154,7 @@ describe("ocd setup", () => {
 
     const config = loadConfig(m.deps.configPath);
     expect(config.manager?.directory).toBe("~/ocd-manager");
-    expect(config.claude.enabled).toBe(true);
+    expect(enabled(config, "claude")).toBe(true);
     expect(config.profiles["oc"]).toMatchObject({
       harness: "opencode",
       model: "anthropic/claude-sonnet-x",
@@ -200,7 +203,7 @@ describe("ocd setup", () => {
     expect(config.repos["my-app"]).toMatchObject({ profile: "mine" });
     // Codex is installed but off: asked, and left off by default.
     expect(m.asked.some((q) => q.includes("Codex is installed but off"))).toBe(true);
-    expect(config.codex.enabled).toBe(false);
+    expect(enabled(config, "codex")).toBe(false);
     expect(Object.keys(config.profiles)).toEqual(["mine"]);
   });
 
@@ -396,21 +399,6 @@ describe("setup helpers", () => {
     });
   });
 
-  it("lists Codex's listed models in its order", () => {
-    expect(
-      codexModels(
-        JSON.stringify({
-          models: [
-            { slug: "b", visibility: "list", priority: 2 },
-            { slug: "hidden", visibility: "hide", priority: 0 },
-            { slug: "a", visibility: "list", priority: 0 },
-          ],
-        }),
-      ),
-    ).toEqual(["a", "b"]);
-    expect(codexModels("not json")).toEqual([]);
-  });
-
   it("writes a starter config the daemon accepts", () => {
     const root = mkdtempSync(join(tmpdir(), "ocd-starter-"));
     dirs.push(root);
@@ -425,9 +413,9 @@ describe("setup helpers", () => {
       }),
     );
     const config = loadConfig(file);
-    expect(config.codex.enabled).toBe(true);
+    expect(enabled(config, "codex")).toBe(true);
     expect(config.tmux.enabled).toBe(true);
-    expect(config.claude.enabled).toBe(false);
+    expect(enabled(config, "claude")).toBe(false);
     expect(config.repos).toEqual({});
   });
 });

@@ -31,8 +31,6 @@ Known gaps:
   real sleep.
 - **Node path:** the service runs the Node binary that installed it. After
   upgrading Node, re-run `ocd service install`.
-- **Model names** in profiles are checked only when a task starts, not by
-  `ocd doctor`.
 - **Usage:** subscription limits are tracked (see [Usage limits](#usage-limits)),
   but token counts and cost per task are not.
 
@@ -44,7 +42,7 @@ What comes next is in [PLAN.md](PLAN.md#next).
 packages/
   core/        Zod contracts, task states, redaction, report protocol, socket API client
   supervisor/  Fastify API on a Unix socket, Drizzle schema + migrations, scheduler, recovery, outbox
-  adapters/    OpenCode, Claude Code, Codex and fake adapters (+ test doubles)
+  adapters/    OpenCode, Claude Code, Codex and fake adapters, each with a descriptor, and the registry (+ test doubles)
   plugin/      OpenCode V2 plugin: ocd_* manager tools and the manager briefing (no database)
   cli/         The `ocd` command and the platform layer (notifications, focus, launchd/systemd)
 ```
@@ -266,7 +264,11 @@ these.
 ```
 
 `ocd doctor` shows each one as `off` until it is turned on, then checks it,
-and names any profile that uses a harness that is off. It exits with status 1
+and names any profile that uses a harness that is off. It also checks each
+profile's model (without the `#variant`) against the harness's own list
+(`opencode models`, `codex debug models`; Claude Code has no list, so only its
+aliases are known) and warns about one that is not listed; a warning does not
+change the exit status. It exits with status 1
 when something it checks is broken: an invalid config, no git, or a tool or
 harness that is turned on but unavailable. Dispatching to such a
 profile fails with `harness_disabled`, naming the setting.

@@ -10,7 +10,7 @@ export function updateLine(u: UpdateStatus | null | undefined): string | null {
   if (u.building) return `building ${short(u.building)} (running ${short(u.current)})`;
   if (u.pending) {
     const waiting = u.blockedBy.length
-      ? `waiting for ${u.blockedBy.length} Claude Code/Codex worker${u.blockedBy.length === 1 ? "" : "s"}`
+      ? `waiting for ${u.blockedBy.length} worker${u.blockedBy.length === 1 ? "" : "s"} a restart would interrupt`
       : u.cannotApply
         ? `not applied: ${u.cannotApply}`
         : "applying";

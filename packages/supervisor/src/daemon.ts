@@ -1,7 +1,7 @@
 import { chmodSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import type { HarnessAdapter } from "@ocd/adapters";
+import { managerHostEnabled, type HarnessAdapter } from "@ocd/adapters";
 import { resolveOcdPaths, type OcdPaths, type ShutdownReport } from "@ocd/core";
 import type { FastifyInstance } from "fastify";
 
@@ -62,7 +62,7 @@ export interface DaemonOptions {
     config: SupervisorConfig;
     logger: Logger;
   }) => HarnessAdapter[] | Promise<HarnessAdapter[]>;
-  /** The channel that wakes the manager, usually provided by the OpenCode adapter. */
+  /** The channel that wakes the manager, provided by the manager host's adapter (MANAGER_HOST.channel). */
   managerChannel?: (adapters: HarnessAdapter[]) => ManagerChannel | null;
   notifier?: Notifier;
   /**
@@ -380,8 +380,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         logger: logger.child({ component: "self-update" }),
         clock,
         ...(su.smokeTest ? { smokeTest: su.smokeTest } : {}),
-        // Reloading OpenCode's plugins only matters when OCD works with OpenCode.
-        ...(su.afterApplied && config.opencode.enabled ? { afterApplied: su.afterApplied } : {}),
+        // Reloading the manager host's plugins only matters when OCD works with the host.
+        ...(su.afterApplied && managerHostEnabled(config) ? { afterApplied: su.afterApplied } : {}),
       });
     }
 

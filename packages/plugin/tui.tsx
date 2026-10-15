@@ -123,7 +123,7 @@ export default Plugin.define({
     const [online, setOnline] = createSignal(true);
     // OCD's own update state (selfUpdate), shown as one line above the tasks.
     const [update, setUpdate] = createSignal<UpdateStatus | null>(null);
-    // Subscription usage limits Claude Code and Codex reported, as one line.
+    // Subscription usage limits the harnesses reported, as one line.
     const [usage, setUsage] = createSignal<UsageStatus | null>(null);
     const [hovered, setHovered] = createSignal<string | null>(null);
     // Session-only: which running tasks show their progress panel.
@@ -850,16 +850,14 @@ export default Plugin.define({
       );
     };
 
-    /** Every reported window with its reset time; Codex is read fresh first. */
+    /** Every reported window with its reset time; harnesses readable without a model call are read fresh first. */
     const usageDialog = async () => {
       const u = await client.refreshUsage().catch(() => usage());
       if (u) setUsage(u);
       const lines = usageLines(u?.harnesses ?? [], Date.now());
       await ctx.ui.dialog.alert({
         title: "OCD: usage limits",
-        message: lines.length
-          ? lines.join("\n")
-          : "Nothing reported yet. Claude Code reports its limits while a worker runs; Codex when it is enabled.",
+        message: lines.length ? lines.join("\n") : (u?.emptyHint ?? "Nothing reported yet."),
       });
     };
 
@@ -1065,7 +1063,7 @@ export default Plugin.define({
         },
         {
           id: "ocd.limits",
-          title: "OCD: usage limits (Claude Code, Codex)",
+          title: "OCD: usage limits",
           group: "OCD",
           palette: true,
           slash: { name: "limits" },

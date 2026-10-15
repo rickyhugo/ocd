@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
@@ -7,6 +6,13 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import {
+  MANAGER_HOST,
+  configurableHarnesses,
+  findHarness,
+  harnessSettings,
+  labelOf,
+} from "@ocd/adapters";
 import {
   OcdApiError,
   OcdClient,
@@ -43,7 +49,14 @@ import {
 
 import { describeGh } from "./github.ts";
 import { insideWorktree, serviceHomeProblem } from "./guard.ts";
-import { buildAdapters, buildManagerChannel, doctorProblems, probeHarnesses } from "./harnesses.ts";
+import {
+  buildAdapters,
+  buildManagerChannel,
+  checkProfileModels,
+  doctorProblems,
+  modelLines,
+  probeHarnesses,
+} from "./harnesses.ts";
 import {
   FallbackNotifier,
   currentPlatform,
@@ -75,19 +88,19 @@ Supervisor
                                     Run the supervisor in the background and at login
                                     (a login service of the operating system). install and uninstall
                                     (like restart) work only from the service's own home, never a worker sandbox;
-                                    reinstalling a running service refuses while Claude Code / Codex workers run unless --force
+                                    reinstalling a running service refuses while workers a restart would interrupt run unless --force
   ocd stop                          Stop the supervisor and report worker outcomes
   ocd restart [--force]             Restart the background service (picks up a new build); refuses while
-                                    Claude Code / Codex workers are running unless --force
+                                    workers a restart would interrupt are running unless --force
   ocd status                        Show supervisor status
   ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
   ocd update [status|check|apply [--force]|rollback]
                                     OCD updating itself (selfUpdate in ocd.jsonc): show the state, look for and
-                                    build a new version now, switch to the built one (--force interrupts Claude
-                                    Code / Codex workers; asks first), or go back to the previous version
-  ocd usage [--refresh]             Subscription usage limits Claude Code and Codex reported (usageLimits in
-                                    ocd.jsonc); --refresh reads Codex's now (no tokens)
-  ocd doctor [--notify]             Check harnesses, the OpenCode service, notifications, the service manager and
+                                    build a new version now, switch to the built one (--force interrupts workers
+                                    a restart would interrupt; asks first), or go back to the previous version
+  ocd usage [--refresh]             Subscription usage limits the harnesses reported (usageLimits in
+                                    ocd.jsonc); --refresh reads those readable without a model call now
+  ocd doctor [--notify]             Check harnesses (and profile model names), the manager host service, notifications, the service manager and
                                     the tools (git; gh and tmux when enabled) on the supervisor's PATH (your login shell's);
                                     --notify sends a test notification (click it to try \`ocd focus\`)
   ocd focus                         Switch to the manager session (tmux pane when tmux.enabled + terminal window); what a notification click runs
@@ -110,15 +123,15 @@ Tasks
   ocd task peek <id> [--limit N] [--before CURSOR] [--reasoning-summaries] [--follow [--interval SECONDS]]
                                     Read-only: the worker's recent assistant messages and tool calls/results
                                     (never prompts, resumes or changes it; untrusted output, secrets redacted).
-                                    OpenCode: session history. Claude Code / Codex: what this supervisor saw,
+                                    Some harnesses: session history. Others: what this supervisor saw,
                                     in memory only. --follow polls until the task leaves the running states
-                                    (at most 30 min); --reasoning-summaries adds Codex reasoning summaries
+                                    (at most 30 min); --reasoning-summaries adds reasoning summaries where provided
   ocd task send <id> <instructions>
   ocd task cancel <id> [--reason TEXT]
   ocd task accept <id>
   ocd task resume <id> --mode reattach|relaunch
   ocd task takeover <id>            Manual mode: stop OCD driving the worker and print the command
-                                    that opens its session (claude --resume, codex resume, opencode -s)
+                                    that opens its session in the harness
   ocd task giveback <id> --mode continue|review [--message NOTE]
                                     End manual mode: the worker continues headless, or the task goes to review
   ocd task pr <id> [--draft] [--base BRANCH] [--commit]
@@ -189,17 +202,6 @@ function stableCliPath(home: string): string {
 /** Notifications open the manager when clicked and carry OCD's icon. */
 function notifierOptions() {
   return { onClick: focusCommand(), assets: assetsDir(import.meta.url), home: paths.home };
-}
-
-/** After a switch to a new version: OpenCode reloads its plugins (the OCD plugin runs from the install). */
-function reloadOpenCode(): Promise<void> {
-  return new Promise((resolve, reject) =>
-    execFile("opencode", ["reload"], { timeout: 30_000 }, (error, _out, stderr) =>
-      error
-        ? reject(new Error(`opencode reload: ${String(stderr).trim() || error.message}`))
-        : resolve(),
-    ),
-  );
 }
 
 /**
@@ -281,14 +283,14 @@ function guardServiceHome(definitionPath: string): void {
 }
 
 /**
- * Supervisor-owned processes (Claude Code, Codex) are interrupted by a service
- * restart; OpenCode workers live in the OpenCode service and are reattached.
+ * Workers that are processes of the supervisor are interrupted by a service
+ * restart; service-owned ones live on and are reattached.
  */
 async function interruptedWorkers(running: boolean): Promise<Task[]> {
   if (!running) return [];
   return (await client.listTasks({ open: true, limit: 200 })).filter(
     (t) =>
-      t.harness !== "opencode" &&
+      findHarness(t.harness)?.sessionsSurviveSupervisor !== true &&
       (t.state === "starting" || t.state === "running" || t.state === "blocked"),
   );
 }
@@ -440,10 +442,10 @@ async function run(
             runningFrom: cliPath(),
             service: background,
             afterApplied: {
-              run: reloadOpenCode,
+              run: () => MANAGER_HOST.reload(),
               failed: {
-                headline: "OpenCode did not reload OCD's plugin",
-                detail: "OpenCode still has the previous plugin. Run `opencode reload`.",
+                headline: `${MANAGER_HOST.label} did not reload OCD's plugin`,
+                detail: `${MANAGER_HOST.label} still has the previous plugin. Run \`${MANAGER_HOST.binary} reload\`.`,
               },
             },
           },
@@ -645,7 +647,7 @@ async function run(
                 ? `Notifies at ${u.notifyAt.map((n) => `${n}%`).join(" and ")} of a window, and when a limit is reached.`
                 : "Notifies only when a limit is reached (usageLimits.notifyAt is empty).",
             ].join("\n")
-          : "No usage limits reported yet: Claude Code reports them while a worker runs, Codex when it is enabled (ocd usage --refresh reads it now).",
+          : (u.emptyHint ?? "No usage limits reported yet."),
       );
       return;
     }
@@ -709,6 +711,7 @@ async function run(
         config = SupervisorConfig.parse({});
       }
       const harnesses = await probeHarnesses(config);
+      const models = configError ? [] : await checkProfileModels(config);
       const gh = config.github.enabled ? await probeGh({ timeoutMs: 10_000 }) : null;
       const git = locateBinary("git");
       const notifier = await platform.notifier(notifierOptions());
@@ -731,6 +734,7 @@ async function run(
       const report = {
         config: { path: paths.config, error: configError },
         harnesses,
+        models,
         github: gh,
         path: { value: tools.path, shell: tools.login.shell, error: tools.login.error },
         git,
@@ -746,14 +750,14 @@ async function run(
         if (!notifier.clickable && platform.clickableHint)
           hints.push(`  ${platform.clickableHint}`);
         const off = (key: string) => `off (turn on with ${key}.enabled in ocd.jsonc)`;
-        const harnessOff = (["opencode", "claude", "codex"] as const)
-          .filter((h) => !config[h].enabled)
+        const harnessOff = configurableHarnesses()
+          .filter((h) => !harnessSettings(config, h).enabled)
           .map((h) => {
             const users = Object.entries(config.profiles)
-              .filter(([, profile]) => profile.harness === h)
+              .filter(([, profile]) => profile.harness === h.name)
               .map(([name]) => name);
             const note = users.length ? `; profiles ${users.join(", ")} cannot run` : "";
-            return `${h.padEnd(9)} ${off(h)}${note}`;
+            return `${h.name.padEnd(9)} ${off(h.name)}${note}`;
           });
         return [
           ...(configError ? [`${"config".padEnd(9)} INVALID ${configError}`] : []),
@@ -762,6 +766,7 @@ async function run(
               `${r.harness.padEnd(9)} ${r.available ? "ok" : "--"} ${r.version ?? ""} ${r.problems.join("; ")}`,
           ),
           ...harnessOff,
+          ...modelLines(models, labelOf),
           `${"notify".padEnd(9)} ${notifier.backend}${notifier.clickable ? ", click opens the manager" : ", not clickable"}`,
           ...(delivery ? [`${"".padEnd(9)} test notification ${delivery}`] : []),
           `${"tmux".padEnd(9)} ${config.tmux.enabled ? (tmux ?? "not found on PATH") : off("tmux")}`,
@@ -851,7 +856,7 @@ async function run(
       print(m, json, () =>
         [
           `directory: ${m.directory ?? `not configured (set manager.directory in ${paths.config})`}`,
-          `active session: ${m.active ? `${m.active.sessionId} since ${m.active.activatedAt}` : "none yet (start OpenCode in the manager directory)"}`,
+          `active session: ${m.active ? `${m.active.sessionId} since ${m.active.activatedAt}` : `none yet (start ${MANAGER_HOST.label} in the manager directory)`}`,
         ].join("\n"),
       );
       return;

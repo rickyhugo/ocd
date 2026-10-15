@@ -1,6 +1,7 @@
 import { readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { harnessSettings, requireHarness } from "@ocd/adapters";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { ConfigError, loadConfig, toProfiles } from "./config.ts";
@@ -41,8 +42,8 @@ describe("ocd.jsonc", () => {
     expect([
       config.github.enabled,
       config.tmux.enabled,
-      config.claude.enabled,
-      config.codex.enabled,
+      harnessSettings(config, requireHarness("claude")).enabled,
+      harnessSettings(config, requireHarness("codex")).enabled,
     ]).toEqual([false, false, false, false]);
     expect(toProfiles(config).map((p) => [p.name, p.permissionPolicy, p.description])).toEqual([
       ["oc", "deny", "Default"],
@@ -74,6 +75,35 @@ describe("ocd.jsonc", () => {
       ),
     ).toThrow(ConfigError);
     expect(() => loadConfig(writeConfig(`{ "concurrency": }`))).toThrow(/not valid JSONC/);
+  });
+
+  it("names the known harnesses when a profile uses an unknown one", () => {
+    expect(() =>
+      loadConfig(writeConfig(`{ "profiles": { "x": { "harness": "gemini", "model": "m" } } }`)),
+    ).toThrow(
+      /profiles\.x\.harness: Unknown harness "gemini"; known: opencode, claude, codex, fake/,
+    );
+  });
+
+  it("keeps the per-harness sections and their strictness", () => {
+    const config = loadConfig(
+      writeConfig(
+        `{ "claude": { "enabled": true, "binary": "/opt/claude" }, "opencode": { "serviceFile": "/tmp/svc" } }`,
+      ),
+    );
+    expect(harnessSettings(config, requireHarness("claude"))).toEqual({
+      enabled: true,
+      binary: "/opt/claude",
+    });
+    expect(harnessSettings(config, requireHarness("opencode"))).toEqual({
+      enabled: true,
+      serviceFile: "/tmp/svc",
+    });
+    expect(harnessSettings(config, requireHarness("codex")).enabled).toBe(false);
+    expect(() =>
+      loadConfig(writeConfig(`{ "codex": { "enabled": true, "serviceFile": "x" } }`)),
+    ).toThrow(/serviceFile/);
+    expect(() => loadConfig(writeConfig(`{ "fake": { "enabled": true } }`))).toThrow(/fake/);
   });
 
   it("ships a JSON Schema that matches the code (run `pnpm run schema` after config changes)", () => {

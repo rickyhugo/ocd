@@ -1,7 +1,7 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
+import { HARNESSES, labelOf } from "@ocd/adapters";
 import {
-  harnessLabel,
   resetTime,
   windowReset,
   type HarnessName,
@@ -16,7 +16,7 @@ import { notification } from "./notification.ts";
 import type { OutboxInput } from "./store.ts";
 
 // Subscription usage limits (usageLimits in ocd.jsonc). Adapters report what
-// the harness says: Claude Code with every turn, Codex on demand and on change.
+// the harness says: with every turn, or (for harnesses that can) on demand.
 // This keeps the latest report per harness (in ~/.ocd/usage.json, so a restart
 // still knows), and notifies once per window per threshold: "Claude usage at
 // 82%". Thresholds are deduplicated by the outbox key, which includes the
@@ -31,7 +31,7 @@ export interface UsageTrackerOptions {
   file: string;
   settings: () => UsageSettings;
   enqueue: (entries: OutboxInput[]) => void;
-  /** Reads that cost no tokens (Codex); polled every pollMinutes. */
+  /** Reads that cost no tokens; polled every pollMinutes. */
   readers: (() => Promise<HarnessUsage | null>)[];
   logger: Logger;
   clock: Clock;
@@ -40,6 +40,23 @@ export interface UsageTrackerOptions {
 /** The reset time to the hour, so small drifts in what a harness reports do not re-alert. */
 function resetKey(window: UsageWindow): string {
   return window.resetsAt ? String(Math.round(Date.parse(window.resetsAt) / 3_600_000)) : "none";
+}
+
+/** Which harnesses report limits, and how, for the "nothing reported yet" message. */
+function emptyHint(): string {
+  const labels = (kind: string) =>
+    HARNESSES.filter((h) => h.usageLimits === kind).map((h) => h.label);
+  const reported = labels("reported");
+  const readable = labels("readable");
+  const parts = [
+    reported.length
+      ? `${reported.join(", ")} report${reported.length === 1 ? "s" : ""} them while a worker runs`
+      : "",
+    readable.length
+      ? `${readable.join(", ")} when it is enabled (ocd usage --refresh reads it now)`
+      : "",
+  ].filter(Boolean);
+  return `No usage limits reported yet: ${parts.join(", ")}.`;
 }
 
 export class UsageTracker {
@@ -74,8 +91,11 @@ export class UsageTracker {
 
   status(): UsageStatus {
     return {
-      harnesses: [...this.latest.values()].toSorted((a, b) => a.harness.localeCompare(b.harness)),
+      harnesses: [...this.latest.values()]
+        .map((u) => ({ ...u, label: labelOf(u.harness) }))
+        .toSorted((a, b) => a.harness.localeCompare(b.harness)),
       notifyAt: this.o.settings().notifyAt,
+      emptyHint: emptyHint(),
     };
   }
 
@@ -122,7 +142,7 @@ export class UsageTracker {
   }
 
   private alert(usage: HarnessUsage, now: number): void {
-    const name = harnessLabel(usage.harness).replace(/ Code$/, "");
+    const name = labelOf(usage.harness).replace(/ Code$/, "");
     const entries: OutboxInput[] = [];
     if (usage.state === "limited") {
       const window =

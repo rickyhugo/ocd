@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync, watch, type FSWatcher
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
+import { MANAGER_HOST, configurableHarnesses, findHarness, harnessNames } from "@ocd/adapters";
 import { BranchSyncMode, MergeMethod, ProfilesConfig, ReposConfig, type Profile } from "@ocd/core";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { z } from "zod";
@@ -9,7 +10,31 @@ import { z } from "zod";
 // ocd.jsonc: supervisor settings and execution profiles in one declarative,
 // human-edited file. Unknown keys are errors so typos never pass silently.
 
-export const SupervisorConfig = z
+/**
+ * The ocd.jsonc section of every harness in the registry (`enabled`, plus the
+ * options its descriptor declares). Typed loosely: read them with harnessSettings.
+ */
+function harnessSections(): Record<never, never> {
+  return Object.fromEntries(
+    configurableHarnesses().map((h) => [
+      h.name,
+      z
+        .object({
+          enabled: z
+            .boolean()
+            .default(h.config!.defaultEnabled)
+            .describe(h.config!.enabledDescription),
+          ...Object.fromEntries(
+            h.config!.options.map((o) => [o.key, z.string().optional().describe(o.description)]),
+          ),
+        })
+        .strict()
+        .prefault({}),
+    ]),
+  );
+}
+
+const SupervisorConfigSchema = z
   .object({
     $schema: z.string().optional().describe("JSON Schema reference for editors."),
     concurrency: z
@@ -77,59 +102,15 @@ export const SupervisorConfig = z
       })
       .strict()
       .prefault({}),
-    opencode: z
-      .object({
-        enabled: z.boolean().default(true),
-        serviceFile: z
-          .string()
-          .optional()
-          .describe(
-            "OpenCode service registration file; defaults to OpenCode's own discovery path.",
-          ),
-      })
-      .strict()
-      .prefault({}),
     workerIdleMinutes: z
       .number()
       .min(1)
       .default(10)
       .describe(
-        "Claude Code and Codex worker processes stop after this long idle; their sessions resume on the next instruction.",
+        "Worker processes the supervisor owns stop after this long idle; their sessions resume on the next instruction.",
       ),
-    claude: z
-      .object({
-        enabled: z
-          .boolean()
-          .default(false)
-          .describe(
-            "Offer Claude Code workers (profiles with harness claude). Off by default; when off, claude is never run and dispatches to its profiles are refused. Restart to apply.",
-          ),
-        binary: z
-          .string()
-          .optional()
-          .describe(
-            "Absolute path of the claude binary; defaults to a lookup on the PATH your login shell sets up.",
-          ),
-      })
-      .strict()
-      .prefault({}),
-    codex: z
-      .object({
-        enabled: z
-          .boolean()
-          .default(false)
-          .describe(
-            "Offer Codex workers (profiles with harness codex). Off by default; when off, codex is never run and dispatches to its profiles are refused. Restart to apply.",
-          ),
-        binary: z
-          .string()
-          .optional()
-          .describe(
-            "Absolute path of the codex binary; defaults to a lookup on the PATH your login shell sets up.",
-          ),
-      })
-      .strict()
-      .prefault({}),
+    // One section per harness, named after it: "claude": { "enabled": true }, ...
+    ...harnessSections(),
     github: z
       .object({
         enabled: z
@@ -204,7 +185,7 @@ export const SupervisorConfig = z
           .boolean()
           .default(false)
           .describe(
-            "OCD updates itself: new commits on the repository's branch are built into ~/.ocd/install, smoke-tested, and switched to by restarting the background service once no Claude Code or Codex worker is running. Off by default. Restart to apply.",
+            "OCD updates itself: new commits on the repository's branch are built into ~/.ocd/install, smoke-tested, and switched to by restarting the background service once no worker that a restart would interrupt is running. Off by default. Restart to apply.",
           ),
         repo: z
           .string()
@@ -262,21 +243,19 @@ export const SupervisorConfig = z
           .array(z.number().min(1).max(100))
           .default([80, 95])
           .describe(
-            "Percentages of a subscription usage window (Claude Code's 5-hour and weekly limits, Codex's) that send a notification, once per window. [] turns these notifications off; reaching a limit is always reported.",
+            "Percentages of a subscription usage window (5-hour, weekly, ...) that send a notification, once per window. [] turns these notifications off; reaching a limit is always reported.",
           ),
         pollMinutes: z
           .number()
           .min(0)
           .default(15)
           .describe(
-            "How often Codex's limits are read while no Codex worker reports them (no model call, no tokens). 0 reads them only from running workers. Claude Code reports its limits only while a worker runs.",
+            "How often limits are read, for the harnesses that can be read without a model call (no tokens). 0 reads them only from running workers; other harnesses report them only while a worker runs.",
           ),
       })
       .strict()
       .prefault({})
-      .describe(
-        "Tracking the subscription usage limits Claude Code and Codex report. Restart to apply.",
-      ),
+      .describe("Tracking the subscription usage limits the harnesses report. Restart to apply."),
     mergeMethod: MergeMethod.default("squash").describe(
       "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod. Applies on save.",
     ),
@@ -290,7 +269,7 @@ export const SupervisorConfig = z
           .string()
           .min(1)
           .describe(
-            "Working directory of the manager. OpenCode sessions started here may use the ocd_* tools; `~` is expanded.",
+            `Working directory of the manager. ${MANAGER_HOST.label} sessions started here may use the ocd_* tools; \`~\` is expanded.`,
           ),
       })
       .strict()
@@ -307,6 +286,25 @@ export const SupervisorConfig = z
   })
   .strict()
   .superRefine((config, ctx) => {
+    for (const [name, profile] of Object.entries(config.profiles)) {
+      const harness = findHarness(profile.harness);
+      if (!harness) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["profiles", name, "harness"],
+          message: `Unknown harness "${profile.harness}"; known: ${harnessNames().join(", ")}`,
+        });
+        continue;
+      }
+      const format = harness.models.format;
+      if (format && !format.pattern.test(profile.model)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["profiles", name, "model"],
+          message: format.message,
+        });
+      }
+    }
     for (const [name, repo] of Object.entries(config.repos)) {
       if (repo.profile && !(repo.profile in config.profiles)) {
         ctx.addIssue({
@@ -318,8 +316,18 @@ export const SupervisorConfig = z
     }
   });
 
-export type SupervisorConfig = z.infer<typeof SupervisorConfig>;
-export type SupervisorConfigInput = z.input<typeof SupervisorConfig>;
+/**
+ * Harness sections are keyed by harness name. A loaded config does not type
+ * them (read them with `harnessSettings`), so a misspelled setting is still a
+ * type error; the input accepts any section, which the schema then checks.
+ */
+type HarnessSectionsInput = { [harness: string]: unknown };
+export const SupervisorConfig: z.ZodType<
+  z.output<typeof SupervisorConfigSchema>,
+  z.input<typeof SupervisorConfigSchema> & HarnessSectionsInput
+> = SupervisorConfigSchema;
+export type SupervisorConfig = z.infer<typeof SupervisorConfigSchema>;
+export type SupervisorConfigInput = z.input<typeof SupervisorConfigSchema> & HarnessSectionsInput;
 
 export class ConfigError extends Error {
   constructor(message: string) {

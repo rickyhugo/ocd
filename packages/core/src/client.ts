@@ -299,7 +299,7 @@ export class OcdClient {
   /** Gets the work into its base branch: through a pull request, or directly once confirmed. */
   /** Subscription usage limits the harnesses reported (usageLimits). */
   usage = () => this.call<UsageStatus>("GET", "/v1/usage");
-  /** Reads the limits that cost no tokens to read (Codex) now. */
+  /** Reads the limits that cost no tokens to read now. */
   refreshUsage = () => this.call<UsageStatus>("POST", "/v1/usage/refresh", {});
 
   /** OCD's own update state (selfUpdate). */
@@ -309,7 +309,7 @@ export class OcdClient {
     this.call<UpdateStatus>("POST", "/v1/update/check", {}, undefined, {
       timeoutMs: LONG_CALL_TIMEOUT_MS,
     });
-  /** Switches to the pending version; `force` interrupts Claude Code / Codex workers. Human only. */
+  /** Switches to the pending version; `force` interrupts workers a restart would interrupt. Human only. */
   applyUpdate = (force = false) => this.call<UpdateStatus>("POST", "/v1/update/apply", { force });
   /** Back to the previous version. Human only. */
   rollbackUpdate = () => this.call<UpdateStatus>("POST", "/v1/update/rollback", {});
