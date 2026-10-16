@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { FakeScheduler } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { ClaudeAdapter, parseClaudeModel } from "./claude.ts";
@@ -276,13 +277,24 @@ describe("Claude Code worker lifecycle", () => {
   it("stops idle workers and resumes them transparently on the next prompt", async () => {
     const { spec } = setup();
     await adapter!.close();
-    adapter = new ClaudeAdapter({ command: [process.execPath, FAKE], idleStopMs: 100 });
-    const ref = await adapter.createSession(spec);
+    const clock = new FakeScheduler();
+    adapter = new ClaudeAdapter({
+      command: [process.execPath, FAKE],
+      idleStopMs: 60_000,
+      scheduler: clock,
+    });
+    const creating = adapter.createSession(spec);
+    // createSession waits 300 ms for the process to fail fast.
+    await clock.advance(300);
+    const ref = await creating;
     await adapter.prompt(ref, "first");
     await until(
       () => adapter!.inspect(ref),
       (s) => s.status === "idle" && s.lastAssistantText !== null,
     );
+    await clock.advance(59_999);
+    expect(adapter.activeWorkers()).toBe(1);
+    await clock.advance(1);
     await until(
       () => adapter!.activeWorkers(),
       (n) => n === 0,

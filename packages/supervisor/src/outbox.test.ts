@@ -1,7 +1,7 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 
-import { systemScheduler, type AttentionKind } from "@ocd/core";
+import { FakeScheduler, type AttentionKind } from "@ocd/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { SupervisorConfig } from "./config.ts";
@@ -91,6 +91,7 @@ describe("notification digests in the outbox worker", () => {
   let worker: OutboxWorker;
   let logger: Logger;
   let root: string;
+  let scheduler: FakeScheduler;
   let seq = 0;
 
   const notify = (taskId: string | null, kind: AttentionKind) =>
@@ -106,14 +107,14 @@ describe("notification digests in the outbox worker", () => {
       notifier,
       managerChannel,
       logger,
-      systemScheduler,
+      scheduler,
     );
 
   beforeEach(async () => {
-    vi.useFakeTimers({ now: Date.parse("2026-01-01T00:00:00Z") });
+    scheduler = new FakeScheduler(Date.parse("2026-01-01T00:00:00Z"));
     root = tempDir();
     db = await prepareDatabase(testPaths(join(root, "home")));
-    store = new Store(db, systemScheduler);
+    store = new Store(db, scheduler);
     notifier = new RecordingNotifier();
     managerChannel = new RecordingManagerChannel();
     logger = createLogger({ level: "silent" });
@@ -123,7 +124,6 @@ describe("notification digests in the outbox worker", () => {
 
   afterEach(async () => {
     await worker.stop();
-    vi.useRealTimers();
     db.$client.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -132,9 +132,9 @@ describe("notification digests in the outbox worker", () => {
     notify("t_1", "review");
     await worker.flush();
     expect(notifier.sent).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(WINDOW - 1);
+    await scheduler.advance(WINDOW - 1);
     expect(notifier.sent).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1);
+    await scheduler.advance(1);
     expect(notifier.sent).toEqual([alert("t_1", "review")]);
     expect(store.listOutbox("pending")).toHaveLength(0);
   });
@@ -142,15 +142,15 @@ describe("notification digests in the outbox worker", () => {
   it("sends one digest for notifications raised within one window", async () => {
     for (const id of ["t_1", "t_2", "t_3"]) notify(id, "review");
     await worker.flush();
-    await vi.advanceTimersByTimeAsync(1000);
+    await scheduler.advance(1000);
     notify("t_4", "review");
     notify("t_5", "permission");
     await worker.flush();
-    await vi.advanceTimersByTimeAsync(WINDOW - 1000);
+    await scheduler.advance(WINDOW - 1000);
     expect(notifier.sent).toHaveLength(1);
     expect(notifier.sent[0]?.title).toBe("OCD: 4 ready for review, 1 needs you");
     expect(notifier.sent[0]?.body).toContain("permission · t_5");
-    await vi.advanceTimersByTimeAsync(WINDOW * 2);
+    await scheduler.advance(WINDOW * 2);
     expect(notifier.sent).toHaveLength(1);
   });
 
@@ -160,7 +160,7 @@ describe("notification digests in the outbox worker", () => {
     notify("t_1", "review");
     notify("t_2", "review");
     await worker.flush();
-    await vi.advanceTimersByTimeAsync(WINDOW);
+    await scheduler.advance(WINDOW);
     expect(notifier.sent).toEqual([
       { title: "OCD: 2 ready for review", body: "Ready for review: t_1, t_2" },
     ]);
@@ -170,13 +170,13 @@ describe("notification digests in the outbox worker", () => {
     notify("t_1", "review");
     notify("t_2", "review");
     await worker.flush();
-    await vi.advanceTimersByTimeAsync(WINDOW);
+    await scheduler.advance(WINDOW);
     expect(notifier.sent.map((n) => n.title)).toEqual(["OCD: 2 ready for review"]);
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    await scheduler.advance(10_000);
     notify("t_1", "review");
     await worker.flush();
-    await vi.advanceTimersByTimeAsync(WINDOW);
+    await scheduler.advance(WINDOW);
     expect(notifier.sent.map((n) => n.title)).toEqual([
       "OCD: 2 ready for review",
       "OCD: review · t_1",
@@ -199,12 +199,12 @@ describe("notification digests in the outbox worker", () => {
     notify("t_1", "review");
     notify("t_2", "question");
     await worker.flush();
-    await vi.advanceTimersByTimeAsync(WINDOW);
+    await scheduler.advance(WINDOW);
     expect(notifier.sent).toHaveLength(0);
     const pending = store.listOutbox("pending");
     expect(pending.map((e) => e.attempts)).toEqual([1, 1]);
 
-    await vi.advanceTimersByTimeAsync(1000); // baseDelayMs
+    await scheduler.advance(1000); // baseDelayMs
     await worker.flush();
     expect(notifier.sent.map((n) => n.title)).toEqual(["OCD: 1 ready for review, 1 needs you"]);
     expect(store.listOutbox("pending")).toHaveLength(0);
@@ -216,7 +216,7 @@ describe("notification digests in the outbox worker", () => {
       throw new Error("database is locked");
     });
     notify("t_1", "review");
-    await vi.advanceTimersByTimeAsync(60_000); // the interval pass
+    await scheduler.advance(60_000); // the interval pass
     expect(error).toHaveBeenCalledWith(expect.anything(), "outbox pass failed");
     due.mockRestore();
     await worker.flush();
@@ -228,13 +228,13 @@ describe("notification digests in the outbox worker", () => {
     notify("t_2", "review");
     await worker.flush();
     await worker.stop();
-    expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(WINDOW);
+    expect(scheduler.pending).toBe(0);
+    await scheduler.advance(WINDOW);
     expect(notifier.sent).toHaveLength(0);
     // The supervisor's shutdown flush: nothing would fire later, so send now.
     await worker.flush();
     expect(notifier.sent.map((n) => n.title)).toEqual(["OCD: 2 ready for review"]);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(scheduler.pending).toBe(0);
   });
 
   it("drops notifications without waiting when they are disabled", async () => {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { FakeScheduler } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { CodexAdapter, parseCodexModel } from "./codex.ts";
@@ -246,13 +247,21 @@ describe("Codex worker lifecycle", () => {
   it("stops idle app-servers and resumes the thread on the next prompt", async () => {
     const { spec } = setup();
     await adapter!.close();
-    adapter = new CodexAdapter({ command: [process.execPath, FAKE], idleStopMs: 100 });
+    const clock = new FakeScheduler();
+    adapter = new CodexAdapter({
+      command: [process.execPath, FAKE],
+      idleStopMs: 60_000,
+      scheduler: clock,
+    });
     const ref = await adapter.createSession(spec);
     await adapter.prompt(ref, "first");
     await until(
       () => adapter!.inspect(ref),
       (s) => s.status === "idle" && s.lastAssistantText !== null,
     );
+    await clock.advance(59_999);
+    expect(adapter.activeWorkers()).toBe(1);
+    await clock.advance(1);
     await until(
       () => adapter!.activeWorkers(),
       (n) => n === 0,

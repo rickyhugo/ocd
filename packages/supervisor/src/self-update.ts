@@ -93,8 +93,6 @@ export interface SelfUpdaterOptions {
   smokeTest?: (buildDir: string) => Promise<void>;
   /** After a switch, in the new supervisor (e.g. reloading the manager host's plugins). */
   afterApplied?: AfterUpdateStep;
-  /** Wait before the one retry of `afterApplied` (it can fail transiently). Default 30 s. */
-  afterAppliedRetryMs?: number;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -232,7 +230,7 @@ export class SelfUpdater {
       this.o.logger.warn({ err: error }, "after-update step failed; retrying");
     }
     await new Promise<void>((resolve) => {
-      const t = this.scheduler.setTimeout(resolve, this.o.afterAppliedRetryMs ?? 30_000);
+      const t = this.scheduler.setTimeout(resolve, 30_000);
       t.unref();
       this.timers.push(t);
     });
