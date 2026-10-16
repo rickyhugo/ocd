@@ -1,4 +1,4 @@
-import type { Attention, Task, UpdateStatus } from "@ocd/core";
+import { TAKEOVER_STATES, type Attention, type Task, type UpdateStatus } from "@ocd/core";
 
 // The sidebar's view model: what to show, in which order, with which emphasis.
 // Pure, so it is tested without a terminal.
@@ -265,6 +265,11 @@ export function landable(task: Task): boolean {
   return task.state === "ready_for_review" || (task.state === "completed" && !!task.workspacePath);
 }
 
+/** A task whose worker session the human can take over (or reopen, once manual). */
+export function takeoverable(task: Task): boolean {
+  return !!task.sessionId && (task.state === "manual" || TAKEOVER_STATES.has(task.state));
+}
+
 /** The landing routes on offer; the pull request route only when pull requests are on. */
 export function landingActions(options: {
   pullRequests: boolean;
@@ -305,10 +310,10 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
   const landing = row.task && landable(row.task) ? landingActions(options) : [];
   const discard = { label: "Discard the work…", kind: "discard" as const };
   const diff = row.task?.workspacePath ? [{ label: "View the diff", kind: "diff" as const }] : [];
-  // Manual mode needs a worker session to open.
-  const takeover = row.task?.sessionId
-    ? [{ label: "Take over (manual mode)", kind: "takeover" as const }]
-    : [];
+  const takeover =
+    row.task && takeoverable(row.task)
+      ? [{ label: "Take over (manual mode)", kind: "takeover" as const }]
+      : [];
   switch (row.task?.state) {
     case "manual":
       return [

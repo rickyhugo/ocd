@@ -15,7 +15,6 @@
 // - /spill: a read-only snapshot of all open work, straight from the supervisor.
 import {
   OcdClient,
-  TAKEOVER_STATES,
   buildSpill,
   collectSpill,
   baseLabel,
@@ -61,6 +60,7 @@ import {
   buildSidebar,
   landable,
   landingActions,
+  takeoverable,
   updateBanner,
   type Row,
   type Section,
@@ -1022,10 +1022,7 @@ export default Plugin.define({
           slash: { name: "takeover" },
           run: async () => {
             try {
-              const task = await pickTask(
-                "Take over which task?",
-                (t) => !!t.sessionId && (t.state === "manual" || TAKEOVER_STATES.has(t.state)),
-              );
+              const task = await pickTask("Take over which task?", takeoverable);
               if (task) await takeOver(task);
             } catch (error) {
               fail(error);
