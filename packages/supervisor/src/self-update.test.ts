@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -18,6 +25,9 @@ async function waitUntil(ok: () => boolean, ms = 10_000): Promise<void> {
     await new Promise((r) => setTimeout(r, 20));
   }
 }
+
+/** A build whose CLI accepts any config. */
+const BUILD = "mkdir -p packages/cli/dist && echo 'process.exit(0)' > packages/cli/dist/ocd.mjs";
 
 const RELOAD_FAILED = {
   headline: "OpenCode did not reload OCD's plugin",
@@ -68,7 +78,7 @@ function updater(
       enabled: true,
       repo: "ocd",
       intervalMinutes: 10,
-      build: build ?? ["mkdir -p packages/cli/dist && echo built > packages/cli/dist/ocd.mjs"],
+      build: build ?? [BUILD],
     }),
     repoPath: (name) => (name === "ocd" ? w.repo : null),
     blockers: () => blockers,
@@ -225,7 +235,7 @@ describe("self-update", () => {
         repo: "ocd",
         path: w.repo,
         intervalMinutes: 10,
-        build: ["mkdir -p packages/cli/dist && echo built > packages/cli/dist/ocd.mjs"],
+        build: [BUILD],
       }),
       repoPath: () => null,
     });
@@ -282,6 +292,46 @@ describe("self-update", () => {
     const s = await u.check();
     expect(s.lastError).toMatchObject({ sha, message: expect.stringContaining("boom") });
     expect(s.current).toBeNull();
+  });
+
+  it("keeps the current version while the new one rejects the live config, and applies it once the file loads", async () => {
+    const w = world();
+    seedInstall(w);
+    // The new version's `ocd config check` no longer accepts `oldKey`.
+    writeFileSync(
+      join(w.repo, "cli.mjs"),
+      `import { readFileSync } from "node:fs";
+if (process.argv.slice(2).join(" ") !== "config check") process.exit(2);
+const path = process.env.OCD_CONFIG;
+if (readFileSync(path, "utf8").includes("oldKey")) {
+  console.error("ocd: Invalid config in " + path + ":\\n  (root): Unrecognized key: \\"oldKey\\"");
+  process.exit(1);
+}
+`,
+    );
+    const sha = w.land("feat: drop oldKey");
+    const config = join(w.root, "ocd.jsonc");
+    writeFileSync(config, '{ "oldKey": true }\n');
+    const { u, calls } = updater(w, {
+      build: ["mkdir -p packages/cli/dist && cp cli.mjs packages/cli/dist/ocd.mjs"],
+    });
+
+    const s = await u.check();
+    expect(calls.restart).toBe(0);
+    expect(s).toMatchObject({ current: null, pending: { sha } });
+    expect(s.cannotApply).toContain(config);
+    expect(s.cannotApply).toContain('Unrecognized key: "oldKey"');
+    expect(calls.notify).toEqual([`update-config-rejected:${sha}`]);
+    expect(existsSync(join(w.installDir, "current"))).toBe(false);
+    expect(readFileSync(config, "utf8")).toBe('{ "oldKey": true }\n');
+
+    await u.tryApply(false);
+    expect(calls).toMatchObject({ restart: 0, notify: [`update-config-rejected:${sha}`] });
+
+    writeFileSync(config, "{}\n");
+    const applied = await u.tryApply(false);
+    expect(calls.restart).toBe(1);
+    expect(applied).toMatchObject({ current: sha, pending: null, cannotApply: null });
   });
 
   it("only installs, without restarting, when the service does not run from the install", async () => {
