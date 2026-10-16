@@ -1,6 +1,7 @@
 // Minimal stand-in for `codex app-server` (0.162.1 protocol subset) used by
 // adapter tests. Directives in the prompt pick behaviour: [approve-cmd],
-// [edit], [limit], [hang], [plan], [usage], [subagent]. Never calls a model.
+// [edit], [limit], [hang], [plan], [usage], [subagent], [subagent-edit]. Never
+// calls a model.
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -69,6 +70,26 @@ function startTurn(text) {
     return complete(turn, "completed", null, items);
   }
   if (text.includes("[params]")) return finish(turn, JSON.stringify(threadParams));
+  if (text.includes("[subagent-edit]")) {
+    // The subagent's edit needs approval while the worker's own turn goes on.
+    const itemId = "item_child_edit";
+    turn.askingThread = `${threadId}-child`;
+    notify("item/started", {
+      threadId: turn.askingThread,
+      turnId: "turn_child",
+      item: {
+        type: "fileChange",
+        id: itemId,
+        changes: [{ path: "src/child.ts", kind: { type: "update" }, diff: "" }],
+      },
+    });
+    turn.waitingFor = nextServerId++;
+    return send({
+      id: turn.waitingFor,
+      method: "item/fileChange/requestApproval",
+      params: { threadId: turn.askingThread, turnId: "turn_child", itemId, reason: "outside" },
+    });
+  }
   if (text.includes("[subagent]")) {
     // As codex 0.162.1 with spawn_agent (OCD task t_mv9nrfjt595f76): the
     // child's thread streams over the parent's connection, and its turn ends
@@ -256,11 +277,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     // Response to our approval request.
     if (active && m.id === active.waitingFor) {
       const turn = active;
-      notify("serverRequest/resolved", { threadId, requestId: m.id });
-      finish(
-        turn,
-        m.result?.decision === "accept" ? `Approved and done.\n${report}` : "Declined; stopping.",
-      );
+      notify("serverRequest/resolved", {
+        threadId: turn.askingThread ?? threadId,
+        requestId: m.id,
+      });
+      const text =
+        m.result?.decision === "accept" ? `Approved and done.\n${report}` : "Declined; stopping.";
+      // A subagent's answer lets the subagent go on; the worker's turn ends later.
+      if (turn.askingThread) setTimeout(() => finish(turn, text), 300);
+      else finish(turn, text);
     }
     return;
   }

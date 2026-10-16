@@ -113,6 +113,27 @@ describe("Codex adapter", () => {
     ]);
   });
 
+  it("forwards a subagent's edit approval with its paths and settles it on the subagent's answer (#57)", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "edit [subagent-edit]");
+    const waiting = await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "waiting",
+    );
+    expect(waiting.pending.map((p) => p.summary)).toEqual(["edit: src/child.ts (outside)"]);
+    await adapter.reply(ref, waiting.pending[0]!.id, { type: "approve" });
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "busy" && s.pending.length === 0,
+    );
+    const done = await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+    expect(done.lastAssistantText).toContain("Approved and done");
+  });
+
   it("reports plan updates as the checklist, without the explanation", async () => {
     const { adapter, events, spec } = setup();
     const ref = await adapter.createSession(spec);

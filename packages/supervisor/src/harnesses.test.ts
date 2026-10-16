@@ -115,13 +115,14 @@ describe("workers waiting on their own background work (#57)", () => {
 
   it("keeps a worker that yields to a subagent and a wakeup running, and continues the same worker", async () => {
     h = await start(claude);
-    const harnessRef = h;
     await setupRepo(h, "app", "w");
     const { task } = await dispatch("port it [subagent-wakeup]");
+    const { sessionId } = (await waitForState(h, task.id, "running")).task;
     await waitFor(
-      () => harnessRef.manager("mgr").peekTask(task.id),
-      (t) => t.entries.some((e) => e.text?.includes("still working") ?? false),
+      () => adapter.inspect({ sessionId: sessionId! }),
+      (s) => s.status === "yielded" && (s.lastAssistantText?.includes("still working") ?? false),
     );
+    // The supervisor handles the same status event; look once it has had a moment.
     await delay(300);
     const waiting = await h.manager("mgr").inspectTask(task.id);
     expect(waiting.task.state).toBe("running");

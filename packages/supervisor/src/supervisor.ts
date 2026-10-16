@@ -1468,7 +1468,7 @@ export class Supervisor {
         taskId: task.id,
         kind: "stall",
         dedupeKey: `stall:${task.id}:${window}`,
-        reason: `No worker activity for ${Math.round(idleMs / 60_000)} minutes while busy. Inspect it; OCD does not kill inactive workers.`,
+        reason: `No worker activity for ${Math.round(idleMs / 60_000)} minutes. Inspect it; OCD does not kill inactive workers.`,
         harness: task.harness,
         sessionId: task.sessionId,
         resolvableBy: "manager",

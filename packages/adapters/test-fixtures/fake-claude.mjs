@@ -1,7 +1,7 @@
 // Minimal stand-in for `claude -p --input-format stream-json ...` (2.1.296
 // protocol subset) used by adapter tests. Directives in the prompt pick
-// behaviour: [perm], [limit], [hang], [todos], [usage], [subagent-wakeup],
-// [mapping], [queued], [bg-perm], [report-early], [no-report]. Never calls a
+// behaviour: [perm], [limit], [hang], [todos], [usage], [subagent-wakeup], [wakeup],
+// [mapping], [finish-mid-turn], [bg-perm], [report-early], [no-report]. Never calls a
 // model.
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -36,15 +36,25 @@ let hanging = false;
 // sent while a tool runs). Recorded from 2.1.299.
 let held = null;
 
-function result(text, extra = {}) {
-  hanging = false;
-  send({ type: "result", subtype: "success", is_error: false, result: text, ...extra });
-}
-
 // Background work as Claude Code 2.1.300 streams it (OCD tasks t_mv9kega7a68bcf
 // and t_mv9m80r6e1495a): a subagent started with run_in_background and a
 // ScheduleWakeup outlive the turn, and Claude Code itself runs a new turn for
-// each subagent's completion notice.
+// each subagent's completion notice. With CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS
+// it reports "running" when a turn starts and "idle" only once no subagent
+// runs and no notice waits for its turn.
+let subagents = 0;
+let notices = 0;
+const sessionState = (state) =>
+  process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS === "1" &&
+  send({ type: "system", subtype: "session_state_changed", state });
+const turnOver = () => subagents === 0 && notices === 0 && sessionState("idle");
+
+function result(text, extra = {}) {
+  hanging = false;
+  send({ type: "result", subtype: "success", is_error: false, result: text, ...extra });
+  turnOver();
+}
+
 let toolSeq = 0;
 const say = (text) => send({ type: "assistant", message: { content: [{ type: "text", text }] } });
 function callTool(name, input, output, whileRunning = () => {}) {
@@ -58,6 +68,7 @@ function callTool(name, input, output, whileRunning = () => {}) {
   });
 }
 function launchSubagent(taskId) {
+  subagents += 1;
   callTool(
     "Agent",
     { description: taskId, run_in_background: true },
@@ -95,6 +106,8 @@ function stopWakeups() {
   );
 }
 function subagentFinished(taskId) {
+  subagents -= 1;
+  notices += 1;
   send({
     type: "system",
     subtype: "task_notification",
@@ -106,6 +119,8 @@ function subagentFinished(taskId) {
 }
 /** The turn Claude Code starts by itself for a subagent's completion notice. */
 function notificationTurn(taskId, work) {
+  notices -= 1;
+  sessionState("running");
   send({
     type: "user",
     origin: { kind: "task-notification" },
@@ -154,6 +169,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         errors: ["aborted"],
         terminal_reason: "aborted_streaming",
       });
+      turnOver();
     }
     return;
   }
@@ -172,6 +188,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return result(`folded: ${text}\n${report}`);
   }
   consume();
+  sessionState("running");
   if (text.includes("[queue]") || text.includes("[fold]")) {
     held = text.includes("[queue]") ? "queue" : "fold";
     return send({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } });
@@ -226,16 +243,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }, 250);
   }
   if (text.includes("[report-early]")) {
-    // The worker reports while a background shell it started still runs.
-    launchSubagent("dev-server");
-    return result(`Done; the dev server is still up.\n${report}`);
+    // The worker reports while a background subagent it started still runs.
+    launchSubagent("watcher");
+    return result(`Done; the watcher is still up.\n${report}`);
   }
-  if (text.includes("[queued]")) {
-    // The subagent finishes while the turn is still running: its notice is
-    // queued as the next turn, and the result says so.
+  if (text.includes("[wakeup]")) {
+    scheduleWakeup();
+    return result("Checking back in 20 minutes.");
+  }
+  if (text.includes("[finish-mid-turn]")) {
+    // The subagent finishes while the turn still runs: Claude Code reports the
+    // task finished at once, and delivers its notice in a turn after this one.
     launchSubagent("quick");
     subagentFinished("quick");
-    result("Launched a quick check.", { queued_turn_count: 1 });
+    result("Launched a quick check.");
     return notificationTurn("quick", () => result(`The check passed.\n${report}`));
   }
   if (text.includes("[bg-perm]")) {

@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 
 import { textEntry, toolEntry, type AdapterStatus } from "@ocd/core";
 
-import { ClaudeBackgroundWork, type ClaudeBackgroundMessage } from "./claude-background.ts";
+import {
+  ClaudeBackgroundWork,
+  SESSION_STATE_ENV,
+  type ClaudeBackgroundMessage,
+} from "./claude-background.ts";
 import { ClaudeTodoTracker } from "./claude-todos.ts";
 import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
@@ -26,12 +30,12 @@ import {
 
 // Claude Code worker adapter over print mode with stream-json on stdin and
 // stdout. One process per session, kept alive between turns; each turn ends
-// with exactly one `result` message, and yields rather than goes idle when
+// with exactly one `result` message, and yields rather than goes idle while
 // Claude Code will start the next turn itself (claude-background.ts).
-// Permission prompts come back over stdio
-// (`--permission-prompt-tool stdio`) as `can_use_tool` control requests and
-// are answered according to the profile's policy by the supervisor. Workers
-// die with the supervisor; `--resume <session id>` continues them later.
+// Permission prompts come back over stdio (`--permission-prompt-tool stdio`)
+// as `can_use_tool` control requests and are answered according to the
+// profile's policy by the supervisor. Workers die with the supervisor;
+// `--resume <session id>` continues them later.
 
 export const CLAUDE_TESTED_VERSIONS = ["2.1.296", "2.1.299"] as const;
 
@@ -267,7 +271,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     ];
     const proc = new JsonLineProcess(cmd, args, {
       cwd: spec.directory,
-      env: spec.env,
+      env: { ...spec.env, ...SESSION_STATE_ENV },
       onMessage: (m) => this.onMessage(state, m as ClaudeMessage),
       onError: (error) => this.options.onError?.(error, "claude message"),
       onInvalidLine: (line) =>
@@ -379,7 +383,7 @@ export class ClaudeAdapter implements HarnessAdapter {
         const failed =
           message.is_error === true ||
           (message.subtype !== undefined && message.subtype !== "success");
-        const yielded = !failed && session.background.continuesAfter(message, Date.now());
+        const yielded = !failed && session.background.continues(Date.now());
         // Once the worker's own turn is over, only its background work can still be asking.
         if (!yielded) session.pending.clear();
         // The next result after an interrupt belongs to the aborted turn, even
@@ -422,6 +426,11 @@ export class ClaudeAdapter implements HarnessAdapter {
         if (!yielded) this.scheduleIdleStop(session);
         return;
       }
+      case "system":
+        if (message.subtype === "session_state_changed" && session.status === "yielded")
+          this.settleYield(session, message.state);
+        this.emit({ type: "activity", sessionId });
+        return;
       default:
         if (message.type === "user" && message.isReplay) {
           // OCD's own prompt, now being worked on; not part of the transcript.
@@ -430,9 +439,21 @@ export class ClaudeAdapter implements HarnessAdapter {
           return;
         }
         if (message.type === "user") this.record(session, message);
-        if (message.type === "user" || message.type === "stream_event" || message.type === "system")
+        if (message.type === "user" || message.type === "stream_event")
           this.emit({ type: "activity", sessionId });
     }
+  }
+
+  /** A yielded session either runs a turn Claude Code started itself, or its work is over. */
+  private settleYield(session: ClaudeSession, state: unknown): void {
+    if (state === "running") {
+      session.status = "busy";
+    } else if (state === "idle" && !session.background.continues(Date.now())) {
+      session.status = "idle";
+      session.pending.clear();
+      this.scheduleIdleStop(session);
+    } else return;
+    this.emit({ type: "status", sessionId: session.sessionId, status: session.status });
   }
 
   /**

@@ -115,30 +115,50 @@ describe("Claude Code adapter", () => {
   });
 
   describe("a turn that ends while background work will continue it (#57)", () => {
-    const statuses = (events: AdapterEvent[]) =>
-      events.flatMap((e) => (e.type === "status" ? [e.status] : []));
+    /** The final message each time the adapter reports idle: what the supervisor would review. */
+    const idleMessages = (adapter: ClaudeAdapter, ref: { sessionId: string }) => {
+      const texts: Promise<string | null>[] = [];
+      adapter.subscribe((e) => {
+        if (e.type === "status" && e.status === "idle")
+          texts.push(adapter.inspect(ref).then((s) => s.lastAssistantText));
+      });
+      return () => Promise.all(texts);
+    };
 
     it("yields while mapping subagents run, and goes idle only after the last turn", async () => {
-      const { adapter, events, spec } = setup();
+      const { adapter, spec } = setup();
       const ref = await adapter.createSession(spec);
+      const idle = idleMessages(adapter, ref);
       await adapter.prompt(ref, "plan [mapping]");
-      const done = await until(
+      await until(
         () => adapter.inspect(ref),
         (s) => s.status === "idle",
       );
-      expect(done.lastAssistantText).toContain("ocd-report");
-      expect(statuses(events)).toEqual(["yielded", "yielded", "idle"]);
+      expect(await idle()).toEqual([expect.stringContaining("Both maps are in")]);
     });
 
-    it("yields when a finished subagent's notice is already queued as the next turn", async () => {
-      const { adapter, events, spec } = setup();
+    it("yields when a subagent finishes during the turn and its notice is not delivered yet", async () => {
+      const { adapter, spec } = setup();
       const ref = await adapter.createSession(spec);
-      await adapter.prompt(ref, "check [queued]");
+      const idle = idleMessages(adapter, ref);
+      await adapter.prompt(ref, "check [finish-mid-turn]");
       await until(
         () => adapter.inspect(ref),
-        (s) => s.status === "idle" && (s.lastAssistantText?.includes("passed") ?? false),
+        (s) => s.status === "idle",
       );
-      expect(statuses(events)).toEqual(["yielded", "idle"]);
+      expect(await idle()).toEqual([expect.stringContaining("The check passed")]);
+    });
+
+    it("stays yielded while a scheduled wakeup has not fired", async () => {
+      const { adapter, spec } = setup();
+      const ref = await adapter.createSession(spec);
+      await adapter.prompt(ref, "later [wakeup]");
+      await until(
+        () => adapter.inspect(ref),
+        (s) => s.lastAssistantText === "Checking back in 20 minutes.",
+      );
+      await delay(200);
+      expect((await adapter.inspect(ref)).status).toBe("yielded");
     });
 
     it("keeps a background subagent's permission request answerable after the turn ends", async () => {
@@ -260,7 +280,7 @@ describe("Claude Code adapter", () => {
       (s) => s.status === "idle",
     );
     expect((await adapter.inspect(ref)).lastAssistantText).toContain("claude did it");
-    expect(statuses).toEqual(["idle"]);
+    expect(statuses.filter((s) => s === "idle")).toEqual(["idle"]);
   });
 
   it("goes idle after one result when a message sent mid-turn was folded into it", async () => {

@@ -60,18 +60,22 @@ recorded per request; there is no sandbox.
   --session-id <uuid> --model <m> [--effort <e>] --permission-mode default
   --permission-prompt-tool stdio`. The process stays alive between turns; each
   turn ends with one `result` message.
-- A turn can end while work it started goes on: a subagent or shell started
-  with `run_in_background` (`system` `task_started`, until its
-  `task_notification`; `background_tasks_changed` lists the ones still
-  running), a `ScheduleWakeup` that has not fired (its `tool_use_result`
-  `scheduledFor`), or a turn already queued (`result.queued_turn_count`).
-  Claude Code then starts the next turn itself, so that turn's `result`
-  yields: OCD keeps the task running, keeps the process up, and does not ask
-  for a report yet. A yielded turn that does carry a valid report still ends
-  the run. A background subagent's permission requests stay answerable after
-  the worker's own turn has ended. (The turn shapes come from live 2.1.300
-  sessions; the stream fields were read from the 2.1.296 to 2.1.301 builds,
-  not yet recorded on the wire.)
+- A turn can end while work it started goes on: a subagent started with
+  `run_in_background`, a completion notice not yet delivered, or a
+  `ScheduleWakeup` that has not fired. Claude Code then starts the next turn
+  itself. OCD sets `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`, so Claude Code
+  reports `system` `session_state_changed`: `running` when a turn starts, and
+  `idle` only after its own wait for background agents and their notices.
+  A pending wakeup does not hold that state, so OCD also follows
+  `ScheduleWakeup` (`tool_use_result.scheduledFor`, `0` when stopped).
+  Between a `result` and that `idle`, or while a wakeup is armed, the session
+  is `yielded`: OCD keeps the task running and the process up, and does not
+  ask for a report yet. A yielded turn that does carry a valid report still
+  ends the run. A background subagent's permission requests stay answerable
+  after the worker's own turn has ended. Without session state events (a
+  build that ignores the variable) only wakeups yield. (The turn shapes come
+  from live 2.1.300 sessions; the stream fields were read from the 2.1.296
+  to 2.1.301 builds, not yet recorded on the wire.)
 - OCD chooses the session id up front; reattach uses `--resume <id>`.
 - Permission prompts arrive as `can_use_tool` control requests and are
   answered per the profile policy (`allow` approves with the original input,
