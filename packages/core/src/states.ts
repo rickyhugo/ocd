@@ -103,8 +103,8 @@ export const TAKEOVER_STATES: ReadonlySet<TaskState> = new Set([
 
 /** Why a task in each state cannot be resumed; null where it can. */
 export const RESUME_REFUSALS: Record<TaskState, string | null> = {
-  queued: "its worker has not started yet",
-  starting: "its worker is still starting",
+  queued: "its worker has not started yet; wait until it is running",
+  starting: "its worker is still starting; wait until it is running",
   running: "its worker is already running; send it instructions instead",
   blocked: null,
   ready_for_review:

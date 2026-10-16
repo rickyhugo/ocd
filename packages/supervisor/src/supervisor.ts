@@ -28,6 +28,7 @@ import {
   type Task,
   type TaskProgress,
   type TaskResult,
+  type TaskState,
   type TodoItem,
   type TaskTranscript,
   type WorkerReport,
@@ -122,11 +123,17 @@ function sanitizeReport(report: WorkerReport): WorkerReport {
 type ResumeVerdict = ApiError | { mode: "relaunch" } | { mode: "reattach"; sessionId: string };
 
 /**
- * Whether `actor` may resume `task` in `mode`. The manager may only reattach:
- * a relaunch starts an uncertain run over in a new session, so it stays the
- * human's call.
+ * Whether `actor` may resume `task` in `mode`, given the task's open attention.
+ * The manager may only reattach: a relaunch starts an uncertain run over in a
+ * new session, so it stays the human's call. A resume settles the task's open
+ * items, so the manager is also refused while one of them is the human's.
  */
-function resumeVerdict(task: Task, mode: "reattach" | "relaunch", actor: Actor): ResumeVerdict {
+function resumeVerdict(
+  task: Task,
+  mode: "reattach" | "relaunch",
+  actor: Actor,
+  open: readonly Attention[],
+): ResumeVerdict {
   const why = RESUME_REFUSALS[task.state];
   if (why) return conflict("not_resumable", `A ${task.state} task cannot be resumed: ${why}`);
   const relaunch = `ocd task resume ${task.id} --mode relaunch`;
@@ -143,6 +150,12 @@ function resumeVerdict(task: Task, mode: "reattach" | "relaunch", actor: Actor):
       );
     return { mode };
   }
+  const humanItem = actor === "human" ? undefined : open.find((a) => a.resolvableBy === "human");
+  if (humanItem)
+    return forbidden(
+      "human_only",
+      `The open ${humanItem.kind} "${truncate(humanItem.reason, 300)}" is the human's to settle, and resuming would settle it. Ask the human to resume the task (\`ocd task resume ${task.id} --mode reattach\`).`,
+    );
   if (!task.sessionId)
     return conflict(
       "no_session",
@@ -151,6 +164,10 @@ function resumeVerdict(task: Task, mode: "reattach" | "relaunch", actor: Actor):
         : `No recorded session to reattach; only the human can relaunch it (\`${relaunch}\`)`,
     );
   return { mode, sessionId: task.sessionId };
+}
+
+function aTask(state: TaskState): string {
+  return `${/^[aeiou]/.test(state) ? "an" : "a"} ${state} task`;
 }
 
 const ACTIVITY_WRITE_INTERVAL_MS = 10_000;
@@ -1606,7 +1623,18 @@ export class Supervisor {
     {
       const task = this.store.requireTask(taskId);
       if (!["running", "blocked", "ready_for_review"].includes(task.state)) {
-        const verdict = resumeVerdict(task, "reattach", actor);
+        const why = RESUME_REFUSALS[task.state];
+        if (why)
+          throw conflict(
+            "not_steerable",
+            `Cannot send instructions to ${aTask(task.state)}: ${why}`,
+          );
+        const verdict = resumeVerdict(
+          task,
+          "reattach",
+          actor,
+          this.store.listAttention({ taskId, status: "open" }),
+        );
         const guidance =
           verdict instanceof ApiError
             ? verdict.message
@@ -1615,7 +1643,7 @@ export class Supervisor {
               : "If the human wants it continued, resume it with ocd_resume_task: the worker continues in the same session and workspace. Then send instructions.";
         throw conflict(
           "not_steerable",
-          `Cannot send instructions to a ${task.state} task. ${guidance}`,
+          `Cannot send instructions to ${aTask(task.state)}. ${guidance}`,
         );
       }
       if (!task.sessionId) throw conflict("no_session", "Task has no worker session yet");
@@ -1889,7 +1917,12 @@ export class Supervisor {
   async resume(taskId: string, mode: "reattach" | "relaunch", actor: Actor): Promise<Task> {
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
-      const verdict = resumeVerdict(task, mode, actor);
+      const verdict = resumeVerdict(
+        task,
+        mode,
+        actor,
+        this.store.listAttention({ taskId, status: "open" }),
+      );
       if (verdict instanceof ApiError) throw verdict;
       const adapter = this.adapterFor(task.harness);
       // Open requests are settled only once the resume is known to go ahead.
