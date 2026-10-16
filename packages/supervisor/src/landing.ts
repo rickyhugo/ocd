@@ -1,4 +1,5 @@
 import {
+  capabilitiesOf,
   redact,
   truncate,
   type Actor,
@@ -22,6 +23,15 @@ import type { WorkspaceManager } from "./workspace.ts";
 // allows, clean up) or directly (one push the human confirmed). It takes the
 // narrow slice of the store, workspace and host it needs, so it can be driven
 // with fakes; the Supervisor supplies task locking, accepting and cancelling.
+
+/** Refuses before any side effect, so a task without a workspace stays reviewable. */
+function assertLandable(task: Task): void {
+  if (!capabilitiesOf(task).land)
+    throw conflict(
+      "no_workspace",
+      `Task ${task.id} has no workspace, so there is nothing to land; accept it instead`,
+    );
+}
 
 /** Pull request merge refusals that `land` reports as what is left, not as failures. */
 const PR_WAITING = new Set([
@@ -154,6 +164,7 @@ export class LandingService {
           `Only completed or cancelled tasks can be cleaned up (task is ${task.state})`,
         );
       }
+      if (!capabilitiesOf(task).worktree) return task;
       const repo = this.o.store.requireRepo(task.repo, { includeRetired: true });
       const branch = task.branch ?? this.o.workspaces.branchFor(taskId);
       const safety = await this.o.workspaces.branchSafety(repo.path, task.workspacePath, branch);
@@ -224,6 +235,7 @@ export class LandingService {
   ): Promise<Task> {
     return this.o.withTaskLock(taskId, async () => {
       const task = this.o.store.requireTask(taskId);
+      assertLandable(task);
       if (task.pullRequestUrl) return task;
       if (task.state !== "ready_for_review" && task.state !== "completed") {
         throw conflict(
@@ -445,6 +457,7 @@ export class LandingService {
   }
 
   private async planLanding(task: Task): Promise<LandPlan> {
+    assertLandable(task);
     if (task.state !== "ready_for_review" && task.state !== "completed")
       throw conflict("not_reviewable", `Land a task once its work is done (task is ${task.state})`);
     if (!task.workspacePath || !task.branch)
@@ -499,6 +512,7 @@ export class LandingService {
     input: { direct: boolean; commit: boolean; confirm?: string | undefined },
     actor: Actor,
   ): Promise<LandResult> {
+    assertLandable(this.o.store.requireTask(taskId));
     return input.direct
       ? this.landDirect(taskId, input.confirm, actor)
       : this.landThroughPullRequest(taskId, input.commit, actor);

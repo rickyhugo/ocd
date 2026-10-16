@@ -25,6 +25,7 @@ import type {
   TaskEventType,
   TaskResult,
   TaskState,
+  WorkspaceMode,
 } from "@ocd/core";
 
 // Timestamps are ISO-8601 UTC strings. JSON columns hold validated values only.
@@ -58,6 +59,7 @@ export const tasks = sqliteTable(
     instructions: text("instructions").notNull(),
     acceptanceCriteria: text("acceptance_criteria", { mode: "json" }).$type<string[]>().notNull(),
     state: text("state").$type<TaskState>().notNull(),
+    workspaceMode: text("workspace_mode").$type<WorkspaceMode>().notNull().default("isolated"),
     workspacePath: text("workspace_path"),
     branch: text("branch"),
     baseRef: text("base_ref"),

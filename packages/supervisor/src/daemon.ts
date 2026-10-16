@@ -181,6 +181,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   ensurePrivateDir(paths.runDir);
   ensurePrivateDir(paths.logs);
   ensurePrivateDir(paths.workspaces);
+  ensurePrivateDir(paths.scratch);
   ensurePrivateDir(paths.backups);
   // The token lives next to the socket, which OCD_SOCKET may move out of runDir.
   if (!existsSync(dirname(paths.token))) ensurePrivateDir(dirname(paths.token));
@@ -343,6 +344,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const supervisor = new Supervisor({
       onLanded: (repo) => updater?.landed(repo),
       sandboxRoot: join(paths.home, "sandbox"),
+      scratchRoot: paths.scratch,
       store,
       config,
       adapters,

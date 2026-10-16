@@ -14,6 +14,7 @@ function task(id: string, state: Task["state"], extra: Partial<Task> = {}): Task
     title: `Task ${id}`,
     repo: "dotfiles",
     state,
+    workspaceMode: "isolated",
     createdAt: minutesAgo(60),
     updatedAt: minutesAgo(5),
     startedAt: minutesAgo(30),

@@ -39,6 +39,7 @@ function task(over: Partial<Task> = {}): Task {
     instructions: "SECRET INSTRUCTIONS that must never be shown",
     acceptanceCriteria: [],
     state: "running",
+    workspaceMode: "isolated",
     workspacePath: null,
     branch: null,
     baseRef: null,

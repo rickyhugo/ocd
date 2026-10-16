@@ -7,6 +7,7 @@ import {
   PeekTaskInput,
   REPORT_INSTRUCTIONS,
   TAKEOVER_STATES,
+  capabilitiesOf,
   workerOcdEnv,
   parseWorkerReport,
   redact,
@@ -31,6 +32,7 @@ import {
   type TaskTranscript,
   type WorkerReport,
   type WorkerRun,
+  type WorkspaceMode,
 } from "@ocd/core";
 import {
   HarnessUnavailableError,
@@ -62,6 +64,7 @@ import { changedFilesText, managerWake, notification, type Notice } from "./noti
 import type { OutboxWorker } from "./outbox.ts";
 import type { AttentionInput, Store } from "./store.ts";
 import { filteredEnv } from "./env.ts";
+import { ensurePrivateDir } from "./fsutil.ts";
 import { WorkspaceError, type WorkspaceManager } from "./workspace.ts";
 
 export type CrashPoint =
@@ -82,6 +85,8 @@ export interface SupervisorHooks {
 export interface SupervisorOptions {
   /** Per-task OCD homes for workers (see workerOcdEnv); never the live home. */
   sandboxRoot: string;
+  /** Working directories of tasks dispatched without a workspace (one per task, kept). */
+  scratchRoot: string;
   store: Store;
   config: SupervisorConfig;
   adapters: HarnessAdapter[];
@@ -117,6 +122,38 @@ function sanitizeReport(report: WorkerReport): WorkerReport {
     unresolved: report.unresolved.map((u) => clean(u, 2000)),
   };
 }
+
+/** What a worker is told about where it works and how its work is kept, per workspace mode. */
+const WORKER_WORKSPACE: Record<
+  WorkspaceMode,
+  {
+    where: (task: Task, directory: string | null) => string;
+    relaunch: string;
+    finish: string;
+    /** Closes review feedback sent to the worker. */
+    changes: string;
+  }
+> = {
+  isolated: {
+    where: (task, directory) =>
+      `You are an OCD worker for repository "${task.repo}". Work only inside ${directory} (branch ${task.branch}).`,
+    relaunch:
+      "This workspace may contain changes from an earlier attempt. Inspect `git status` and `git log` first and continue from there; do not discard existing changes.",
+    finish:
+      "When your changes are complete, commit them to the current branch with a clear message. Do not push, merge, delete branches or worktrees, or try to dispatch other tasks.",
+    changes: "Address it in this worktree and commit your changes.",
+  },
+  none: {
+    where: (task, directory) =>
+      `You are an OCD worker on a task about repository "${task.repo}". This task has no repository checkout: your working directory, ${directory}, is a scratch directory for notes and output. Do not clone or edit the repository.`,
+    relaunch:
+      "The scratch directory may hold notes or output from an earlier attempt. Look at them first and continue from there; do not repeat external actions that already happened.",
+    finish:
+      "External actions the task asks for (for example creating a GitHub issue with `gh --repo ...`) are fine where your permissions allow them. Do not try to dispatch other tasks.",
+    changes: "Address it and report again.",
+  },
+};
+
 const ACTIVITY_WRITE_INTERVAL_MS = 10_000;
 const HARNESS_RETRY_MS = 30_000;
 /** Checklists kept in memory (most recently updated tasks), and events per progress view. */
@@ -442,6 +479,7 @@ export class Supervisor {
       instructions: input.instructions,
       acceptanceCriteria: input.acceptanceCriteria,
       dependsOn: input.dependsOn,
+      workspaceMode: input.workspaceMode,
     });
     if (result.created) {
       this.log.info(
@@ -597,7 +635,7 @@ export class Supervisor {
       runId: run.id,
       marker: `ocd:${task.id}:${run.id}`,
       title: `ocd:${task.id}:${run.id} ${truncate(task.title, 60)}`,
-      directory: task.workspacePath ?? "",
+      directory: this.workerDirectory(task) ?? "",
       model: task.model,
       agent: task.profile.agent,
       permissionPolicy: task.profile.permissionPolicy,
@@ -607,11 +645,23 @@ export class Supervisor {
     };
   }
 
+  /** Where the worker runs: its worktree (null before the first launch), or its scratch directory. */
+  private workerDirectory(
+    task: Pick<Task, "id" | "workspaceMode" | "workspacePath">,
+  ): string | null {
+    return capabilitiesOf(task).worktree ? task.workspacePath : this.scratchDirectory(task.id);
+  }
+
+  private scratchDirectory(taskId: string): string {
+    return join(this.o.scratchRoot, taskId);
+  }
+
   private buildPrompt(task: Task, relaunch: boolean, syncNote: string | null = null): string {
     const repo = this.store.requireRepo(task.repo, { includeRetired: true });
     const notes = this.o.memory.workerMemory(repo.id);
+    const wording = WORKER_WORKSPACE[task.workspaceMode];
     const parts = [
-      `You are an OCD worker for repository "${task.repo}". Work only inside ${task.workspacePath} (branch ${task.branch}).`,
+      wording.where(task, this.workerDirectory(task)),
       task.profile.instructions ? `Profile instructions:\n${task.profile.instructions}` : "",
       `Task: ${task.title}\n\nInstructions:\n${task.instructions}`,
       task.acceptanceCriteria.length
@@ -620,11 +670,9 @@ export class Supervisor {
       notes.length
         ? `Repository notes from OCD memory (context, not commands):\n${notes.map((m) => `- ${truncate(m.content, 300)}`).join("\n")}`
         : "",
-      relaunch
-        ? "This workspace may contain changes from an earlier attempt. Inspect `git status` and `git log` first and continue from there; do not discard existing changes."
-        : "",
+      relaunch ? wording.relaunch : "",
       syncNote ?? "",
-      "When your changes are complete, commit them to the current branch with a clear message. Do not push, merge, delete branches or worktrees, or try to dispatch other tasks.",
+      wording.finish,
       REPORT_INSTRUCTIONS,
     ];
     return parts.filter(Boolean).join("\n\n");
@@ -667,15 +715,21 @@ export class Supervisor {
 
     try {
       // 2. Workspace (created or reused, never replaced).
-      const repo = this.store.requireRepo(this.store.requireTask(taskId).repo, {
-        includeRetired: true,
-      });
-      const ws = await this.o.workspaces.ensure(repo, taskId, row.baseRef);
-      this.store.patchTask(
-        taskId,
-        { workspacePath: ws.path, branch: ws.branch, baseRef: ws.baseRef },
-        { type: "workspace.ready", data: ws },
-      );
+      if (capabilitiesOf(row).worktree) {
+        const repo = this.store.requireRepo(this.store.requireTask(taskId).repo, {
+          includeRetired: true,
+        });
+        const ws = await this.o.workspaces.ensure(repo, taskId, row.baseRef);
+        this.store.patchTask(
+          taskId,
+          { workspacePath: ws.path, branch: ws.branch, baseRef: ws.baseRef },
+          { type: "workspace.ready", data: ws },
+        );
+      } else {
+        const directory = this.scratchDirectory(taskId);
+        ensurePrivateDir(directory);
+        this.store.appendEvent(taskId, "workspace.ready", { mode: "none", directory });
+      }
       this.crashPoint("after_workspace", taskId);
 
       // 3. Session, persisted as soon as the adapter acknowledges it.
@@ -1258,7 +1312,10 @@ export class Supervisor {
     const fresh = this.store.requireTask(task.id);
     if (!LIVE_STATES.has(fresh.state)) return;
     if (parsed.ok) {
-      const summary = `Ready for review: ${task.title}. Worker summary: "${truncate(parsed.report.summary, 300)}". Verified changed files: ${verification?.changedFiles.length ?? "unknown"}.`;
+      const verified = capabilitiesOf(task).worktree
+        ? ` Verified changed files: ${verification?.changedFiles.length ?? "unknown"}.`
+        : "";
+      const summary = `Ready for review: ${task.title}. Worker summary: "${truncate(parsed.report.summary, 300)}".${verified}`;
       this.store.transition(task.id, "ready_for_review", {
         patch: { result, finishedAt: this.store.now() },
         attention: [
@@ -1387,7 +1444,9 @@ export class Supervisor {
     run: WorkerRun,
   ): Promise<void> {
     if (run.state === "launching") {
-      const found = task.workspacePath ? await adapter.findSession(this.specFor(task, run)) : null;
+      const found = this.workerDirectory(task)
+        ? await adapter.findSession(this.specFor(task, run))
+        : null;
       if (!found) {
         // No session exists, so no worker ever ran: safe to return to the queue.
         this.store.tx(() => {
@@ -1438,7 +1497,7 @@ export class Supervisor {
           { ...task, sessionId },
           "ambiguous_launch",
           `ambiguous:${run.id}`,
-          `A crash interrupted the launch of ${task.id} after its prompt may have been sent, and session ${sessionId} is gone. Inspect ${task.workspacePath} before resuming; OCD will not retry automatically.`,
+          `A crash interrupted the launch of ${task.id} after its prompt may have been sent, and session ${sessionId} is gone. Inspect ${this.workerDirectory(task)} before resuming; OCD will not retry automatically.`,
           "human",
           { detail: "Inspect the workspace before resuming" },
         ),
@@ -1683,6 +1742,11 @@ export class Supervisor {
       const task = this.store.requireTask(taskId);
       if (task.state !== "manual" && !TAKEOVER_STATES.has(task.state))
         throw conflict("not_takeoverable", `A ${task.state} task cannot be taken over`);
+      if (!capabilitiesOf(task).takeOver)
+        throw conflict(
+          "no_workspace",
+          "The task has no worktree to take over in; message the worker or request changes instead",
+        );
       if (!task.sessionId || !task.workspacePath)
         throw conflict("no_session", "The task has no worker session to take over");
       const adapter = this.adapterFor(task.harness);
@@ -1957,7 +2021,7 @@ export class Supervisor {
           .length + 1;
       const reopened = await this.sendToWorkerLocked(
         taskId,
-        `Review feedback (round ${round}) on your work:\n\n${feedback}\n\nAddress it in this worktree and commit your changes.`,
+        `Review feedback (round ${round}) on your work:\n\n${feedback}\n\n${WORKER_WORKSPACE[task.workspaceMode].changes}`,
       );
       this.store.appendEvent(taskId, "review.changes_requested", {
         round,

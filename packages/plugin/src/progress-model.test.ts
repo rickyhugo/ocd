@@ -26,6 +26,7 @@ function task(id: string, state: Task["state"], extra: Partial<Task> = {}): Task
     repo: "dotfiles",
     harness: "claude",
     state,
+    workspaceMode: "isolated",
     pullRequestUrl: null,
     createdAt: minutesAgo(60),
     updatedAt: minutesAgo(5),
