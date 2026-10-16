@@ -903,7 +903,7 @@ export class Supervisor {
       await this.withTaskLock(row.id, async () => {
         switch (event.type) {
           case "activity":
-            this.noteResponse(row.id);
+            if (event.output) this.noteResponse(row.id);
             this.recordActivity(row.id);
             return;
           case "interaction":

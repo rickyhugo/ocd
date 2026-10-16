@@ -98,6 +98,36 @@ describe("Codex adapter", () => {
     expect(snap.lastAssistantText).toContain("ocd-report");
   });
 
+  it("marks the agent's items as worker output, never the userMessage item echoing the prompt", async () => {
+    const { adapter, events, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "[transcript]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+    const output = events.flatMap((e) => (e.type === "activity" ? [e.output === true] : []));
+    // userMessage started and completed, a reasoning delta, then agent items with one
+    // message delta among them (deltas stay unmarked), then the final message
+    expect(output).toEqual([
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
   it("reports plan updates as the checklist, without the explanation", async () => {
     const { adapter, events, spec } = setup();
     const ref = await adapter.createSession(spec);

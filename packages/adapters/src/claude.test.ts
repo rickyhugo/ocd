@@ -114,6 +114,32 @@ describe("Claude Code adapter", () => {
     );
   });
 
+  it("marks assistant messages and streaming as worker output, never the prompt echo, init or tool results", async () => {
+    const { adapter, events, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "[transcript]");
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+    const output = events.flatMap((e) => (e.type === "activity" ? [e.output === true] : []));
+    // echo, init, "working", u1-u3 and the repeat of u3, a stream_event, the tool result, u5-u7
+    expect(output).toEqual([
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+    ]);
+  });
+
   it("reports the worker's task list from the stream as todos", async () => {
     const { adapter, events, spec } = setup();
     const ref = await adapter.createSession(spec);

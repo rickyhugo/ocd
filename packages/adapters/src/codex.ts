@@ -504,7 +504,7 @@ export class CodexAdapter implements HarnessAdapter {
             ),
           );
         this.record(session, params["item"], params["startedAtMs"]);
-        this.emit({ type: "activity", sessionId });
+        this.emit(itemActivity(sessionId, item.type));
         return;
       }
       case "item/completed": {
@@ -514,7 +514,7 @@ export class CodexAdapter implements HarnessAdapter {
           session.turnTextSet = true;
         }
         this.record(session, params["item"], params["completedAtMs"]);
-        this.emit({ type: "activity", sessionId });
+        this.emit(itemActivity(sessionId, item.type));
         return;
       }
       case "turn/plan/updated": {
@@ -915,6 +915,13 @@ type CodexItem = {
   query?: unknown;
   path?: unknown;
 };
+
+/** A userMessage item is OCD's own prompt; every other item is the worker's. */
+function itemActivity(sessionId: string, itemType: string | undefined): AdapterEvent {
+  return itemType && itemType !== "userMessage"
+    ? { type: "activity", sessionId, output: true }
+    : { type: "activity", sessionId };
+}
 
 function codexStatus(status: unknown): ToolStatus {
   switch (status) {

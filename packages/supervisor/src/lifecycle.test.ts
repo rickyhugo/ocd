@@ -1,3 +1,4 @@
+import { defaultFakeScript } from "@ocd/adapters";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { setupRepo, startHarness, waitFor, waitForState, type Harness } from "./testkit.ts";
@@ -32,6 +33,29 @@ describe("task lifecycle", () => {
 
     const [listed] = await h.human.listTasks({ open: true });
     expect(listed?.lifecycle).toEqual(detail.task.lifecycle);
+  });
+
+  it("keeps starting the worker through the harness echoing the prompt, until the worker's own output", async () => {
+    h = await startHarness({
+      fake: {
+        script: (prompt, spec) => [{ type: "wait", ms: 3000 }, ...defaultFakeScript(prompt, spec)],
+      },
+    });
+    await setupRepo(h, "app");
+    const { task } = await h.human.dispatch({
+      repo: "app",
+      title: "Slow start",
+      instructions: "Write the file",
+      idempotencyKey: "lifecycle-echo",
+    });
+    const running = await waitForState(h, task.id, "running");
+    expect(running.task.lifecycle.stage).toBe("starting_worker");
+    expect(running.events.filter((e) => e.type === "worker.responded")).toHaveLength(0);
+
+    const done = await waitForState(h, task.id, "ready_for_review", 15_000);
+    const starting = done.task.lifecycle.spans.find((s) => s.stage === "starting_worker")!;
+    expect(Date.parse(starting.to!) - Date.parse(starting.from)).toBeGreaterThanOrEqual(2500);
+    expect(done.events.filter((e) => e.type === "worker.responded")).toHaveLength(1);
   });
 
   it("asks a worker whose harness reports checklists to record its plan first", async () => {
