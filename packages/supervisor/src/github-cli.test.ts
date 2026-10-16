@@ -404,6 +404,7 @@ describe("pull request actions in the supervisor", () => {
 
     await expect(h.manager("mgr").openPullRequest(task.id, { commit: true })).rejects.toMatchObject(
       {
+        status: 422,
         code: "gh_not_found",
         message: expect.stringContaining("ocd restart"),
       },
@@ -430,6 +431,7 @@ describe("pull request actions in the supervisor", () => {
     h = await startHarness({ pullRequests: factory });
     const off = await finishedTaskWithOrigin(h, "gh-disabled");
     await expect(h.human.openPullRequest(off.id, { commit: true })).rejects.toMatchObject({
+      status: 422,
       code: "pr_unavailable",
       message: expect.stringContaining('"github": { "enabled": true }'),
     });
@@ -470,6 +472,7 @@ describe("pull request actions in the supervisor", () => {
       "gh pr view failed: error connecting to api.github.com",
     );
     await expect(h.manager("mgr").mergePullRequest(task.id)).rejects.toMatchObject({
+      status: 503,
       code: "gh_unreachable",
     });
     expect(prs.merged).toEqual([]);

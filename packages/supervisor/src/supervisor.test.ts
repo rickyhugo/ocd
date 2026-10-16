@@ -92,7 +92,7 @@ describe("dispatch and review", () => {
         instructions: "i",
         idempotencyKey: "k-12345678",
       }),
-    ).rejects.toMatchObject({ code: "harness_unsupported" });
+    ).rejects.toMatchObject({ status: 422, code: "harness_unsupported" });
   });
 
   it("rejects unsupported harness choices (AT2)", async () => {
@@ -143,7 +143,7 @@ describe("dispatch and review", () => {
         instructions: "same",
         idempotencyKey: "dup-key-1",
       }),
-    ).rejects.toMatchObject({ code: "idempotency_mismatch" });
+    ).rejects.toMatchObject({ status: 409, code: "idempotency_mismatch" });
     await expect(
       h.human.dispatch({
         repo: "app",
