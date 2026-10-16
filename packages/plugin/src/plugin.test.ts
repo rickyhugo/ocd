@@ -291,6 +291,7 @@ describe("tool input schemas", () => {
       "depends_on",
     ]);
     expect(properties("peek_task")).toEqual(["id", "limit", "before", "reasoning_summaries"]);
+    expect(properties("resume_task")).toEqual(["id"]);
     expect(properties("remember")).toEqual([
       "scope",
       "content",

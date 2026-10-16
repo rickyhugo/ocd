@@ -207,6 +207,14 @@ export function buildTools(
         `Sent. ${taskLine(await clientFor(ctx.sessionID, ctx.directory).sendToWorker(i.id, i.instructions))}`,
     }),
     defineTool({
+      name: "resume_task",
+      description:
+        "Continue a stopped task in its same worker session and workspace; the worker is told to continue and report. Only when the human asks for it in this conversation. It applies to a needs_attention task that stopped without a valid report, and to a blocked task whose only open requests are yours. Anything else is refused with the reason, including any task with an open request for the human (failures, decisions, permissions); then ask the human. Approves nothing and resets nothing. Starting over in a new session is the human's call (`ocd task resume <id> --mode relaunch`).",
+      input: z.object({ id: taskId() }),
+      run: async ({ id }, ctx) =>
+        `Resumed. ${taskLine(await clientFor(ctx.sessionID, ctx.directory).resumeTask(id, "reattach"))}`,
+    }),
+    defineTool({
       name: "cancel_task",
       description: "Cancel a task. The worker is interrupted and its workspace is preserved.",
       input: z.object({ id: taskId(), reason: CancelTaskInput.shape.reason.describe("Why") }),

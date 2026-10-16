@@ -101,6 +101,22 @@ export const TAKEOVER_STATES: ReadonlySet<TaskState> = new Set([
   "failed",
 ]);
 
+/** Why a task in each state cannot be resumed; null where it can. */
+export const RESUME_REFUSALS: Record<TaskState, string | null> = {
+  queued: "its worker has not started yet; wait until it is running",
+  starting: "its worker is still starting; wait until it is running",
+  running: "its worker is already running; send it instructions instead",
+  blocked: null,
+  ready_for_review:
+    "its worker already reported; send follow-up instructions or request changes instead",
+  completed: "it is finished",
+  failed: null,
+  interrupted: null,
+  cancelled: "it was cancelled",
+  needs_attention: null,
+  manual: "the human is driving its session; wait until they hand it back",
+};
+
 export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set(["completed", "cancelled"]);
 
 export function canTransition(from: TaskState, to: TaskState): boolean {

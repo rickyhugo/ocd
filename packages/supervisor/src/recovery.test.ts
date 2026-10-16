@@ -106,6 +106,10 @@ describe("crash boundaries (AT5)", () => {
 
     // Explicit, human-only recovery relaunches in the same workspace.
     await expect(h.manager("x").resumeTask(task.id, "relaunch")).rejects.toBeDefined();
+    await expect(h.manager("mgr").resumeTask(task.id, "relaunch")).rejects.toMatchObject({
+      code: "human_only",
+      message: expect.stringContaining(`ocd task resume ${task.id} --mode relaunch`),
+    });
     await h.human.resumeTask(task.id, "relaunch");
     await waitFor(
       () => h.human.inspectTask(task.id),

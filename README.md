@@ -604,15 +604,16 @@ says why (`available: false` with notes) instead of guessing.
 5. Workers commit to `ocd/<task>` (never push). Nothing is merged
    automatically. You decide what happens next:
 
-   | Command (manager tool)                                             | What it does                                                                                                                |
-   | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-   | `ocd task diff <id> [--stat]` (`ocd_diff_task`)                    | Read the changes: everything since the branch left its base, uncommitted files included.                                    |
-   | `ocd task request-changes <id> <feedback>` (`ocd_request_changes`) | Send review feedback to the same worker; the task comes back for review.                                                    |
-   | `ocd task accept <id>` (`ocd_accept_task`)                         | Approve the work; the worktree is kept.                                                                                     |
-   | `ocd task land <id> [--commit] [--wait]` (`ocd_land_task`)         | Accept, open or reuse a pull request, merge it once GitHub allows, remove the worktree and branches. Run again to continue. |
-   | `ocd task land <id> --direct`                                      | Escape hatch: push straight to the base branch, after you confirm the exact commits.                                        |
-   | `ocd task cleanup <id>` (`ocd_cleanup_task`)                       | Remove a finished task's worktree and branch, refusing while that would lose work.                                          |
-   | `ocd task discard <id>`                                            | Cancel if needed and delete the worktree and branch, work included (asks first).                                            |
+   | Command (manager tool)                                                              | What it does                                                                                                                                   |
+   | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `ocd task diff <id> [--stat]` (`ocd_diff_task`)                                     | Read the changes: everything since the branch left its base, uncommitted files included.                                                       |
+   | `ocd task request-changes <id> <feedback>` (`ocd_request_changes`)                  | Send review feedback to the same worker; the task comes back for review.                                                                       |
+   | `ocd task resume <id> --mode reattach\|relaunch` (`ocd_resume_task`, reattach only) | Continue a task that stopped without finishing. Reattach keeps the session and workspace; relaunch starts a new session in the same workspace. |
+   | `ocd task accept <id>` (`ocd_accept_task`)                                          | Approve the work; the worktree is kept.                                                                                                        |
+   | `ocd task land <id> [--commit] [--wait]` (`ocd_land_task`)                          | Accept, open or reuse a pull request, merge it once GitHub allows, remove the worktree and branches. Run again to continue.                    |
+   | `ocd task land <id> --direct`                                                       | Escape hatch: push straight to the base branch, after you confirm the exact commits.                                                           |
+   | `ocd task cleanup <id>` (`ocd_cleanup_task`)                                        | Remove a finished task's worktree and branch, refusing while that would lose work.                                                             |
+   | `ocd task discard <id>`                                                             | Cancel if needed and delete the worktree and branch, work included (asks first).                                                               |
 
 6. **Landing through a pull request** (needs `github.enabled`) goes as far as
    it safely can and says what is left: "checks still running", a failing
@@ -659,7 +660,8 @@ says why (`available: false` with notes) instead of guessing.
 Crashes, restarts, lost event streams and sleep are reconciled conservatively:
 uncertain launches become `needs_attention` instead of being retried, and
 interrupted workers are resumed only with `ocd task resume <id> --mode
-reattach|relaunch`.
+reattach|relaunch`. The manager can reattach with `ocd_resume_task` when you
+ask it to, but not while the task has an open request for you.
 
 ## Security model and limits
 

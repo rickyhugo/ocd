@@ -6,6 +6,7 @@ import {
   LIVE_STATES,
   PeekTaskInput,
   REPORT_INSTRUCTIONS,
+  RESUME_REFUSALS,
   TAKEOVER_STATES,
   workerOcdEnv,
   parseWorkerReport,
@@ -27,6 +28,7 @@ import {
   type Task,
   type TaskProgress,
   type TaskResult,
+  type TaskState,
   type TodoItem,
   type TaskTranscript,
   type WorkerReport,
@@ -117,6 +119,67 @@ function sanitizeReport(report: WorkerReport): WorkerReport {
     unresolved: report.unresolved.map((u) => clean(u, 2000)),
   };
 }
+
+type ResumeVerdict = ApiError | { mode: "relaunch" } | { mode: "reattach"; sessionId: string };
+
+/**
+ * Whether `actor` may resume `task` in `mode`, given the task's open attention.
+ * The manager may only reattach: a relaunch starts an uncertain run over in a
+ * new session, so it stays the human's call. It is also refused while an open
+ * item on the task is the human's (humanItemRefusal).
+ */
+function resumeVerdict(
+  task: Task,
+  mode: "reattach" | "relaunch",
+  actor: Actor,
+  open: readonly Attention[],
+): ResumeVerdict {
+  const why = RESUME_REFUSALS[task.state];
+  if (why) return conflict("not_resumable", `A ${task.state} task cannot be resumed: ${why}`);
+  const relaunch = `ocd task resume ${task.id} --mode relaunch`;
+  if (mode === "relaunch") {
+    if (actor !== "human")
+      return forbidden(
+        "human_only",
+        `Only the human can start a task over in a new session (\`${relaunch}\`)`,
+      );
+    if (task.state === "blocked")
+      return conflict(
+        "not_resumable",
+        "Cancel or reattach a blocked task instead of relaunching it",
+      );
+    return { mode };
+  }
+  const held = humanItemRefusal(actor, open);
+  if (held) return held;
+  if (!task.sessionId)
+    return conflict(
+      "no_session",
+      actor === "human"
+        ? "No recorded session to reattach; use relaunch"
+        : `No recorded session to reattach; only the human can relaunch it (\`${relaunch}\`)`,
+    );
+  return { mode, sessionId: task.sessionId };
+}
+
+/**
+ * The manager may not continue a stopped or blocked worker while an open item
+ * on its task is the human's: the task would move on with the human's call
+ * unmade, or a resume would settle it for them.
+ */
+function humanItemRefusal(actor: Actor, open: readonly Attention[]): ApiError | undefined {
+  const item = actor === "human" ? undefined : open.find((a) => a.resolvableBy === "human");
+  if (item)
+    return forbidden(
+      "human_only",
+      `The open ${item.kind} "${truncate(item.reason, 300)}" is the human's to settle. Ask the human.`,
+    );
+}
+
+function aTask(state: TaskState): string {
+  return `${/^[aeiou]/.test(state) ? "an" : "a"} ${state} task`;
+}
+
 const ACTIVITY_WRITE_INTERVAL_MS = 10_000;
 const HARNESS_RETRY_MS = 30_000;
 /** Checklists kept in memory (most recently updated tasks), and events per progress view. */
@@ -1557,18 +1620,49 @@ export class Supervisor {
     return this.peeks.peek(taskId, input);
   }
 
-  async sendToWorker(taskId: string, instructions: string): Promise<Task> {
-    return this.withTaskLock(taskId, () => this.sendToWorkerLocked(taskId, instructions));
+  async sendToWorker(taskId: string, instructions: string, actor: Actor): Promise<Task> {
+    return this.withTaskLock(taskId, () => this.sendToWorkerLocked(taskId, instructions, actor));
   }
 
   /** sendToWorker() inside the task lock. */
-  private async sendToWorkerLocked(taskId: string, instructions: string): Promise<Task> {
+  private async sendToWorkerLocked(
+    taskId: string,
+    instructions: string,
+    actor: Actor,
+  ): Promise<Task> {
     {
       const task = this.store.requireTask(taskId);
-      if (!task.sessionId) throw conflict("no_session", "Task has no worker session yet");
       if (!["running", "blocked", "ready_for_review"].includes(task.state)) {
-        throw conflict("not_steerable", `Cannot send instructions to a ${task.state} task`);
+        const why = RESUME_REFUSALS[task.state];
+        if (why)
+          throw conflict(
+            "not_steerable",
+            `Cannot send instructions to ${aTask(task.state)}: ${why}`,
+          );
+        const verdict = resumeVerdict(
+          task,
+          "reattach",
+          actor,
+          this.store.listAttention({ taskId, status: "open" }),
+        );
+        const guidance =
+          verdict instanceof ApiError
+            ? verdict.message
+            : actor === "human"
+              ? `Resume it with \`ocd task resume ${task.id} --mode reattach\`, then send instructions.`
+              : "If the human wants it continued, resume it with ocd_resume_task: the worker continues in the same session and workspace. Then send instructions.";
+        throw conflict(
+          "not_steerable",
+          `Cannot send instructions to ${aTask(task.state)}. ${guidance}`,
+        );
       }
+      // A review item is the human's too, but a follow-up on a reviewed task is
+      // how the manager passes on the human's feedback.
+      if (task.state === "blocked") {
+        const held = humanItemRefusal(actor, this.store.listAttention({ taskId, status: "open" }));
+        if (held) throw held;
+      }
+      if (!task.sessionId) throw conflict("no_session", "Task has no worker session yet");
       const adapter = this.adapterFor(task.harness);
       requireCapability(adapter, "steer");
       // A follow-up re-opens the review (the worker re-reports and OCD re-verifies),
@@ -1597,7 +1691,10 @@ export class Supervisor {
           event: { type: "worker.steered", data: { chars: instructions.length } },
         });
       }
-      this.store.appendEvent(taskId, "worker.steered", { chars: instructions.length });
+      this.store.tx(() => {
+        if (task.state === "blocked") this.settleContinued(taskId, actor, "send");
+        this.store.appendEvent(taskId, "worker.steered", { chars: instructions.length });
+      });
       return this.store.requireTask(taskId);
     }
   }
@@ -1835,54 +1932,55 @@ export class Supervisor {
     });
   }
 
-  /** Explicit, human-initiated recovery for interrupted, failed, or ambiguous tasks. */
+  /**
+   * Settles the open items a worker that is told to continue moves past. A
+   * permission request or a question stays open: it waits on its own reply.
+   */
+  private settleContinued(taskId: string, actor: Actor, note: string): void {
+    for (const a of this.store.listAttention({
+      taskId,
+      status: "open",
+      kinds: ["failure", "ambiguous_launch", "stall", "decision"],
+    })) {
+      this.store.settleAttention(a.id, {
+        status: "resolved",
+        response: { type: "acknowledge", note },
+        resolvedBy: actor,
+      });
+    }
+  }
+
+  /** Explicit recovery of a task that stopped; see resumeVerdict() for who may resume what. */
   async resume(taskId: string, mode: "reattach" | "relaunch", actor: Actor): Promise<Task> {
-    if (actor !== "human")
-      throw forbidden("human_only", "Resuming an uncertain run requires a human");
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
-      if (!["interrupted", "failed", "needs_attention", "blocked"].includes(task.state)) {
-        throw conflict("not_resumable", `Task is ${task.state}`);
-      }
+      const verdict = resumeVerdict(
+        task,
+        mode,
+        actor,
+        this.store.listAttention({ taskId, status: "open" }),
+      );
+      if (verdict instanceof ApiError) throw verdict;
       const adapter = this.adapterFor(task.harness);
       // Open requests are settled only once the resume is known to go ahead.
-      const settleOpen = () => {
-        for (const a of this.store.listAttention({
-          taskId,
-          status: "open",
-          kinds: ["failure", "ambiguous_launch", "stall", "decision"],
-        })) {
-          this.store.settleAttention(a.id, {
-            status: "resolved",
-            response: { type: "acknowledge", note: `resume:${mode}` },
-            resolvedBy: "human",
-          });
-        }
-      };
-      if (mode === "relaunch") {
-        if (task.state === "blocked")
-          throw conflict(
-            "not_resumable",
-            "Cancel or reattach a blocked task instead of relaunching it",
-          );
+      if (verdict.mode === "relaunch") {
         this.store.tx(() => {
-          settleOpen();
+          this.settleContinued(taskId, actor, `resume:${mode}`);
           this.store.transition(taskId, "queued", {
-            event: { type: "task.resumed", data: { mode } },
+            event: { type: "task.resumed", data: { mode, actor } },
           });
         });
         return this.queueAndTick(taskId);
       }
       requireCapability(adapter, "resume");
-      if (!task.sessionId)
-        throw conflict("no_session", "No recorded session to reattach; use relaunch");
-      let snap = await adapter.inspect({ sessionId: task.sessionId });
+      const { sessionId } = verdict;
+      let snap = await adapter.inspect({ sessionId });
       if (snap.status === "missing" && adapter.revive) {
         // A process-owned worker died with the supervisor; continue its session from disk.
         const run = this.store.latestRun(taskId);
         if (run) {
           try {
-            await adapter.revive({ sessionId: task.sessionId }, this.specFor(task, run));
+            await adapter.revive({ sessionId }, this.specFor(task, run));
           } catch (error) {
             throw conflict(
               "session_missing",
@@ -1890,25 +1988,25 @@ export class Supervisor {
             );
           }
         }
-        snap = await adapter.inspect({ sessionId: task.sessionId });
+        snap = await adapter.inspect({ sessionId });
       }
       if (snap.status === "missing")
         throw conflict("session_missing", "The recorded session no longer exists; use relaunch");
       const needsPrompt = snap.status === "idle" || snap.status === "error";
       if (needsPrompt) {
         await adapter.prompt(
-          { sessionId: task.sessionId },
+          { sessionId },
           `Continue the task from where you stopped.\n\n${REPORT_INSTRUCTIONS}`,
         );
       }
       const run = this.store.latestRun(taskId);
       this.store.tx(() => {
-        settleOpen();
+        this.settleContinued(taskId, actor, `resume:${mode}`);
         if (run)
           this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
         if (task.state !== "running") {
           this.store.transition(taskId, "running", {
-            event: { type: "task.resumed", data: { mode } },
+            event: { type: "task.resumed", data: { mode, actor } },
             patch: { lastActivityAt: this.store.now(), finishedAt: null, error: null },
           });
         }
@@ -1958,6 +2056,7 @@ export class Supervisor {
       const reopened = await this.sendToWorkerLocked(
         taskId,
         `Review feedback (round ${round}) on your work:\n\n${feedback}\n\nAddress it in this worktree and commit your changes.`,
+        actor,
       );
       this.store.appendEvent(taskId, "review.changes_requested", {
         round,

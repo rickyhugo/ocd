@@ -162,6 +162,23 @@ describe("dispatch and review", () => {
     const detail = await waitForState(h, task.id, "needs_attention");
     expect(detail.task.result?.reportError).toMatch(/No ocd-report/);
     expect(detail.task.result?.verification?.changedFiles).toEqual(["ocd-fake.txt"]);
+    await expect(h.human.sendToWorker(task.id, "carry on")).rejects.toMatchObject({
+      code: "not_steerable",
+      message: expect.stringContaining(`ocd task resume ${task.id} --mode reattach`),
+    });
+  });
+
+  it("tells a sender to wait for a queued worker, not to resume it", async () => {
+    h = await startHarness();
+    await setupRepo(h, "app");
+    await h.human.pause();
+    const { task } = await dispatch(h.human, "app", "go");
+    const sent = h.human.sendToWorker(task.id, "carry on");
+    await expect(sent).rejects.toMatchObject({
+      code: "not_steerable",
+      message: expect.stringMatching(/^Cannot send instructions to a queued task: .*wait/),
+    });
+    await expect(sent).rejects.not.toMatchObject({ message: expect.stringMatching(/resume/) });
   });
 
   it("respects serial capacity and dependencies", async () => {
@@ -324,6 +341,10 @@ describe("cancellation and shutdown", () => {
     const detail = await h.human.inspectTask(task.id);
     expect(detail.task.state).toBe("interrupted");
     expect(detail.task.sessionId).not.toBeNull();
+    await expect(h.human.sendToWorker(task.id, "carry on")).rejects.toMatchObject({
+      code: "not_steerable",
+      message: expect.stringContaining("Cannot send instructions to an interrupted task."),
+    });
   });
 });
 
