@@ -387,12 +387,18 @@ type Part<S, Key extends string, Value> = [NonNullable<S>] extends [never]
 type Input<S> = NonNullable<S> extends z.ZodType ? z.input<NonNullable<S>> : never;
 type Parsed<S> = NonNullable<S> extends z.ZodType ? z.output<NonNullable<S>> : undefined;
 
-export type QueryValues = Record<string, string | number | boolean | string[] | undefined>;
+/**
+ * A route's query as a caller supplies it: the parsed values, each optional.
+ * The schema's input type is `unknown` (it parses text), so it cannot type this.
+ */
+export type RouteQuery<R extends AnyRoute> = {
+  [K in keyof Parsed<R["query"]>]?: Parsed<R["query"]>[K] | undefined;
+};
 
 /** What a caller supplies for a route: only the parts the route declares. */
 export type RouteArgs<R extends AnyRoute> = Part<R["params"], "params", Input<R["params"]>> &
   Part<R["body"], "body", Input<R["body"]>> &
-  ([NonNullable<R["query"]>] extends [never] ? unknown : { query?: QueryValues });
+  ([NonNullable<R["query"]>] extends [never] ? unknown : { query?: RouteQuery<R> });
 
 /** What a handler receives for a route: the parts it declares, parsed. */
 export interface ParsedRequest<R extends AnyRoute> {

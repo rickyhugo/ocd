@@ -32,6 +32,8 @@ import {
   type Attention,
   type AttentionResponse,
   type MemoryScope,
+  type MemoryStatus,
+  type OutboxStatus,
   type Task,
 } from "@ocd/core";
 import {
@@ -1194,7 +1196,7 @@ async function run(
         );
       } else if (sub === "list") {
         const items = await client.listMemories({
-          ...(flags.status ? { status: flags.status } : {}),
+          ...(flags.status ? { status: flags.status as MemoryStatus } : {}),
           ...(flags.repo ? { repo: flags.repo } : {}),
         });
         print(
@@ -1233,7 +1235,9 @@ async function run(
       return;
     }
     case "outbox": {
-      const entries = await client.listOutbox(flags.status ? { status: flags.status } : {});
+      const entries = await client.listOutbox(
+        flags.status ? { status: flags.status as OutboxStatus } : {},
+      );
       print(
         entries,
         json,
