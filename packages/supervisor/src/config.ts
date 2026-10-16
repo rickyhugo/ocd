@@ -330,9 +330,13 @@ export type SupervisorConfig = z.infer<typeof SupervisorConfigSchema>;
 export type SupervisorConfigInput = z.input<typeof SupervisorConfigSchema> & HarnessSectionsInput;
 
 export class ConfigError extends Error {
-  constructor(message: string) {
+  /** Each problem on its own, without the file's path. */
+  readonly errors: string[];
+
+  constructor(message: string, errors: string[] = [message]) {
     super(message);
     this.name = "ConfigError";
+    this.errors = errors;
   }
 }
 
@@ -344,7 +348,9 @@ function readConfigFile(path: string): unknown {
     const details = errors
       .map((e) => `${printParseErrorCode(e.error)} at offset ${e.offset}`)
       .join(", ");
-    throw new ConfigError(`${path} is not valid JSONC: ${details}`);
+    throw new ConfigError(`${path} is not valid JSONC: ${details}`, [
+      `not valid JSONC: ${details}`,
+    ]);
   }
   return value ?? {};
 }
@@ -356,7 +362,7 @@ export function loadConfig(
 ): SupervisorConfig {
   const fromFile = readConfigFile(path);
   if (typeof fromFile !== "object" || fromFile === null || Array.isArray(fromFile)) {
-    throw new ConfigError(`${path} must contain a JSON object`);
+    throw new ConfigError(`${path} must contain a JSON object`, ["must contain a JSON object"]);
   }
   const fileProfiles = (fromFile as { profiles?: Record<string, unknown> }).profiles;
   const parsed = SupervisorConfig.safeParse({
@@ -367,12 +373,34 @@ export function loadConfig(
     repos: { ...(fromFile as { repos?: Record<string, unknown> }).repos, ...overrides.repos },
   });
   if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((i) => `  ${i.path.join(".") || "(root)"}: ${i.message}`)
-      .join("\n");
-    throw new ConfigError(`Invalid config in ${path}:\n${issues}`);
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
+    throw new ConfigError(
+      `Invalid config in ${path}:\n${issues.map((i) => `  ${i}`).join("\n")}`,
+      issues,
+    );
   }
   return parsed.data;
+}
+
+/**
+ * What `ocd config check --json` prints. Self-update parses it from a build
+ * of another version, so a change here must stay readable by older builds.
+ */
+export const ConfigCheck = z.discriminatedUnion("valid", [
+  z.object({ path: z.string(), valid: z.literal(true) }),
+  z.object({ path: z.string(), valid: z.literal(false), errors: z.array(z.string()).min(1) }),
+]);
+export type ConfigCheck = z.infer<typeof ConfigCheck>;
+
+/** Loads ocd.jsonc the way the supervisor does and reports whether it is valid. */
+export function checkConfigFile(path: string): ConfigCheck {
+  try {
+    loadConfig(path);
+    return { path, valid: true };
+  } catch (error) {
+    if (error instanceof ConfigError) return { path, valid: false, errors: error.errors };
+    throw error;
+  }
 }
 
 export function toProfiles(config: Pick<SupervisorConfig, "profiles">): Profile[] {

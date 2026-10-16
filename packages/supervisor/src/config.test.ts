@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { harnessSettings, requireHarness } from "@ocd/adapters";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { ConfigError, loadConfig, toProfiles } from "./config.ts";
+import { ConfigError, checkConfigFile, loadConfig, toProfiles } from "./config.ts";
 import { configJsonSchema } from "./config-schema.ts";
 import { rmrf, setupRepo, startHarness, tempDir, waitFor, type Harness } from "./testkit.ts";
 
@@ -75,6 +75,34 @@ describe("ocd.jsonc", () => {
       ),
     ).toThrow(ConfigError);
     expect(() => loadConfig(writeConfig(`{ "concurrency": }`))).toThrow(/not valid JSONC/);
+  });
+
+  it("checks a file into a valid flag and the errors without the path, for `ocd config check --json`", () => {
+    const valid = writeConfig(`{ "concurrency": 2 }`);
+    expect(checkConfigFile(valid)).toEqual({ path: valid, valid: true });
+    const typo = writeConfig(
+      `{ "concurrancy": 2, "profiles": { "Bad Name": { "harness": "fake", "model": "x" } } }`,
+    );
+    expect(checkConfigFile(typo)).toEqual({
+      path: typo,
+      valid: false,
+      errors: [
+        "profiles.Bad Name: Invalid key in record",
+        '(root): Unrecognized key: "concurrancy"',
+      ],
+    });
+    const malformed = writeConfig(`{ "concurrency": }`);
+    expect(checkConfigFile(malformed)).toEqual({
+      path: malformed,
+      valid: false,
+      errors: ["not valid JSONC: ValueExpected at offset 17"],
+    });
+    const array = writeConfig(`[]`);
+    expect(checkConfigFile(array)).toEqual({
+      path: array,
+      valid: false,
+      errors: ["must contain a JSON object"],
+    });
   });
 
   it("names the known harnesses when a profile uses an unknown one", () => {

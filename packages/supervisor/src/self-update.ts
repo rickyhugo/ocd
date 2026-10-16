@@ -17,7 +17,7 @@ import { join, sep } from "node:path";
 import { configurableHarnesses } from "@ocd/adapters";
 import { redact, truncate, type UpdateStatus } from "@ocd/core";
 
-import { normalizeDirectory } from "./config.ts";
+import { ConfigCheck, normalizeDirectory } from "./config.ts";
 import { conflict, forbidden } from "./errors.ts";
 import { iso } from "./ids.ts";
 import type { Logger } from "./logger.ts";
@@ -103,8 +103,19 @@ export class SelfUpdater {
   private checking: Promise<UpdateStatus> | null = null;
   private timers: NodeJS.Timeout[] = [];
   private stopped = false;
-  /** Checking a config takes a CLI start, so a rejection holds until the file changes. */
-  private rejected: { sha: string; config: string | null; reason: string } | null = null;
+  /**
+   * Why the last config check held `sha` back. Checking takes a CLI start, so
+   * a rejection is reused until the file's text changes; a check that could
+   * not run is retried on the next try.
+   */
+  private configHold: {
+    sha: string;
+    config: string | null;
+    rejected: boolean;
+    reason: string;
+  } | null = null;
+  /** The config check in flight, shared by concurrent applies of the same version. */
+  private configChecking: { sha: string; done: Promise<string | null> } | null = null;
 
   /** The build directory the running supervisor was started from; never pruned. */
   private readonly runningBuild: string | null;
@@ -172,8 +183,7 @@ export class SelfUpdater {
   status(): UpdateStatus {
     const settings = this.o.settings();
     const pending = this.state.pending;
-    const rejected =
-      this.rejected && this.rejected.sha === pending?.sha ? this.rejected.reason : null;
+    const held = pending && this.configHold?.sha === pending.sha ? this.configHold.reason : null;
     return {
       enabled: settings.enabled,
       current: this.state.current,
@@ -182,7 +192,7 @@ export class SelfUpdater {
       blockedBy: this.state.pending && !this.cannotApply() ? this.o.blockers() : [],
       building: this.building,
       lastError: this.state.lastError,
-      cannotApply: pending ? (rejected ?? this.cannotApply()) : null,
+      cannotApply: pending ? (held ?? this.cannotApply()) : null,
       checkedAt: this.state.checkedAt,
     };
   }
@@ -429,22 +439,49 @@ export class SelfUpdater {
     return this.status();
   }
 
-  /** Why the built version cannot load the live ocd.jsonc, or null when it can. */
-  private async configRejection(sha: string): Promise<string | null> {
+  /** Why the built version cannot be switched to with the live ocd.jsonc, or null when it can. */
+  private configRejection(sha: string): Promise<string | null> {
+    if (this.configChecking?.sha !== sha) {
+      const done = this.checkLiveConfig(sha).finally(() => {
+        if (this.configChecking?.done === done) this.configChecking = null;
+      });
+      this.configChecking = { sha, done };
+    }
+    return this.configChecking.done;
+  }
+
+  private async checkLiveConfig(sha: string): Promise<string | null> {
     const config = readText(this.o.configPath);
-    if (this.rejected?.sha === sha && this.rejected.config === config) return this.rejected.reason;
-    const error = await checkConfig(this.buildDir(sha), this.o.configPath);
-    if (!error) {
-      this.rejected = null;
+    const held = this.configHold;
+    if (held?.sha === sha && held.rejected && held.config === config) return held.reason;
+    const verdict = await checkConfig(this.buildDir(sha), this.o.configPath);
+    if (verdict.kind === "loads") {
+      this.configHold = null;
       return null;
     }
-    const reason = `it cannot load ${this.o.configPath}; fix the file and it applies: ${error}`;
-    this.rejected = { sha, config, reason };
-    this.o.logger.warn({ sha, error }, "the new OCD version rejects ocd.jsonc");
+    const running = this.state.current ? short(this.state.current) : "the current version";
+    if (verdict.kind === "rejected") {
+      const errors = verdict.errors.join("; ");
+      const reason = `it cannot load ${this.o.configPath}; fix the file and it applies: ${errors}`;
+      this.configHold = { sha, config, rejected: true, reason };
+      this.o.logger.warn({ sha, errors: verdict.errors }, "the new OCD version rejects ocd.jsonc");
+      this.o.notify(
+        `update-config-rejected:${sha}`,
+        "OCD: Update not applied",
+        `${short(sha)} rejects ocd.jsonc: ${errors.slice(0, 160)}. Still running ${running}; fix ${this.o.configPath} and the update applies.`,
+      );
+      return reason;
+    }
+    const reason = `the new version could not check ocd.jsonc: ${verdict.detail}`;
+    this.configHold = { sha, config, rejected: false, reason };
+    this.o.logger.warn(
+      { sha, detail: verdict.detail },
+      "the new OCD version could not check ocd.jsonc",
+    );
     this.o.notify(
-      `update-config-rejected:${sha}`,
+      `update-config-unchecked:${sha}`,
       "OCD: Update not applied",
-      `${short(sha)} cannot load ${this.o.configPath}; still running ${this.state.current ? short(this.state.current) : "the current version"}. Fix the file and the update applies. ${error.slice(0, 160)}`,
+      `${short(sha)} could not check ocd.jsonc: ${verdict.detail.slice(0, 160)}. Still running ${running}; it tries again every 20 s.`,
     );
     return reason;
   }
@@ -533,33 +570,65 @@ function readText(path: string): string | null {
   }
 }
 
+/** What a build's `ocd config check` said about the live config. */
+type ConfigVerdict =
+  | { kind: "loads" }
+  | { kind: "rejected"; errors: string[] }
+  /** The build could not answer: no such command, a crash, a timeout, or output that is not a check. */
+  | { kind: "unchecked"; detail: string };
+
 /**
- * Runs the build's own `ocd config check` on the live config file and returns
- * its errors, or null when it loads. The check only reads; its home is a
- * throwaway directory all the same.
+ * Runs the build's own `ocd config check --json` on the live config file. The
+ * check only reads; its home is a throwaway directory all the same.
  */
-function checkConfig(buildDir: string, configPath: string): Promise<string | null> {
+function checkConfig(buildDir: string, configPath: string): Promise<ConfigVerdict> {
   const home = mkdtempSync(join(tmpdir(), "ocd-config-"));
   const cli = join(buildDir, "packages/cli/dist/ocd.mjs");
   return new Promise((resolve) =>
     execFile(
       process.execPath,
-      [cli, "config", "check"],
+      [cli, "config", "check", "--json"],
       {
         cwd: home,
         env: { ...process.env, OCD_HOME: home, OCD_CONFIG: configPath },
         timeout: 60_000,
       },
-      (error, _stdout, stderr) => {
+      (error, stdout, stderr) => {
         rmSync(home, { recursive: true, force: true });
-        if (!error) return resolve(null);
-        const output = tail(stderr)
-          .replace(/^ocd: /, "")
-          .replaceAll(/\s*\n\s*/g, " ");
-        resolve(truncate(redact(output || error.message), 600));
+        const check = ConfigCheck.safeParse(parseJson(stdout));
+        if (check.success && !check.data.valid)
+          return resolve({
+            kind: "rejected",
+            errors: check.data.errors.map((e) => truncate(redact(e), 300)),
+          });
+        if (check.success && !error) return resolve({ kind: "loads" });
+        const detail = error?.killed
+          ? "it timed out after 60 s"
+          : firstParagraph(stderr) || error?.message || "it printed no result";
+        resolve({ kind: "unchecked", detail: truncate(redact(detail), 600) });
       },
     ),
   );
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** The first lines of a CLI's error output, up to a blank line: `unknown command config`, not its help text. */
+function firstParagraph(output: string): string {
+  return output
+    .trim()
+    .split(/\n\s*\n/)[0]!
+    .split("\n")
+    .slice(0, 3)
+    .map((line) => line.trim())
+    .join(" ")
+    .replace(/^ocd: /, "");
 }
 
 /** Runs a shell command in its own process group; the group is killed on timeout. */

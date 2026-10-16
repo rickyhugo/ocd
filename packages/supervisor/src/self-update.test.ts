@@ -27,7 +27,8 @@ async function waitUntil(ok: () => boolean, ms = 10_000): Promise<void> {
 }
 
 /** A build whose CLI accepts any config. */
-const BUILD = "mkdir -p packages/cli/dist && echo 'process.exit(0)' > packages/cli/dist/ocd.mjs";
+const BUILD =
+  "mkdir -p packages/cli/dist && echo 'console.log(JSON.stringify({ path: process.env.OCD_CONFIG, valid: true }))' > packages/cli/dist/ocd.mjs";
 
 /**
  * A new version whose `ocd config check --json` rejects any config mentioning

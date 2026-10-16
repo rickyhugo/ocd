@@ -36,6 +36,7 @@ import {
   type Task,
 } from "@ocd/core";
 import {
+  checkConfigFile,
   ConfigError,
   DatabaseTooNewError,
   GhPullRequests,
@@ -104,7 +105,7 @@ Supervisor
                                     the tools (git; gh and tmux when enabled) on the supervisor's PATH (your login shell's);
                                     --notify sends a test notification (click it to try \`ocd focus\`)
   ocd config check                  Load ocd.jsonc (OCD_CONFIG) the way the supervisor does, without starting or
-                                    changing anything; exits 1 with the errors. Self-update runs it before a switch
+                                    changing anything; exits 1 with the errors. Self-update runs it (--json) before a switch
   ocd focus                         Switch to the manager session (tmux pane when tmux.enabled + terminal window); what a notification click runs
 
 Configuration (human only)
@@ -542,8 +543,13 @@ async function run(
     }
     case "config": {
       if (sub !== "check") fail("usage: ocd config check");
-      loadConfig(paths.config);
-      print({ path: paths.config, valid: true }, json, () => `${paths.config} is valid`);
+      const check = checkConfigFile(paths.config);
+      print(check, json, () =>
+        check.valid
+          ? `${check.path} is valid`
+          : `${check.path} is invalid:\n${check.errors.map((e) => `  ${e}`).join("\n")}`,
+      );
+      if (!check.valid) process.exitCode = 1;
       return;
     }
     case "focus": {
