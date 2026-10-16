@@ -205,6 +205,33 @@ describe("workers waiting on their own background work (#57)", () => {
     expect(waiting.attention).toEqual([]);
   });
 
+  it("expects silence until a long wakeup is due, and raises a stall once it is overdue", async () => {
+    const started = Date.now();
+    let now = started;
+    h = await start(claude, {
+      clock: () => now,
+      config: { stallAfterMinutes: 30, reconcileIntervalMs: 60_000 },
+    });
+    await setupRepo(h, "app", "w");
+    const { task } = await dispatch("check in 50 minutes [long-wakeup]");
+    const { sessionId } = (await waitForState(h, task.id, "running")).task;
+    await waitFor(
+      () => adapter.inspect({ sessionId: sessionId! }),
+      (s) => s.status === "yielded",
+    );
+    const stalls = async () =>
+      (await h!.human.inspectTask(task.id)).attention.filter((a) => a.kind === "stall");
+
+    now = started + 31 * 60_000;
+    await h.daemon.supervisor.reconcile("periodic");
+    expect(await stalls()).toEqual([]);
+
+    now = started + (50 + 31) * 60_000;
+    await h.daemon.supervisor.reconcile("periodic");
+    expect(await stalls()).toHaveLength(1);
+    expect((await h.human.inspectTask(task.id)).task.state).toBe("running");
+  });
+
   it("does not take a codex subagent's finished turn for the worker's", async () => {
     h = await start(codex);
     await setupRepo(h, "app", "w");
