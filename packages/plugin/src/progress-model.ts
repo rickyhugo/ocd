@@ -1,10 +1,20 @@
-import type { Attention, Task, TaskEvent, TaskEventType, TaskProgress, TodoItem } from "@ocd/core";
+import {
+  STAGE_LABEL,
+  liveness,
+  milestone,
+  type Task,
+  type TaskEvent,
+  type TaskProgress,
+  type TaskView,
+  type TodoItem,
+} from "@ocd/core";
 
 import { age, type Row, type Tone } from "./sidebar-model.ts";
 
 // The expandable progress panel under a running task's sidebar row: the
-// harness-reported checklist, recent lifecycle milestones and a recorded PR.
-// Only facts OCD already holds; nothing is summarized or inferred. Pure, so it
+// lifecycle stage and whether the worker is still heard from, a recorded PR,
+// the harness-reported checklist and recent lifecycle milestones. Only facts
+// OCD already holds; nothing is summarized, inferred or estimated. Pure, so it
 // is tested without a terminal.
 
 export interface ProgressLine {
@@ -64,96 +74,6 @@ export function panelScrolls(lines: ProgressLine[]): boolean {
   return lines.length > PANEL_MAX_HEIGHT;
 }
 
-const ATTENTION: Record<Attention["kind"], string> = {
-  permission: "Asked for permission",
-  question: "Asked a question",
-  decision: "Decision needed",
-  failure: "Failure reported",
-  stall: "Looks stalled",
-  review: "Ready for review",
-  ambiguous_launch: "Launch unclear",
-  land: "Push waiting for your confirmation",
-};
-
-// null: deliberately no line (bookkeeping, or labelled in milestone() because it depends on data).
-const MILESTONE: Record<TaskEventType, string | null> = {
-  "task.created": "Queued",
-  "task.accepted": "Accepted",
-  "task.cancelled": "Cancelled",
-  "task.landed": "Landed",
-  "task.taken_over": "Taken over by you",
-  "task.given_back": "Handed back",
-  "task.resumed": "Resumed",
-  "workspace.ready": null,
-  "workspace.cleaned": null,
-  "session.created": null,
-  "session.missing": "Session missing",
-  "launch.intent": null,
-  "launch.deferred": "Launch deferred",
-  "launch.not_admitted": "Launch not admitted",
-  "launch.ambiguous": "Launch unclear",
-  "prompt.intent": "Instructions sent",
-  "worker.steered": "Follow-up sent",
-  "worker.lost": "Worker lost",
-  "shutdown.interrupted": "Stopped by shutdown",
-  "dependency.cancelled": "Dependency cancelled",
-  "quota.limited": "Usage limit reached",
-  "interaction.pending": "Waiting for an answer",
-  "permission.yolo_approved": null,
-  "permission.auto_approve_failed": null,
-  "attention.raised": null,
-  "attention.resolved": "Request answered",
-  "attention.expired": "Request expired",
-  "decision.recorded": "Decision recorded",
-  "pull_request.opened": "PR opened",
-  "pull_request.merge_requested": "PR merge requested",
-  "pull_request.merged": "PR merged",
-  "pull_request.failed": "PR failed",
-  "review.changes_requested": "Changes requested",
-  "land.requested": "Push awaiting confirmation",
-  "land.failed": "Push failed",
-  "branch_sync.intent": null,
-  "branch_sync.intent_dropped": null,
-  "branch_sync.conflict": null,
-  "branch_sync.failed": null,
-  "branch_sync.refreshed": null,
-  "branch_sync.follow_up_not_sent": null,
-  "state.queued": null,
-  "state.starting": "Starting",
-  "state.running": null,
-  "state.blocked": "Blocked",
-  "state.ready_for_review": "Ready for review",
-  "state.completed": "Completed",
-  "state.failed": "Failed",
-  "state.interrupted": "Interrupted",
-  "state.cancelled": "Cancelled",
-  "state.needs_attention": "Needs attention",
-  "state.manual": null,
-};
-
-const field = (data: unknown, key: string): unknown =>
-  data && typeof data === "object" ? (data as Record<string, unknown>)[key] : undefined;
-
-/** A short label for a lifecycle event; null for events not worth a line. */
-export function milestone(event: TaskEvent): string | null {
-  switch (event.type) {
-    case "launch.intent": {
-      const attempt = field(event.data, "attempt");
-      return typeof attempt === "number" && attempt > 1
-        ? `Worker launching (attempt ${attempt})`
-        : "Worker launching";
-    }
-    case "state.running":
-      return field(event.data, "from") === "blocked" ? "Unblocked" : "Running";
-    case "attention.raised": {
-      const kind = field(event.data, "kind") as Attention["kind"] | undefined;
-      return (kind && ATTENTION[kind]) ?? "Attention raised";
-    }
-    default:
-      return MILESTONE[event.type] ?? null;
-  }
-}
-
 /** "github.com/o/r/pull/12" -> "o/r#12"; other hosts lose only the scheme. */
 export function shortPullRequest(url: string): string {
   const github = /^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url);
@@ -178,7 +98,12 @@ function checklist(task: Task, progress: TaskProgress): ProgressLine[] {
   if (!todos.length) return [{ glyph: "○", tone: "muted", text: "Checklist is empty", meta: "" }];
   const done = todos.filter((t) => t.status === "completed").length;
   return [
-    { glyph: "☰", tone: "muted", text: `Checklist ${done}/${todos.length}`, meta: "" },
+    {
+      glyph: "☰",
+      tone: "muted",
+      text: `Checklist (worker-reported) ${done}/${todos.length}`,
+      meta: "",
+    },
     ...todos.map((t) => ({ ...TODO[t.status], text: t.text, meta: "" })),
   ];
 }
@@ -194,13 +119,52 @@ function milestones(events: TaskEvent[], now: number): ProgressLine[] {
   return lines.slice(-MILESTONES_MAX).reverse();
 }
 
-/** The panel's lines: PR, checklist, then recent milestones. */
+function stage(task: TaskView, now: number): ProgressLine[] {
+  const lc = task.lifecycle;
+  const lines: ProgressLine[] = [
+    {
+      glyph: lc.stage === "blocked" ? "‖" : "●",
+      tone: lc.stage === "blocked" ? "muted" : "accent",
+      text: STAGE_LABEL[lc.stage],
+      meta: age(lc.since, now),
+    },
+  ];
+  const live = liveness(task, now);
+  if (live.kind === "live")
+    lines.push({
+      glyph: "·",
+      tone: "muted",
+      text: "Last worker signal",
+      meta: age(live.lastSignalAt, now),
+    });
+  if (live.kind === "stale")
+    lines.push({
+      glyph: "○",
+      tone: "warning",
+      text: `No progress signal for ${age(live.quietSince, now)}`,
+      meta: "",
+    });
+  return lines;
+}
+
+/** Said instead of a blank panel; the stage lines above still come from the task itself. */
+function historyUnavailable(task: TaskView, now: number): ProgressLine[] {
+  const last = task.lifecycle.lastMilestone;
+  return [
+    { glyph: "○", tone: "muted", text: "Activity history unavailable", meta: "" },
+    ...(last
+      ? [{ glyph: "·", tone: "muted" as const, text: last.label, meta: age(last.at, now) }]
+      : []),
+  ];
+}
+
+/** The panel's lines: stage and liveness, PR, checklist, then recent milestones. */
 export function progressLines(
-  task: Task,
+  task: TaskView,
   progress: ProgressState | undefined,
   now: number,
 ): ProgressLine[] {
-  const lines: ProgressLine[] = [];
+  const lines = stage(task, now);
   if (task.pullRequestUrl)
     lines.push({
       glyph: "⇡",
@@ -211,9 +175,10 @@ export function progressLines(
   if (progress === undefined) {
     lines.push({ glyph: "…", tone: "muted", text: "Loading progress", meta: "" });
   } else if (progress === "unavailable") {
-    lines.push({ glyph: "○", tone: "muted", text: "Progress unavailable", meta: "" });
+    lines.push(...historyUnavailable(task, now));
   } else {
     lines.push(...checklist(task, progress), ...milestones(progress.events, now));
+    if (!progress.todos && !progress.events.length) lines.push(...historyUnavailable(task, now));
   }
   return lines;
 }

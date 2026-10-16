@@ -47,7 +47,7 @@ describe("/spill against a live supervisor", () => {
     expect(text.split("\n")[0]).toBe("OCD · 1 running · 1 blocked/waiting · 1 ready for review");
     expect(text).toMatch(
       new RegExp(
-        `● Long job\\n {4}app · running \\S+ · active (just now|\\S+ ago) · latest: instructions sent .+ · ${running.id}`,
+        `● Long job\\n {4}app · running \\S+ · active (just now|\\S+ ago) · latest: (instructions sent|worker responded) .+ · ${running.id}`,
       ),
     );
     expect(text).toMatch(

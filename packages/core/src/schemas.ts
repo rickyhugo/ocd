@@ -9,6 +9,7 @@ import {
   TASK_STATES,
 } from "./states.ts";
 import type { TaskEventType } from "./events.ts";
+import type { TaskView } from "./lifecycle.ts";
 import type { HarnessUsage, UsageStatus } from "./usage.ts";
 
 // Wire contracts shared by the supervisor API, the CLI, and the plugin. Inputs
@@ -282,7 +283,7 @@ export interface WorkerRun {
 }
 
 export interface TaskDetail {
-  task: Task;
+  task: TaskView;
   runs: WorkerRun[];
   events: TaskEvent[];
   attention: Attention[];

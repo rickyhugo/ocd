@@ -93,7 +93,15 @@ export type InteractionReply =
   | { type: "answer"; text: string };
 
 export type AdapterEvent =
-  | { type: "activity"; sessionId: string }
+  | {
+      type: "activity";
+      sessionId: string;
+      /**
+       * The worker produced output of its own (model text, reasoning, a tool
+       * call), not an echo of OCD's prompt or a harness lifecycle event.
+       */
+      output?: true;
+    }
   | {
       type: "status";
       sessionId: string;

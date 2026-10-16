@@ -1,4 +1,4 @@
-import type { Attention, Task, UpdateStatus } from "@ocd/core";
+import { liveness, type Attention, type Task, type TaskView, type UpdateStatus } from "@ocd/core";
 
 // The sidebar's view model: what to show, in which order, with which emphasis.
 // Pure, so it is tested without a terminal.
@@ -13,7 +13,9 @@ export interface Row {
   title: string;
   /** Short right-aligned detail: age, attention kind. */
   meta: string;
-  task: Task | null;
+  /** A second, muted line under the title: the latest milestone of running work. */
+  detail: string | null;
+  task: TaskView | null;
   attention: Attention | null;
 }
 
@@ -39,8 +41,6 @@ export interface SidebarModel {
   recent: Row[];
 }
 
-/** No activity for this long marks a running task as quiet. */
-export const QUIET_MS = 10 * 60_000;
 /** Finished tasks stay under "Done" this long. */
 export const RECENT_MS = 24 * 3_600_000;
 const RECENT_MAX = 5;
@@ -80,10 +80,10 @@ const BLOCKING = new Set<Attention["kind"]>([
  * @param finished recently completed or cancelled tasks, newest first
  */
 export function buildSidebar(
-  tasks: Task[],
+  tasks: TaskView[],
   attention: Attention[],
   now: number,
-  finished: Task[] = [],
+  finished: TaskView[] = [],
 ): SidebarModel {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const human = attention.filter((a) => a.status === "open" && a.resolvableBy === "human");
@@ -102,19 +102,27 @@ export function buildSidebar(
         tone: "warning",
         title: task?.title ?? a.reason,
         meta: ATTENTION_LABEL[a.kind],
+        detail: null,
         task,
         attention: a,
       };
     });
 
   const rows = (
-    filter: (t: Task) => boolean,
-    row: (t: Task) => Omit<Row, "key" | "title" | "task" | "attention">,
+    filter: (t: TaskView) => boolean,
+    row: (t: TaskView) => Pick<Row, "glyph" | "tone" | "meta"> & Partial<Pick<Row, "detail">>,
   ) =>
     tasks
       .filter((t) => !waitingOnHuman.has(t.id) && filter(t))
       .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .map((t) => ({ key: t.id, title: t.title, task: t, attention: null, ...row(t) }));
+      .map((t) => ({
+        key: t.id,
+        title: t.title,
+        task: t,
+        attention: null,
+        detail: null,
+        ...row(t),
+      }));
 
   const manual = rows(
     (t) => t.state === "manual",
@@ -127,15 +135,30 @@ export function buildSidebar(
   const running = rows(
     (t) => t.state === "running" || t.state === "starting" || t.state === "blocked",
     (t) => {
-      const quiet = t.lastActivityAt !== null && now - Date.parse(t.lastActivityAt) > QUIET_MS;
+      const { stage, since, lastMilestone } = t.lifecycle;
+      const live = liveness(t, now);
+      const detail = lastMilestone
+        ? `${lastMilestone.label} · ${age(lastMilestone.at, now)}`
+        : null;
+      if (live.kind === "stale")
+        return {
+          glyph: "○",
+          tone: "muted",
+          meta: `no signal ${age(live.quietSince, now)}`,
+          detail,
+        };
+      if (t.state === "blocked")
+        return { glyph: "‖", tone: "muted", meta: age(t.startedAt ?? t.createdAt, now), detail };
       return {
-        glyph: t.state === "blocked" ? "‖" : quiet ? "○" : "●",
-        tone: quiet || t.state === "blocked" ? "muted" : "accent",
-        meta: quiet
-          ? `quiet ${age(t.lastActivityAt, now)}`
-          : t.state === "starting"
-            ? "starting"
-            : age(t.startedAt ?? t.createdAt, now),
+        glyph: "●",
+        tone: "accent",
+        meta:
+          stage === "preparing_workspace"
+            ? `workspace ${age(since, now)}`
+            : stage === "starting_worker"
+              ? `starting ${age(since, now)}`
+              : age(t.startedAt ?? t.createdAt, now),
+        detail,
       };
     },
   );
@@ -162,6 +185,7 @@ export function buildSidebar(
       title: t.title,
       // A kept worktree is worth knowing about: it can be cleaned up from here.
       meta: `${t.workspacePath ? "kept · " : ""}${age(t.finishedAt, now)}`,
+      detail: null,
       task: t,
       attention: null,
     }));

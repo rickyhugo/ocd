@@ -107,6 +107,8 @@ const CAPABILITIES: Capabilities = {
 
 const PERMISSION_PREFIX = "perm:";
 const FORM_PREFIX = "form:";
+/** Events the model produces (text, reasoning, tool calls); the rest are session bookkeeping. */
+const WORKER_OUTPUT = /^session\.(text|reasoning|tool)\./;
 
 export function parseModel(model: string): { providerID: string; id: string; variant?: string } {
   const [ref, variant] = model.split("#", 2);
@@ -427,7 +429,11 @@ export class OpenCodeAdapter implements HarnessAdapter {
         return;
       }
       default:
-        this.emit({ type: "activity", sessionId: id });
+        this.emit(
+          WORKER_OUTPUT.test(event.type)
+            ? { type: "activity", sessionId: id, output: true }
+            : { type: "activity", sessionId: id },
+        );
     }
   }
 

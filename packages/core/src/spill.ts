@@ -89,6 +89,7 @@ const MILESTONES: Partial<Record<TaskEventType, string>> = {
   "workspace.ready": "worktree ready",
   "session.created": "worker session started",
   "prompt.intent": "instructions sent",
+  "worker.responded": "worker responded",
   "worker.steered": "follow-up sent",
   "interaction.pending": "request raised",
   "attention.resolved": "request answered",

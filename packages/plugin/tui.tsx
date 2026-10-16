@@ -6,9 +6,10 @@
 // - Sidebar: one line, "▸ OCD  ! 1  ✓ 2  ● 3" (needs you, review, running).
 //   Anything waiting on you is always listed; expand for collapsible sections.
 //   When nothing is open: "OCD idle" and what finished today. Click a row for
-//   actions that fit its state, including accept and clean up. A running row's
-//   chevron expands a small scrollable panel: the worker's checklist, recent
-//   milestones and a recorded PR (read-only).
+//   actions that fit its state, including accept and clean up. A running row
+//   shows its stage and latest milestone; its chevron expands a small
+//   scrollable panel: stage, last worker signal, a recorded PR, the worker's
+//   checklist and recent milestones (read-only).
 // - Manual mode: /takeover (or a row action) stops OCD driving a worker and
 //   opens its session in a tmux window; /giveback hands it back to the manager.
 // - /task: pick an OCD task and send the manager a message about it.
@@ -780,6 +781,13 @@ export default Plugin.define({
             </box>
             <text fg={muted()}>{` ${props.row.meta}`}</text>
           </box>
+          <Show when={props.row.detail}>
+            {(detail: () => string) => (
+              <text fg={muted()} wrapMode="none">
+                {`${" ".repeat(props.indent.length + 2)}${clip(detail(), ROW_WIDTH - props.indent.length - 2)}`}
+              </text>
+            )}
+          </Show>
           <Show when={open()}>
             <ProgressPanel row={props.row} />
           </Show>

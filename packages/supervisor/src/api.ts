@@ -10,6 +10,7 @@ import {
   TaskStateSchema,
   redact,
   routes,
+  taskLifecycle,
   usageLines,
   type AnyRoute,
   type ApiErrorBody,
@@ -17,8 +18,10 @@ import {
   type ManagerInfo,
   type ParsedRequest,
   type ShutdownReport,
+  type Task,
   type TaskDetail,
   type TaskProgress,
+  type TaskView,
 } from "@ocd/core";
 import { timingSafeEqual } from "node:crypto";
 
@@ -260,6 +263,10 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   register(routes.listProfiles, () => deps.live.listProfiles());
 
   // -- tasks -------------------------------------------------------------------
+  const withLifecycle = (tasks: Task[]): TaskView[] => {
+    const events = store.eventsOf(tasks.map((t) => t.id));
+    return tasks.map((t) => ({ ...t, lifecycle: taskLifecycle(t, events.get(t.id) ?? []) }));
+  };
   register(routes.dispatch, ({ body, reply }) => {
     const result = supervisor.dispatch(body);
     return reply.status(result.created ? 201 : 200).send(result);
@@ -270,14 +277,16 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
       (query.open
         ? TaskStateSchema.options.filter((s) => s !== "completed" && s !== "cancelled")
         : undefined);
-    return store.listTasks({
-      ...(states ? { state: states } : {}),
-      ...(query.repo ? { repo: query.repo } : {}),
-      limit: query.limit,
-    });
+    return withLifecycle(
+      store.listTasks({
+        ...(states ? { state: states } : {}),
+        ...(query.repo ? { repo: query.repo } : {}),
+        limit: query.limit,
+      }),
+    );
   });
   register(routes.inspectTask, ({ params }): TaskDetail => ({
-    task: store.requireTask(params.id),
+    task: withLifecycle([store.requireTask(params.id)])[0]!,
     runs: store.runs(params.id),
     events: store.events(params.id),
     attention: store.listAttention({ taskId: params.id }),

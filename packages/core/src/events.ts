@@ -21,6 +21,7 @@ export const TASK_EVENT_TYPES = [
   "launch.not_admitted",
   "launch.ambiguous",
   "prompt.intent",
+  "worker.responded",
   "worker.steered",
   "worker.lost",
   "shutdown.interrupted",

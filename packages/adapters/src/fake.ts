@@ -261,6 +261,8 @@ export class FakeAdapter implements HarnessAdapter {
     session.error = null;
     session.quotaLimited = false;
     this.setStatus(session, "busy");
+    // Real harnesses echo the accepted prompt back; that is not worker output.
+    this.state.emit({ type: "activity", sessionId: session.id });
     void this.run(session, this.script(text, session.spec), abort.signal);
     this.fault("prompt", "after");
   }
@@ -271,7 +273,11 @@ export class FakeAdapter implements HarnessAdapter {
         // Stable per prompt and step, like a harness item id.
         const itemId = `${session.prompts.length}:${index}`;
         await delay(this.stepDelayMs, undefined, { signal });
-        this.state.emit({ type: "activity", sessionId: session.id });
+        this.state.emit(
+          step.type === "write" || step.type === "reply"
+            ? { type: "activity", sessionId: session.id, output: true }
+            : { type: "activity", sessionId: session.id },
+        );
         switch (step.type) {
           case "wait":
             await delay(step.ms, undefined, { signal });

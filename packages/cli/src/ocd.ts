@@ -24,6 +24,7 @@ import {
   formatDiffStat,
   formatLandPlan,
   formatSpill,
+  lifecycleLines,
   plainText,
   renderTranscript,
   resolveOcdPaths,
@@ -896,6 +897,7 @@ async function run(
         print(d, json, () =>
           [
             taskLine(d.task),
+            ...lifecycleLines(d.task, Date.now()),
             `workspace: ${d.task.workspacePath ?? "-"} (branch ${d.task.branch ?? "-"}, base ${d.task.baseRef ?? "-"})`,
             `session: ${d.task.sessionId ?? "-"}  attempts: ${d.task.attempts}`,
             d.task.pullRequestUrl ? `pull request: ${d.task.pullRequestUrl}` : "",

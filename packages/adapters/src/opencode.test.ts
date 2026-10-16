@@ -168,6 +168,31 @@ describe("OpenCode adapter", () => {
     expect(events.some((e) => e.type === "stream" && e.state === "disconnected")).toBe(true);
   });
 
+  it("marks text, reasoning and tool events as worker output, not session bookkeeping", async () => {
+    const { service, adapter, events } = setup();
+    await until(() => events.some((e) => e.type === "stream" && e.state === "connected"));
+    const ref = await adapter.createSession(spec);
+    const sessionID = ref.sessionId;
+    for (const type of [
+      "session.inbox.delivered",
+      "session.step.started",
+      "session.text.delta",
+      "session.reasoning.started",
+      "session.tool.called",
+      "session.usage.updated",
+    ])
+      service.emit(type, { sessionID });
+    await until(() => events.filter((e) => e.type === "activity").length === 6);
+    expect(events.flatMap((e) => (e.type === "activity" ? [e.output === true] : []))).toEqual([
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+
   it("wakes the manager with a synthetic, queued input", async () => {
     const { service, adapter } = setup();
     await adapter.wakeManager("ses_mgr", "update");

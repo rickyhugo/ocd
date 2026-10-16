@@ -352,7 +352,7 @@ export class ClaudeAdapter implements HarnessAdapter {
         if (message.error === "rate_limit" || message.error === "billing_error")
           session.limitSeen = true;
         this.record(session, message);
-        this.emit({ type: "activity", sessionId });
+        this.emit({ type: "activity", sessionId, output: true });
         return;
       case "rate_limit_event": {
         const info = message.rate_limit_info;
@@ -419,7 +419,9 @@ export class ClaudeAdapter implements HarnessAdapter {
           return;
         }
         if (message.type === "user") this.record(session, message);
-        if (message.type === "user" || message.type === "stream_event" || message.type === "system")
+        if (message.type === "stream_event")
+          this.emit({ type: "activity", sessionId, output: true });
+        else if (message.type === "user" || message.type === "system")
           this.emit({ type: "activity", sessionId });
     }
   }

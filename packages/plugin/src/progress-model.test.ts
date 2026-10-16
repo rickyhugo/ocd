@@ -1,11 +1,17 @@
-import type { Task, TaskEvent, TaskEventType, TaskProgress } from "@ocd/core";
+import {
+  taskLifecycle,
+  type Task,
+  type TaskEvent,
+  type TaskEventType,
+  type TaskProgress,
+  type TaskView,
+} from "@ocd/core";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   MILESTONES_MAX,
   PANEL_MAX_HEIGHT,
   canExpand,
-  milestone,
   panelHeight,
   panelScrolls,
   progressLines,
@@ -19,8 +25,8 @@ import { actionsFor, buildSidebar } from "./sidebar-model.ts";
 const NOW = Date.parse("2026-10-13T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
 
-function task(id: string, state: Task["state"], extra: Partial<Task> = {}): Task {
-  return {
+function task(id: string, state: Task["state"], extra: Partial<TaskView> = {}): TaskView {
+  const t = {
     id,
     title: `Task ${id}`,
     repo: "dotfiles",
@@ -34,6 +40,7 @@ function task(id: string, state: Task["state"], extra: Partial<Task> = {}): Task
     lastActivityAt: minutesAgo(1),
     ...extra,
   } as Task;
+  return { lifecycle: taskLifecycle(t, []), ...t };
 }
 
 let seq = 0;
@@ -58,6 +65,8 @@ function progress(extra: Partial<TaskProgress> = {}): TaskProgress {
 
 const text = (lines: { glyph: string; text: string; meta: string }[]) =>
   lines.map((l) => `${l.glyph} ${l.text}${l.meta ? ` ${l.meta}` : ""}`);
+/** The lines under the stage and liveness lines of a running task heard from a minute ago. */
+const afterStage = (lines: { glyph: string; text: string; meta: string }[]) => text(lines.slice(2));
 
 describe("progress panel model", () => {
   it("expands only running-task rows, never attention rows or other states", () => {
@@ -131,21 +140,21 @@ describe("progress panel model", () => {
       }),
       NOW,
     );
-    expect(text(lines)).toEqual([
-      "☰ Checklist 1/4",
+    expect(afterStage(lines)).toEqual([
+      "☰ Checklist (worker-reported) 1/4",
       "✓ Read the code",
       "▸ Make the change",
       "○ Run the tests",
       "– Old idea",
     ]);
-    expect(lines[1]?.tone).toBe("success");
-    expect(lines[2]?.tone).toBe("accent");
+    expect(lines[3]?.tone).toBe("success");
+    expect(lines[4]?.tone).toBe("accent");
   });
 
-  it("shows a recorded PR first and nothing PR-like otherwise", () => {
+  it("shows a recorded PR right under the stage and nothing PR-like otherwise", () => {
     const url = "https://github.com/rickyhugo/ocd/pull/22";
     const withPr = progressLines(task("a", "running", { pullRequestUrl: url }), progress(), NOW);
-    expect(text(withPr)[0]).toBe("⇡ PR rickyhugo/ocd#22");
+    expect(afterStage(withPr)[0]).toBe("⇡ PR rickyhugo/ocd#22");
     const without = progressLines(task("a", "running"), progress(), NOW);
     expect(without.some((l) => l.text.startsWith("PR"))).toBe(false);
     expect(shortPullRequest("https://gitlab.example.com/o/r/-/merge_requests/3")).toBe(
@@ -168,7 +177,7 @@ describe("progress panel model", () => {
       progress({ todosSupported: false, events }),
       NOW,
     );
-    expect(text(opencode)).toEqual([
+    expect(afterStage(opencode)).toEqual([
       "○ No checklist from opencode",
       // Newest first; noise skipped; repeats collapsed to the latest.
       "· Looks stalled 5m",
@@ -177,34 +186,51 @@ describe("progress panel model", () => {
       "· Worker launching 30m",
       "· Queued 40m",
     ]);
-    const claude = progressLines(task("a", "running"), progress({ events: [] }), NOW);
-    expect(text(claude)).toEqual(["○ No checklist reported yet"]);
-    expect(text(progressLines(task("a", "running"), progress({ todos: [] }), NOW))).toEqual([
+    expect(afterStage(progressLines(task("a", "running"), progress({ todos: [] }), NOW))).toEqual([
       "○ Checklist is empty",
     ]);
   });
 
-  it("says when progress is loading or unavailable", () => {
+  it("leads with the stage and whether the worker is still heard from", () => {
     expect(text(progressLines(task("a", "running"), undefined, NOW))).toEqual([
+      "● Working 5m",
+      "· Last worker signal 1m",
       "… Loading progress",
     ]);
-    expect(text(progressLines(task("a", "running"), "unavailable", NOW))).toEqual([
-      "○ Progress unavailable",
+    const quiet = progressLines(
+      task("a", "running", { lastActivityAt: minutesAgo(25), updatedAt: minutesAgo(30) }),
+      undefined,
+      NOW,
+    );
+    expect(text(quiet).slice(0, 2)).toEqual(["● Working 30m", "○ No progress signal for 25m"]);
+    expect(quiet[1]?.tone).toBe("warning");
+    // Blocked work waits on someone else: no liveness line.
+    expect(text(progressLines(task("b", "blocked"), undefined, NOW))).toEqual([
+      "‖ Blocked 5m",
+      "… Loading progress",
     ]);
+    expect(text(quiet).join("\n")).not.toMatch(/ETA|estimate|remaining/i);
   });
 
-  it("labels lifecycle events and skips unknown ones", () => {
-    expect(milestone(event("launch.intent", 1, { attempt: 2 }))).toBe(
-      "Worker launching (attempt 2)",
-    );
-    expect(milestone(event("state.running", 1, { from: "blocked" }))).toBe("Unblocked");
-    expect(milestone(event("attention.raised", 1, { kind: "permission" }))).toBe(
-      "Asked for permission",
-    );
-    expect(milestone(event("pull_request.opened", 1))).toBe("PR opened");
-    expect(milestone(event("task.cancelled", 1))).toBe("Cancelled");
-    expect(milestone(event("task.accepted", 1))).toBe("Accepted");
-    expect(milestone(event("something.new" as TaskEventType, 1))).toBeNull();
+  it("says activity history is unavailable instead of going blank", () => {
+    const bare = task("a", "running");
+    const known = task("a", "running", {
+      lifecycle: taskLifecycle(bare, [event("pull_request.opened", 12)]),
+    });
+    expect(text(progressLines(known, "unavailable", NOW))).toEqual([
+      "● Working 5m",
+      "· Last worker signal 1m",
+      "○ Activity history unavailable",
+      "· PR opened 12m",
+    ]);
+    expect(afterStage(progressLines(bare, progress({ events: [] }), NOW))).toEqual([
+      "○ No checklist reported yet",
+      "○ Activity history unavailable",
+    ]);
+    // History without a labelled milestone is still history.
+    expect(
+      afterStage(progressLines(bare, progress({ events: [event("workspace.ready", 3)] }), NOW)),
+    ).toEqual(["○ No checklist reported yet"]);
   });
 
   it("bounds milestones and panel height; only overflowing panels scroll", () => {
@@ -212,10 +238,11 @@ describe("progress panel model", () => {
       event(i % 2 ? "worker.steered" : "attention.resolved", 30 - i),
     );
     const lines = progressLines(task("a", "running"), progress({ events }), NOW);
-    expect(lines.filter((l) => l.glyph === "·")).toHaveLength(MILESTONES_MAX);
+    expect(lines.slice(2).filter((l) => l.glyph === "·")).toHaveLength(MILESTONES_MAX);
 
+    expect(panelHeight([])).toBe(1);
     const short = progressLines(task("a", "running"), progress(), NOW);
-    expect(panelHeight(short)).toBe(1);
+    expect(panelHeight(short)).toBe(short.length);
     expect(panelScrolls(short)).toBe(false);
     const long = progressLines(
       task("a", "running"),
@@ -243,6 +270,11 @@ describe("progress panel model", () => {
     const [first, second] = [at(0), at(1)];
     // Same number of lines at the same positions: the panel's rows update in place.
     expect(second).toHaveLength(first.length);
-    expect(text(second)).toEqual(["☰ Checklist 1/3", "✓ one", "▸ two", "○ three"]);
+    expect(afterStage(second)).toEqual([
+      "☰ Checklist (worker-reported) 1/3",
+      "✓ one",
+      "▸ two",
+      "○ three",
+    ]);
   });
 });
