@@ -260,8 +260,13 @@ describe("Codex worker lifecycle", () => {
       (s) => s.status === "idle" && s.lastAssistantText !== null,
     );
     await time.advance(59_999);
-    expect(adapter.activeWorkers()).toBe(1);
-    await time.advance(1);
+    await adapter.prompt(ref, "[params]");
+    const kept = await until(
+      () => adapter!.inspect(ref),
+      (s) => s.status === "idle" && (s.lastAssistantText ?? "").startsWith("{"),
+    );
+    expect(JSON.parse(kept.lastAssistantText!)).not.toHaveProperty("resumed");
+    await time.advance(60_000);
     await until(
       () => adapter!.activeWorkers(),
       (n) => n === 0,

@@ -293,8 +293,13 @@ describe("Claude Code worker lifecycle", () => {
       (s) => s.status === "idle" && s.lastAssistantText !== null,
     );
     await time.advance(59_999);
-    expect(adapter.activeWorkers()).toBe(1);
-    await time.advance(1);
+    await adapter.prompt(ref, "[args]");
+    const kept = await until(
+      () => adapter!.inspect(ref),
+      (s) => s.status === "idle" && (s.lastAssistantText ?? "").startsWith("args:"),
+    );
+    expect(kept.lastAssistantText).not.toContain("--resume");
+    await time.advance(60_000);
     await until(
       () => adapter!.activeWorkers(),
       (n) => n === 0,
@@ -303,7 +308,7 @@ describe("Claude Code worker lifecycle", () => {
     await adapter.prompt(ref, "[args]");
     const snap = await until(
       () => adapter!.inspect(ref),
-      (s) => (s.lastAssistantText ?? "").startsWith("args:"),
+      (s) => s.status === "idle" && s.lastAssistantText !== kept.lastAssistantText,
     );
     expect(snap.lastAssistantText).toContain(`--resume ${ref.sessionId}`);
     expect(adapter.activeWorkers()).toBe(1);
