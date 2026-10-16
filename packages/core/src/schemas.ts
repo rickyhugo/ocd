@@ -39,6 +39,10 @@ const EnvVarName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/, "Environment variable 
 export const BranchSyncMode = z.enum(["off", "detect", "refresh"]);
 export type BranchSyncMode = z.infer<typeof BranchSyncMode>;
 
+/** How work lands in its base branch, through a pull request or a direct push. */
+export const MergeMethod = z.enum(["squash", "merge", "rebase"]);
+export type MergeMethod = z.infer<typeof MergeMethod>;
+
 // ---------------------------------------------------------------------------
 // Repositories and profiles (both declared in ocd.jsonc)
 
@@ -55,12 +59,15 @@ export const RepoConfig = z
       .max(200)
       .optional()
       .describe("Ref new task branches start from. Defaults to the repository's current HEAD."),
-    mergeMethod: z
-      .enum(["squash", "merge", "rebase"])
+    git: z
+      .object({
+        mergeMethod: MergeMethod.optional().describe(
+          "How this repository's work lands (pull request merges and direct pushes); defaults to git.mergeMethod.",
+        ),
+      })
+      .strict()
       .optional()
-      .describe(
-        "How this repository's work lands (pull request merges and direct pushes); defaults to the top-level mergeMethod.",
-      ),
+      .describe("Git settings for this repository, overriding the top-level git section."),
     branchSync: BranchSyncMode.optional().describe(
       "Branch-sync mode for this repository's tasks, overriding branchSync.mode. Tracks baseRef, which must be set. See docs/branch-sync.md.",
     ),
@@ -327,9 +334,6 @@ export const OpenPullRequestInput = z.object({
   /** Commit uncommitted worker changes before pushing. */
   commit: z.boolean().default(false),
 });
-export const MergeMethod = z.enum(["squash", "merge", "rebase"]);
-export type MergeMethod = z.infer<typeof MergeMethod>;
-
 export const LandTaskInput = z.object({
   /** Push straight to the base branch instead of going through a pull request. */
   direct: z.boolean().default(false),

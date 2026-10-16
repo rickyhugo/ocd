@@ -141,8 +141,8 @@ Tasks
   ocd task land <id> [--commit] [--wait]
                                     Get the work into its base branch: accept, open or reuse the PR, merge it once
                                     checks pass, clean up. Run again to continue; --wait polls while checks run
-  ocd task land <id> --direct       Escape hatch: push straight to the base branch (mergeMethod from ocd.jsonc,
-                                    squash by default) after you confirm the exact commits; never forces
+  ocd task land <id> --direct       Escape hatch: push straight to the base branch (git.mergeMethod from
+                                    ocd.jsonc, squash by default) after you confirm the exact commits; never forces
   ocd task diff <id> [--stat]       The task's changes against where its branch started (uncommitted ones too)
   ocd task request-changes <id> <feedback>
                                     Review feedback: the worker gets it as a follow-up and the task comes back

@@ -308,11 +308,19 @@
       },
       "additionalProperties": false
     },
-    "mergeMethod": {
-      "default": "squash",
-      "description": "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod. Applies on save.",
-      "type": "string",
-      "enum": ["squash", "merge", "rebase"]
+    "git": {
+      "description": "How work lands in git, whether through a GitHub pull request or a direct push. Per repo: repos.<name>.git.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "mergeMethod": {
+          "default": "squash",
+          "description": "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.git.mergeMethod. Applies on save.",
+          "type": "string",
+          "enum": ["squash", "merge", "rebase"]
+        }
+      },
+      "additionalProperties": false
     },
     "log": {
       "default": {},
@@ -373,10 +381,17 @@
             "minLength": 1,
             "maxLength": 200
           },
-          "mergeMethod": {
-            "description": "How this repository's work lands (pull request merges and direct pushes); defaults to the top-level mergeMethod.",
-            "type": "string",
-            "enum": ["squash", "merge", "rebase"]
+          "git": {
+            "description": "Git settings for this repository, overriding the top-level git section.",
+            "type": "object",
+            "properties": {
+              "mergeMethod": {
+                "description": "How this repository's work lands (pull request merges and direct pushes); defaults to git.mergeMethod.",
+                "type": "string",
+                "enum": ["squash", "merge", "rebase"]
+              }
+            },
+            "additionalProperties": false
           },
           "branchSync": {
             "description": "Branch-sync mode for this repository's tasks, overriding branchSync.mode. Tracks baseRef, which must be set. See docs/branch-sync.md.",

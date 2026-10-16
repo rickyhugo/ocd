@@ -122,7 +122,7 @@ describe("landing directly on the base branch", () => {
   });
 
   it("replays each commit for rebase and makes a merge commit for merge", async () => {
-    const rebase = await setup({ config: { mergeMethod: "rebase" } });
+    const rebase = await setup({ config: { git: { mergeMethod: "rebase" } } });
     const a = await finishedTask(rebase, "rebase");
     const base = pushElsewhere(rebase);
     const planA = await rebase.h.human.landPlan(a.id);
@@ -137,9 +137,9 @@ describe("landing directly on the base branch", () => {
     await h!.cleanup();
     h = null;
 
-    const merge = await setup({ config: { repos: {}, mergeMethod: "squash" } });
+    const merge = await setup({ config: { repos: {}, git: { mergeMethod: "squash" } } });
     await declareRepos(merge.h, {
-      app: { path: merge.repo, profile: "fake", mergeMethod: "merge" },
+      app: { path: merge.repo, profile: "fake", git: { mergeMethod: "merge" } },
     });
     const b = await finishedTask(merge, "merge");
     pushElsewhere(merge);

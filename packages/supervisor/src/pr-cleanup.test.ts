@@ -205,7 +205,7 @@ describe("merging pull requests", () => {
     const prs = new RecordingPullRequests();
     h = await startHarness({ pullRequests: prs });
     const { path, origin } = await repoWithOrigin(h);
-    await declareRepos(h, { app: { path, profile: "fake", mergeMethod: "rebase" } });
+    await declareRepos(h, { app: { path, profile: "fake", git: { mergeMethod: "rebase" } } });
     const task = await openedAndAccepted(h, "merge-ok");
     expect(git(origin, "show-ref", "--verify", `refs/heads/${task.branch}`)).toBeTruthy();
 

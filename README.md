@@ -131,7 +131,7 @@ dispatch to. Both are referred to by name.
 
 The daemon validates the file at startup and refuses typos, invalid profiles,
 and repo paths that are not git repository roots. While it runs, saved changes
-to profiles, repos, the manager directory, `mergeMethod` and `branchSync.mode`
+to profiles, repos, the manager directory, `git.mergeMethod` and `branchSync.mode`
 apply immediately (other settings need a restart); if a save leaves the file invalid, the last good configuration
 stays in effect and one item appears in `ocd attention list` until the
 file is fixed. [`schema/ocd.schema.json`](schema/ocd.schema.json) gives editors
@@ -640,9 +640,10 @@ says why (`available: false` with notes) instead of guessing.
    (`ocd attention resolve <id> --approve`, or the row in the sidebar), bound
    to the exact commits it showed you. If the branch moves before you approve,
    the approval is refused.
-8. **Merge method**: `"mergeMethod"` in `ocd.jsonc` (`squash` by default;
-   `merge` or `rebase`), per repo under `repos.<name>.mergeMethod`. Both routes
-   use it.
+8. **Merge method**: `"git": { "mergeMethod": "squash" }` in `ocd.jsonc`
+   (`squash` by default; `merge` or `rebase`), per repo under
+   `repos.<name>.git.mergeMethod`. Both routes use it, which is why it sits
+   under `git` and not `github`.
 9. **Cleanup** refuses while it would lose work: uncommitted changes, or
    commits that exist on no other branch or remote and whose changes are not
    in the base branch. A branch that was squash-merged on GitHub counts as

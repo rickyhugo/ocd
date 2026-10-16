@@ -256,9 +256,17 @@ const SupervisorConfigSchema = z
       .strict()
       .prefault({})
       .describe("Tracking the subscription usage limits the harnesses report. Restart to apply."),
-    mergeMethod: MergeMethod.default("squash").describe(
-      "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.mergeMethod. Applies on save.",
-    ),
+    git: z
+      .object({
+        mergeMethod: MergeMethod.default("squash").describe(
+          "How work lands in its base branch, through a pull request or a direct push: squash (one commit), merge (a merge commit) or rebase (the task's commits replayed). Per repo: repos.<name>.git.mergeMethod. Applies on save.",
+        ),
+      })
+      .strict()
+      .prefault({})
+      .describe(
+        "How work lands in git, whether through a GitHub pull request or a direct push. Per repo: repos.<name>.git.",
+      ),
     log: z
       .object({ maxBytes: z.number().int().default(5_000_000), keep: z.number().int().default(3) })
       .strict()
@@ -349,6 +357,16 @@ function readConfigFile(path: string): unknown {
   return value ?? {};
 }
 
+function describeIssue(issue: z.core.$ZodIssue): string {
+  const at = issue.path.join(".");
+  const section = issue.path.length === 0 || (issue.path.length === 2 && issue.path[0] === "repos");
+  const moved =
+    section && issue.code === "unrecognized_keys" && issue.keys.includes("mergeMethod")
+      ? `; mergeMethod moved to ${at ? `${at}.` : ""}git.mergeMethod`
+      : "";
+  return `  ${at || "(root)"}: ${issue.message}${moved}`;
+}
+
 /** Reads and validates ocd.jsonc. Overrides (tests, CLI flags) win over the file. */
 export function loadConfig(
   path: string,
@@ -367,9 +385,7 @@ export function loadConfig(
     repos: { ...(fromFile as { repos?: Record<string, unknown> }).repos, ...overrides.repos },
   });
   if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((i) => `  ${i.path.join(".") || "(root)"}: ${i.message}`)
-      .join("\n");
+    const issues = parsed.error.issues.map(describeIssue).join("\n");
     throw new ConfigError(`Invalid config in ${path}:\n${issues}`);
   }
   return parsed.data;
@@ -416,10 +432,10 @@ export class LiveConfig {
   apply(config: SupervisorConfig): void {
     this.profiles = new Map(toProfiles(config).map((p) => [p.name, p]));
     this.managerDirectory = config.manager ? normalizeDirectory(config.manager.directory) : null;
-    this.mergeMethodDefault = config.mergeMethod;
+    this.mergeMethodDefault = config.git.mergeMethod;
     this.mergeMethods = new Map(
       Object.entries(config.repos).flatMap(([name, repo]) =>
-        repo.mergeMethod ? [[name, repo.mergeMethod] as const] : [],
+        repo.git?.mergeMethod ? [[name, repo.git.mergeMethod] as const] : [],
       ),
     );
     this.branchSyncDefault = config.branchSync.mode;
@@ -436,7 +452,7 @@ export class LiveConfig {
     return this.branchSyncModes.get(repo) ?? this.branchSyncDefault;
   }
 
-  /** The repository's mergeMethod, else the top-level one (squash by default). */
+  /** The repository's git.mergeMethod, else the top-level one (squash by default). */
   mergeMethod(repo: string): MergeMethod {
     return this.mergeMethods.get(repo) ?? this.mergeMethodDefault;
   }
