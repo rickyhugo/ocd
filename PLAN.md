@@ -359,7 +359,8 @@ and what work is thrown away.
   another branch or remote) and never forces, so it is not destructive cleanup.
 - **Self-update** (opt-in, `selfUpdate`). OCD follows its own repository and
   installs what reaches its default branch: it builds in a separate worktree,
-  boots the build once against a throwaway home, switches
+  boots the build once against a throwaway home, checks that the build loads
+  the operator's `ocd.jsonc` (`ocd config check`), switches
   `~/.ocd/install/current` and restarts. It waits while Claude Code or Codex
   workers run unless the human applies it, and keeps the previous build for
   `ocd update rollback`. It installs only commits someone already merged; it

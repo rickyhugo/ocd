@@ -377,6 +377,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
             }
           : null,
         runningFrom: su.runningFrom,
+        configPath: paths.config,
         logger: logger.child({ component: "self-update" }),
         clock,
         ...(su.smokeTest ? { smokeTest: su.smokeTest } : {}),

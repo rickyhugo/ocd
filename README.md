@@ -224,7 +224,13 @@ also checks every `intervalMinutes`), the supervisor:
    --frozen-lockfile`, `pnpm run build`; see `selfUpdate.build`);
 2. boots the build's supervisor once against a throwaway `OCD_HOME` (a smoke
    test);
-3. points `~/.ocd/install/current` at it and restarts the background service,
+3. right before the switch, runs the build's `ocd config check` on your
+   `ocd.jsonc` (the file the running supervisor loaded). If the new version
+   rejects it, the running version stays, you get "OCD: Update not applied"
+   with the errors, and the update applies once you fix the file. If the check
+   itself fails (a crash, a timeout, a build without the command), the update
+   waits and the check runs again on the next try;
+4. points `~/.ocd/install/current` at it and restarts the background service,
    which runs the CLI through that link, then runs `opencode reload` so the
    plugin and TUI pick it up, and notifies you ("OCD: Updated"). If the reload
    fails it is retried once after 30 s; if that fails too you get "OpenCode
