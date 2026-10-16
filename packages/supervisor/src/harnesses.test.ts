@@ -5,7 +5,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ClaudeAdapter, CodexAdapter, type HarnessAdapter } from "@ocd/adapters";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { setupRepo, startHarness, waitFor, waitForState, type Harness } from "./testkit.ts";
+import {
+  setupRepo,
+  startHarness,
+  waitFor,
+  waitForState,
+  type Harness,
+  type HarnessOptions,
+} from "./testkit.ts";
 
 // End-to-end through the supervisor with the real adapters driving fake
 // Claude Code / Codex binaries (test fixtures). No model is called.
@@ -96,11 +103,23 @@ for (const harness of harnesses) {
 describe("workers waiting on their own background work (#57)", () => {
   const claude = harnesses.find((x) => x.name === "claude")!;
   const codex = harnesses.find((x) => x.name === "codex")!;
+  const claudeWithoutSessionState: typeof claude = {
+    ...claude,
+    adapter: () =>
+      new ClaudeAdapter({
+        command: [process.execPath, join(fixtures, "fake-claude-no-session-state.mjs")],
+      }),
+  };
   let adapter!: HarnessAdapter & { activeWorkers(): number };
-  const start = (harness: typeof claude) =>
+  const start = (
+    harness: typeof claude,
+    { config, ...options }: Omit<Partial<HarnessOptions>, "adapters"> = {},
+  ) =>
     startHarness({
+      ...options,
       adapters: () => [(adapter = harness.adapter())],
       config: {
+        ...config,
         profiles: { w: { harness: harness.name, model: harness.model, permissionPolicy: "ask" } },
       },
     });
@@ -164,6 +183,26 @@ describe("workers waiting on their own background work (#57)", () => {
     const { task } = await dispatch("serve it [report-early]");
     const done = await waitForState(h, task.id, "ready_for_review");
     expect(done.task.result?.reported?.summary).toBe("claude did it");
+  });
+
+  it("without Claude Code's session state, fails a report-less turn at once and still waits on a wakeup", async () => {
+    h = await start(claudeWithoutSessionState);
+    await setupRepo(h, "app", "w");
+    const unreported = await dispatch("plan it [no-report]");
+    const failed = await waitForState(h, unreported.task.id, "needs_attention");
+    expect(failed.task.result?.reportError).toMatch(/No ocd-report/);
+    expect(failed.attention.map((a) => a.kind)).toEqual(["failure"]);
+
+    const { task } = await dispatch("check later [wakeup]");
+    const { sessionId } = (await waitForState(h, task.id, "running")).task;
+    await waitFor(
+      () => adapter.inspect({ sessionId: sessionId! }),
+      (s) => s.status === "yielded",
+    );
+    await delay(300);
+    const waiting = await h.manager("mgr").inspectTask(task.id);
+    expect(waiting.task.state).toBe("running");
+    expect(waiting.attention).toEqual([]);
   });
 
   it("does not take a codex subagent's finished turn for the worker's", async () => {

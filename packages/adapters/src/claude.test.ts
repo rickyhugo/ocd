@@ -9,6 +9,12 @@ import { ClaudeAdapter, parseClaudeModel } from "./claude.ts";
 import type { AdapterEvent, SessionSpec } from "./types.ts";
 
 const FAKE = join(import.meta.dirname, "..", "test-fixtures", "fake-claude.mjs");
+const FAKE_NO_SESSION_STATE = join(
+  import.meta.dirname,
+  "..",
+  "test-fixtures",
+  "fake-claude-no-session-state.mjs",
+);
 let adapter: ClaudeAdapter | null = null;
 let dir: string | null = null;
 afterEach(async () => {
@@ -17,9 +23,9 @@ afterEach(async () => {
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
-function setup(env: Record<string, string> = {}) {
+function setup(fake = FAKE) {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "ocd-claude-")));
-  adapter = new ClaudeAdapter({ command: [process.execPath, FAKE] });
+  adapter = new ClaudeAdapter({ command: [process.execPath, fake] });
   const events: AdapterEvent[] = [];
   adapter.subscribe((e) => events.push(e));
   const spec: SessionSpec = {
@@ -32,7 +38,7 @@ function setup(env: Record<string, string> = {}) {
     agent: null,
     permissionPolicy: "ask",
     isolationEnv: { OCD_HOME: "/sandbox/t_1" },
-    env: { PATH: process.env["PATH"]!, HOME: process.env["HOME"]!, ...env },
+    env: { PATH: process.env["PATH"]!, HOME: process.env["HOME"]! },
   };
   return { adapter, events, spec };
 }
@@ -178,6 +184,33 @@ describe("Claude Code adapter", () => {
       );
       expect(done.lastAssistantText).toContain("Tests ran (allow)");
     });
+
+    describe("from a build that never reports session state", () => {
+      it("goes idle when the turn ends with no wakeup armed", async () => {
+        const { adapter, spec } = setup(FAKE_NO_SESSION_STATE);
+        const ref = await adapter.createSession(spec);
+        const statuses: string[] = [];
+        adapter.subscribe((e) => void (e.type === "status" && statuses.push(e.status)));
+        await adapter.prompt(ref, "x [no-report]");
+        await until(
+          () => adapter.inspect(ref),
+          (s) => s.lastAssistantText !== null,
+        );
+        expect(statuses).toEqual(["idle"]);
+      });
+
+      it("yields while a scheduled wakeup has not fired", async () => {
+        const { adapter, spec } = setup(FAKE_NO_SESSION_STATE);
+        const ref = await adapter.createSession(spec);
+        await adapter.prompt(ref, "later [wakeup]");
+        await until(
+          () => adapter.inspect(ref),
+          (s) => s.lastAssistantText === "Checking back in 20 minutes.",
+        );
+        await delay(200);
+        expect((await adapter.inspect(ref)).status).toBe("yielded");
+      });
+    });
   });
 
   it("reports the worker's task list from the stream as todos", async () => {
@@ -280,7 +313,7 @@ describe("Claude Code adapter", () => {
       (s) => s.status === "idle",
     );
     expect((await adapter.inspect(ref)).lastAssistantText).toContain("claude did it");
-    expect(statuses.filter((s) => s === "idle")).toEqual(["idle"]);
+    expect(statuses).toEqual(["yielded", "idle"]);
   });
 
   it("goes idle after one result when a message sent mid-turn was folded into it", async () => {

@@ -1,8 +1,8 @@
 // Minimal stand-in for `claude -p --input-format stream-json ...` (2.1.296
 // protocol subset) used by adapter tests. Directives in the prompt pick
 // behaviour: [perm], [limit], [hang], [todos], [usage], [subagent-wakeup], [wakeup],
-// [mapping], [finish-mid-turn], [bg-perm], [report-early], [no-report]. Never calls a
-// model.
+// [long-wakeup], [mapping], [finish-mid-turn], [bg-perm], [report-early], [no-report].
+// Never calls a model.
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -85,11 +85,15 @@ function launchSubagent(taskId) {
       }),
   );
 }
-function scheduleWakeup() {
+function scheduleWakeup(delaySeconds = 1200) {
   callTool(
     "ScheduleWakeup",
-    { delaySeconds: 1200, prompt: "check on the subagent" },
-    { scheduledFor: Date.now() + 1_200_000, clampedDelaySeconds: 1200, wasClamped: false },
+    { delaySeconds, prompt: "check on the subagent" },
+    {
+      scheduledFor: Date.now() + delaySeconds * 1000,
+      clampedDelaySeconds: delaySeconds,
+      wasClamped: false,
+    },
   );
 }
 function stopWakeups() {
@@ -247,9 +251,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     launchSubagent("watcher");
     return result(`Done; the watcher is still up.\n${report}`);
   }
-  if (text.includes("[wakeup]")) {
-    scheduleWakeup();
-    return result("Checking back in 20 minutes.");
+  if (text.includes("[wakeup]") || text.includes("[long-wakeup]")) {
+    const delaySeconds = text.includes("[long-wakeup]") ? 3000 : 1200;
+    scheduleWakeup(delaySeconds);
+    return result(`Checking back in ${delaySeconds / 60} minutes.`);
   }
   if (text.includes("[finish-mid-turn]")) {
     // The subagent finishes while the turn still runs: Claude Code reports the
@@ -439,5 +444,5 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       },
     });
   }
-  result(`Done (effort ${flag("--effort") ?? "default"}).\n${report}`);
+  result(finalText(text, `Done (effort ${flag("--effort") ?? "default"}).`));
 });
