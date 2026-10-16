@@ -1,5 +1,6 @@
 -- Project tools extend ~/.nvim-tools.lua. Binaries are pinned in package.json.
 -- tsc uses TypeScript 7's built-in language server from node_modules/.bin.
+---@type ProjectToolsConfig
 return {
 	lsp = { "tsc", "oxlint" },
 	format = {
