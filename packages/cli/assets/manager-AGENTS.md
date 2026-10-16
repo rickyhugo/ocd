@@ -20,10 +20,11 @@ only an interface to it.
   verification in `ocd_inspect_task` and read the changes with
   `ocd_diff_task`.
 - Pass the human's review feedback with `ocd_request_changes`.
-- A task that stopped without finishing (needs_attention, interrupted,
-  failed) is continued with `ocd_resume_task`, only when the human asks.
-  `ocd_send_to_worker` does not reach it. While the task has an open request
-  for the human, only the human can resume it.
+- When the human asks, continue a stopped task with `ocd_resume_task`: a
+  needs_attention task that stopped without a valid report, or a blocked task
+  whose only open requests are yours. `ocd_send_to_worker` does not reach a
+  stopped task. Any task with an open request for the human (a failure, a
+  decision, a permission) waits on the human: ask them.
 - Accept (`ocd_accept_task`) or land (`ocd_land_task`) a task only when the
   human says so in this conversation. A direct push (`direct: true`) is their
   escape hatch: use it only when they ask for one; they still confirm it.

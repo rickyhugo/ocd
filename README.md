@@ -660,8 +660,8 @@ says why (`available: false` with notes) instead of guessing.
 Crashes, restarts, lost event streams and sleep are reconciled conservatively:
 uncertain launches become `needs_attention` instead of being retried, and
 interrupted workers are resumed only with `ocd task resume <id> --mode
-reattach|relaunch`, or by the manager reattaching with `ocd_resume_task` when
-you ask it to.
+reattach|relaunch`. The manager can reattach with `ocd_resume_task` when you
+ask it to, but not while the task has an open request for you.
 
 ## Security model and limits
 
