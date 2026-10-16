@@ -1,4 +1,10 @@
-import { ATTENTION_KINDS, type Attention, type Task, type UpdateStatus } from "@ocd/core";
+import {
+  ATTENTION_KINDS,
+  LIVE_STATES,
+  type Attention,
+  type Task,
+  type UpdateStatus,
+} from "@ocd/core";
 
 // The sidebar's view model: what to show, in which order, with which emphasis.
 // Pure, so it is tested without a terminal.
@@ -107,7 +113,7 @@ export function buildSidebar(
     (t) => ({ glyph: "✓", tone: "success", meta: age(t.finishedAt ?? t.updatedAt, now) }),
   );
   const running = rows(
-    (t) => t.state === "running" || t.state === "starting" || t.state === "blocked",
+    (t) => LIVE_STATES.has(t.state),
     (t) => {
       const quiet = t.lastActivityAt !== null && now - Date.parse(t.lastActivityAt) > QUIET_MS;
       return {

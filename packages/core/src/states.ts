@@ -78,17 +78,21 @@ const TRANSITIONS: Record<TaskState, readonly TaskState[]> = {
 /** States in which a worker may own the task's workspace. */
 export const LIVE_STATES: ReadonlySet<TaskState> = new Set(["starting", "running", "blocked"]);
 
+/** Finished: no transition leaves these. */
+export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set(
+  TASK_STATES.filter((state) => TRANSITIONS[state].length === 0),
+);
+
 /** States that are not finished: shown in briefings and status. */
-export const OPEN_STATES: ReadonlySet<TaskState> = new Set([
-  "queued",
-  "starting",
+export const OPEN_STATES: ReadonlySet<TaskState> = new Set(
+  TASK_STATES.filter((state) => !TERMINAL_STATES.has(state)),
+);
+
+/** States in which the worker's session takes follow-up instructions. */
+export const STEERABLE_STATES: ReadonlySet<TaskState> = new Set([
   "running",
   "blocked",
   "ready_for_review",
-  "needs_attention",
-  "interrupted",
-  "failed",
-  "manual",
 ]);
 
 /** States from which the human can take over a worker's session. */
@@ -116,8 +120,6 @@ export const RESUME_REFUSALS: Record<TaskState, string | null> = {
   needs_attention: null,
   manual: "the human is driving its session; wait until they hand it back",
 };
-
-export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set(["completed", "cancelled"]);
 
 export function canTransition(from: TaskState, to: TaskState): boolean {
   return TRANSITIONS[from].includes(to);
