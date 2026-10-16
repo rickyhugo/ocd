@@ -1,3 +1,6 @@
+/** The longest delay a timer waits; Node runs a longer one after 1 ms. */
+export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+
 /** A pending timeout or interval from a `Scheduler`. */
 export interface Timer {
   /** Lets the process exit while this timer is pending. */
@@ -107,7 +110,7 @@ export class FakeScheduler implements Scheduler {
   }
 }
 
-/** Node runs a delay below 1 ms, or one that is not a number, after 1 ms. */
-const nodeDelay = (ms: number) => (ms >= 1 ? ms : 1);
+/** Node runs a delay below 1 ms, above this, or not a number, after 1 ms. */
+const nodeDelay = (ms: number) => (ms >= 1 && ms <= MAX_TIMER_DELAY_MS ? ms : 1);
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
