@@ -42,6 +42,7 @@ import {
   probeGh,
   LockHeldError,
   SupervisorConfig,
+  configDeprecations,
   loadConfig,
   normalizeDirectory,
   startDaemon,
@@ -141,8 +142,8 @@ Tasks
   ocd task land <id> [--commit] [--wait]
                                     Get the work into its base branch: accept, open or reuse the PR, merge it once
                                     checks pass, clean up. Run again to continue; --wait polls while checks run
-  ocd task land <id> --direct       Escape hatch: push straight to the base branch (mergeMethod from ocd.jsonc,
-                                    squash by default) after you confirm the exact commits; never forces
+  ocd task land <id> --direct       Escape hatch: push straight to the base branch (git.mergeMethod from
+                                    ocd.jsonc, squash by default) after you confirm the exact commits; never forces
   ocd task diff <id> [--stat]       The task's changes against where its branch started (uncommitted ones too)
   ocd task request-changes <id> <feedback>
                                     Review feedback: the worker gets it as a follow-up and the task comes back
@@ -703,9 +704,11 @@ async function run(
       process.env["PATH"] = tools.path;
       // Optional tools are checked only when ocd.jsonc turns them on.
       let configError: string | null = null;
+      let deprecated: string[] = [];
       let config: SupervisorConfig;
       try {
         config = loadConfig(paths.config);
+        deprecated = configDeprecations(paths.config);
       } catch (error) {
         configError = error instanceof Error ? error.message : String(error);
         config = SupervisorConfig.parse({});
@@ -732,7 +735,7 @@ async function run(
         }
       }
       const report = {
-        config: { path: paths.config, error: configError },
+        config: { path: paths.config, error: configError, deprecated },
         harnesses,
         models,
         github: gh,
@@ -761,6 +764,10 @@ async function run(
           });
         return [
           ...(configError ? [`${"config".padEnd(9)} INVALID ${configError}`] : []),
+          ...deprecated.map(
+            (d) =>
+              `${"config".padEnd(9)} DEPRECATED ${d}; the old key is read for one release only`,
+          ),
           ...harnesses.map(
             (r) =>
               `${r.harness.padEnd(9)} ${r.available ? "ok" : "--"} ${r.version ?? ""} ${r.problems.join("; ")}`,
