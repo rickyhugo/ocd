@@ -117,7 +117,6 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     }
   });
 
-  /** Manager calls must come from the registered manager session. */
   /**
    * Manager calls must come from a session in the configured manager
    * directory. The latest such session becomes the one that receives updates.
