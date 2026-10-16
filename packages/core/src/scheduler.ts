@@ -47,7 +47,7 @@ export class FakeScheduler implements Scheduler {
   }
 
   setTimeout(fn: () => void, ms: number): Timer {
-    return this.add(fn, ms, null);
+    return this.add(fn, nodeDelay(ms), null);
   }
 
   clearTimeout(timer: Timer): void {
@@ -55,7 +55,7 @@ export class FakeScheduler implements Scheduler {
   }
 
   setInterval(fn: () => void, ms: number): Timer {
-    return this.add(fn, ms, Math.max(1, ms));
+    return this.add(fn, nodeDelay(ms), nodeDelay(ms));
   }
 
   clearInterval(timer: Timer): void {
@@ -71,7 +71,8 @@ export class FakeScheduler implements Scheduler {
    * Moves the clock forward by `ms`, firing every timer that comes due in time
    * order. The event loop turns once before the clock moves and after each
    * timer, so promise chains already running (and those a timer starts) settle
-   * at the time they started, and the timers they set count from then.
+   * first and the timers they set count from that time. Work waiting on real
+   * I/O is not waited for.
    */
   async advance(ms: number): Promise<void> {
     await turn();
@@ -99,11 +100,14 @@ export class FakeScheduler implements Scheduler {
     return best;
   }
 
-  private add(fn: () => void, ms: number, every: number | null): Timer {
+  private add(fn: () => void, delay: number, every: number | null): Timer {
     const timer: Timer = { unref: () => undefined };
-    this.timers.set(timer, { at: this.time + Math.max(0, ms), every, fn, order: this.order++ });
+    this.timers.set(timer, { at: this.time + delay, every, fn, order: this.order++ });
     return timer;
   }
 }
+
+/** Node runs a delay below 1 ms, or one that is not a number, after 1 ms. */
+const nodeDelay = (ms: number) => (ms >= 1 ? ms : 1);
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));

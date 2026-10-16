@@ -247,11 +247,11 @@ describe("Codex worker lifecycle", () => {
   it("stops idle app-servers and resumes the thread on the next prompt", async () => {
     const { spec } = setup();
     await adapter!.close();
-    const clock = new FakeScheduler();
+    const time = new FakeScheduler();
     adapter = new CodexAdapter({
       command: [process.execPath, FAKE],
       idleStopMs: 60_000,
-      scheduler: clock,
+      scheduler: time,
     });
     const ref = await adapter.createSession(spec);
     await adapter.prompt(ref, "first");
@@ -259,9 +259,9 @@ describe("Codex worker lifecycle", () => {
       () => adapter!.inspect(ref),
       (s) => s.status === "idle" && s.lastAssistantText !== null,
     );
-    await clock.advance(59_999);
+    await time.advance(59_999);
     expect(adapter.activeWorkers()).toBe(1);
-    await clock.advance(1);
+    await time.advance(1);
     await until(
       () => adapter!.activeWorkers(),
       (n) => n === 0,

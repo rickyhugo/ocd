@@ -127,10 +127,10 @@ describe("self-update", () => {
     const afterOnly = {
       settings: () => ({ enabled: false, repo: "ocd", intervalMinutes: 10, build: [] }),
     };
-    const clock = new FakeScheduler(Date.now());
+    const time = new FakeScheduler(Date.now());
     const failing = updater(w, {
       ...afterOnly,
-      scheduler: clock,
+      scheduler: time,
       afterApplied: {
         run: async () => {
           throw new Error("opencode reload: Directory not found");
@@ -139,9 +139,9 @@ describe("self-update", () => {
       },
     });
     failing.u.start();
-    await clock.advance(29_999);
+    await time.advance(29_999);
     expect(failing.calls.notify).toEqual([`update-applied:${sha}`]);
-    await clock.advance(1);
+    await time.advance(1);
     failing.u.stop();
     expect(failing.calls.notify).toEqual([`update-applied:${sha}`, `update-after-failed:${sha}`]);
 
@@ -150,10 +150,10 @@ describe("self-update", () => {
     w2.land("feat: reload again");
     await updater(w2).u.check();
     let attempts = 0;
-    const flakyClock = new FakeScheduler(Date.now());
+    const flakyTime = new FakeScheduler(Date.now());
     const flaky = updater(w2, {
       ...afterOnly,
-      scheduler: flakyClock,
+      scheduler: flakyTime,
       afterApplied: {
         run: async () => {
           attempts += 1;
@@ -163,7 +163,7 @@ describe("self-update", () => {
       },
     });
     flaky.u.start();
-    await flakyClock.advance(30_000);
+    await flakyTime.advance(30_000);
     flaky.u.stop();
     expect(attempts).toBe(2);
     expect(flaky.calls.notify).toHaveLength(1);

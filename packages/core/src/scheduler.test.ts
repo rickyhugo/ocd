@@ -14,16 +14,17 @@ describe("FakeScheduler", () => {
     s.setTimeout(record("early"), 10);
     const every = s.setInterval(record("tick"), 20);
     s.clearTimeout(s.setTimeout(record("cleared"), 5));
+    s.setTimeout(record("zero"), 0);
 
     await s.advance(9);
-    expect(fired).toEqual([]);
+    expect(fired).toEqual(["zero@1001"]);
     await s.advance(41);
-    expect(fired).toEqual(["early@1010", "tick@1020", "late@1030", "tick@1040"]);
+    expect(fired).toEqual(["zero@1001", "early@1010", "tick@1020", "late@1030", "tick@1040"]);
     expect(s.now()).toBe(1050);
     expect(s.pending).toBe(1);
     s.clearInterval(every);
     await s.advance(100);
-    expect(fired).toHaveLength(4);
+    expect(fired).toHaveLength(5);
     expect(s.pending).toBe(0);
   });
 
@@ -47,10 +48,12 @@ describe("FakeScheduler", () => {
 // timers only through a `Scheduler`, so tests can drive time instead of
 // sleeping. `systemScheduler` in this file is the one place that may use the
 // globals; `setImmediate` stays allowed, as it does not depend on time.
+// Timeouts a platform API applies to real I/O (`execFile`'s `timeout`,
+// `AbortSignal.timeout` on a fetch) also stay: no scheduler can drive them.
 const packages = join(import.meta.dirname, "..", "..");
 const GUARDED = ["supervisor", "adapters"].map((name) => join(packages, name, "src"));
 const RAW_TIME =
-  /(?<![.\w])(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(|\bDate\.now\b|\bnew Date\(\s*\)|\bperformance\.now\s*\(|node:timers/;
+  /(?:(?<![.\w])|globalThis\.)(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(|\bDate\.now\b|\bnew Date\(\s*\)|\bperformance\.now\s*\(|["'](?:node:)?timers/;
 
 function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -76,6 +79,8 @@ describe("scheduler seam", () => {
       "const now = clock ?? Date.now;",
       "stamp(new Date().toISOString());",
       'import { setTimeout as delay } from "node:timers/promises";',
+      "globalThis.setTimeout(fn, 5);",
+      'import { setTimeout } from "timers";',
     ])
       expect(RAW_TIME.test(raw), raw).toBe(true);
     for (const allowed of [

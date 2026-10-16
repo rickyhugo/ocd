@@ -277,24 +277,24 @@ describe("Claude Code worker lifecycle", () => {
   it("stops idle workers and resumes them transparently on the next prompt", async () => {
     const { spec } = setup();
     await adapter!.close();
-    const clock = new FakeScheduler();
+    const time = new FakeScheduler();
     adapter = new ClaudeAdapter({
       command: [process.execPath, FAKE],
       idleStopMs: 60_000,
-      scheduler: clock,
+      scheduler: time,
     });
     const creating = adapter.createSession(spec);
     // createSession waits 300 ms for the process to fail fast.
-    await clock.advance(300);
+    await time.advance(300);
     const ref = await creating;
     await adapter.prompt(ref, "first");
     await until(
       () => adapter!.inspect(ref),
       (s) => s.status === "idle" && s.lastAssistantText !== null,
     );
-    await clock.advance(59_999);
+    await time.advance(59_999);
     expect(adapter.activeWorkers()).toBe(1);
-    await clock.advance(1);
+    await time.advance(1);
     await until(
       () => adapter!.activeWorkers(),
       (n) => n === 0,
