@@ -1,4 +1,6 @@
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { ClaudeAdapter, CodexAdapter, type HarnessAdapter } from "@ocd/adapters";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -90,6 +92,80 @@ for (const harness of harnesses) {
     });
   });
 }
+
+describe("workers waiting on their own background work (#57)", () => {
+  const claude = harnesses.find((x) => x.name === "claude")!;
+  const codex = harnesses.find((x) => x.name === "codex")!;
+  let adapter!: HarnessAdapter & { activeWorkers(): number };
+  const start = (harness: typeof claude) =>
+    startHarness({
+      adapters: () => [(adapter = harness.adapter())],
+      config: {
+        profiles: { w: { harness: harness.name, model: harness.model, permissionPolicy: "ask" } },
+      },
+    });
+  const dispatch = (instructions: string) =>
+    h!.manager("mgr").dispatch({
+      repo: "app",
+      title: "t",
+      instructions,
+      idempotencyKey: `wait-${Math.random()}`,
+    });
+  const types = (detail: { events: { type: string }[] }) => detail.events.map((e) => e.type);
+
+  it("keeps a worker that yields to a subagent and a wakeup running, and continues the same worker", async () => {
+    h = await start(claude);
+    const harnessRef = h;
+    await setupRepo(h, "app", "w");
+    const { task } = await dispatch("port it [subagent-wakeup]");
+    await waitFor(
+      () => harnessRef.manager("mgr").peekTask(task.id),
+      (t) => t.entries.some((e) => e.text?.includes("still working") ?? false),
+    );
+    await delay(300);
+    const waiting = await h.manager("mgr").inspectTask(task.id);
+    expect(waiting.task.state).toBe("running");
+    expect(waiting.attention.filter((a) => a.kind === "failure")).toEqual([]);
+
+    writeFileSync(join(waiting.task.workspacePath!, ".ocd-release"), "");
+    const done = await waitForState(h, task.id, "ready_for_review");
+    expect(done.task.result?.reported?.summary).toBe("claude did it");
+    expect(done.task.result?.verification?.changedFiles.toSorted()).toEqual([
+      "scripts.txt",
+      "server.txt",
+    ]);
+    expect(done.task.sessionId).toBe(waiting.task.sessionId);
+    expect(adapter.activeWorkers()).toBe(1);
+    expect(types(done)).not.toContain("state.needs_attention");
+    expect(types(done).filter((t) => t === "session.created")).toHaveLength(1);
+    expect(types(done).filter((t) => t === "prompt.intent")).toHaveLength(1);
+  });
+
+  it("does not fail interim turns waiting on mapping agents, and still fails a last turn without a report", async () => {
+    h = await start(claude);
+    await setupRepo(h, "app", "w");
+    const planned = await dispatch("plan it [mapping]");
+    const done = await waitForState(h, planned.task.id, "ready_for_review");
+    expect(done.task.result?.reported?.summary).toBe("claude did it");
+    expect(types(done)).not.toContain("state.needs_attention");
+
+    const unreported = await dispatch("plan it [mapping] [no-report]");
+    const failed = await waitForState(h, unreported.task.id, "needs_attention");
+    expect(failed.task.result?.reported).toBeNull();
+    expect(failed.task.result?.reportError).toMatch(/No ocd-report/);
+    expect(failed.task.result?.finalMessageExcerpt).toBe("Both maps are in. Here is the plan.");
+    expect(failed.attention.find((a) => a.kind === "failure")?.status).toBe("open");
+  });
+
+  it("does not take a codex subagent's finished turn for the worker's", async () => {
+    h = await start(codex);
+    await setupRepo(h, "app", "w");
+    const { task } = await dispatch("review it [subagent]");
+    const done = await waitForState(h, task.id, "ready_for_review");
+    expect(done.task.result?.finalMessageExcerpt).toMatch(/^Reviewed with a second opinion/);
+    expect(types(done)).not.toContain("state.needs_attention");
+  });
+});
 
 for (const harness of harnesses) {
   describe(`${harness.name} worker processes`, () => {

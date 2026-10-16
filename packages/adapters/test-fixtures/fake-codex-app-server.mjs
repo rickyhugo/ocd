@@ -1,6 +1,6 @@
 // Minimal stand-in for `codex app-server` (0.162.1 protocol subset) used by
 // adapter tests. Directives in the prompt pick behaviour: [approve-cmd],
-// [edit], [limit], [hang], [plan], [usage]. Never calls a model.
+// [edit], [limit], [hang], [plan], [usage], [subagent]. Never calls a model.
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -69,6 +69,26 @@ function startTurn(text) {
     return complete(turn, "completed", null, items);
   }
   if (text.includes("[params]")) return finish(turn, JSON.stringify(threadParams));
+  if (text.includes("[subagent]")) {
+    // As codex 0.162.1 with spawn_agent (OCD task t_mv9nrfjt595f76): the
+    // child's thread streams over the parent's connection, and its turn ends
+    // while the parent's turn goes on.
+    const child = `${threadId}-child`;
+    const childTurn = { id: "turn_child", status: "inProgress", items: [] };
+    notify("turn/started", { threadId: child, turn: childTurn });
+    notify("item/completed", {
+      threadId: child,
+      turnId: childTurn.id,
+      item: {
+        type: "agentMessage",
+        id: "msg_child",
+        text: "Second opinion, no report",
+        phase: null,
+      },
+    });
+    notify("turn/completed", { threadId: child, turn: { ...childTurn, status: "completed" } });
+    return void setTimeout(() => finish(turn, `Reviewed with a second opinion.\n${report}`), 200);
+  }
   if (text.includes("[plan]")) {
     notify("turn/plan/updated", {
       threadId,

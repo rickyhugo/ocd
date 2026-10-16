@@ -98,6 +98,21 @@ describe("Codex adapter", () => {
     expect(snap.lastAssistantText).toContain("ocd-report");
   });
 
+  it("does not end the worker's turn when a spawned subagent's turn ends (#57)", async () => {
+    const { adapter, events, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "review [subagent]");
+    const snap = await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+    expect(snap.lastAssistantText).toMatch(/^Reviewed with a second opinion/);
+    expect(events.flatMap((e) => (e.type === "status" ? [e.status] : []))).toEqual([
+      "busy",
+      "idle",
+    ]);
+  });
+
   it("reports plan updates as the checklist, without the explanation", async () => {
     const { adapter, events, spec } = setup();
     const ref = await adapter.createSession(spec);

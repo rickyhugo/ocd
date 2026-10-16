@@ -114,6 +114,52 @@ describe("Claude Code adapter", () => {
     );
   });
 
+  describe("a turn that ends while background work will continue it (#57)", () => {
+    const statuses = (events: AdapterEvent[]) =>
+      events.flatMap((e) => (e.type === "status" ? [e.status] : []));
+
+    it("yields while mapping subagents run, and goes idle only after the last turn", async () => {
+      const { adapter, events, spec } = setup();
+      const ref = await adapter.createSession(spec);
+      await adapter.prompt(ref, "plan [mapping]");
+      const done = await until(
+        () => adapter.inspect(ref),
+        (s) => s.status === "idle",
+      );
+      expect(done.lastAssistantText).toContain("ocd-report");
+      expect(statuses(events)).toEqual(["yielded", "yielded", "idle"]);
+    });
+
+    it("yields when a finished subagent's notice is already queued as the next turn", async () => {
+      const { adapter, events, spec } = setup();
+      const ref = await adapter.createSession(spec);
+      await adapter.prompt(ref, "check [queued]");
+      await until(
+        () => adapter.inspect(ref),
+        (s) => s.status === "idle" && (s.lastAssistantText?.includes("passed") ?? false),
+      );
+      expect(statuses(events)).toEqual(["yielded", "idle"]);
+    });
+
+    it("keeps a background subagent's permission request answerable after the turn ends", async () => {
+      const { adapter, spec } = setup();
+      const ref = await adapter.createSession(spec);
+      await adapter.prompt(ref, "test [bg-perm]");
+      const waiting = await until(
+        () => adapter.inspect(ref),
+        (s) => s.lastAssistantText === "Waiting on the test subagent.",
+      );
+      expect(waiting.status).toBe("waiting");
+      expect(waiting.pending.map((p) => p.summary)).toEqual(["Bash: npm test"]);
+      await adapter.reply(ref, waiting.pending[0]!.id, { type: "approve" });
+      const done = await until(
+        () => adapter.inspect(ref),
+        (s) => s.status === "idle",
+      );
+      expect(done.lastAssistantText).toContain("Tests ran (allow)");
+    });
+  });
+
   it("reports the worker's task list from the stream as todos", async () => {
     const { adapter, events, spec } = setup();
     const ref = await adapter.createSession(spec);

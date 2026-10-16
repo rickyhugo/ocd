@@ -1,6 +1,8 @@
 // Minimal stand-in for `claude -p --input-format stream-json ...` (2.1.296
 // protocol subset) used by adapter tests. Directives in the prompt pick
-// behaviour: [perm], [limit], [hang], [todos], [usage]. Never calls a model.
+// behaviour: [perm], [limit], [hang], [todos], [usage], [subagent-wakeup],
+// [mapping], [queued], [bg-perm], [no-report]. Never calls a model.
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const args = process.argv.slice(2);
@@ -24,6 +26,8 @@ process.stderr.write(`args ${JSON.stringify(args)}\n`);
 const send = (m) => process.stdout.write(`${JSON.stringify({ session_id: sessionId, ...m })}\n`);
 const report = '```ocd-report\n{"summary":"claude did it"}\n```';
 let waiting = null;
+/** A background subagent's permission request: { id, answered(behavior) }. */
+let subagentAsk = null;
 let hanging = false;
 // [queue] / [fold]: a turn held open until the next message arrives, which
 // Claude Code then either runs as a turn of its own after this one ([queue],
@@ -36,8 +40,96 @@ function result(text, extra = {}) {
   send({ type: "result", subtype: "success", is_error: false, result: text, ...extra });
 }
 
+// Background work as Claude Code 2.1.300 streams it (OCD tasks t_mv9kega7a68bcf
+// and t_mv9m80r6e1495a): a subagent started with run_in_background and a
+// ScheduleWakeup outlive the turn, and Claude Code itself runs a new turn for
+// each subagent's completion notice.
+let toolSeq = 0;
+const say = (text) => send({ type: "assistant", message: { content: [{ type: "text", text }] } });
+function callTool(name, input, output, whileRunning = () => {}) {
+  const id = `toolu_${name}_${++toolSeq}`;
+  send({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input }] } });
+  whileRunning(id);
+  send({
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] },
+    tool_use_result: output,
+  });
+}
+function launchSubagent(taskId) {
+  callTool(
+    "Agent",
+    { description: taskId, run_in_background: true },
+    { status: "async_launched", isAsync: true, agentId: taskId },
+    (id) =>
+      send({
+        type: "system",
+        subtype: "task_started",
+        task_id: taskId,
+        tool_use_id: id,
+        description: taskId,
+        task_type: "local_agent",
+        is_backgrounded: true,
+      }),
+  );
+}
+function scheduleWakeup() {
+  callTool(
+    "ScheduleWakeup",
+    { delaySeconds: 1200, prompt: "check on the subagent" },
+    { scheduledFor: Date.now() + 1_200_000, clampedDelaySeconds: 1200, wasClamped: false },
+  );
+}
+function stopWakeups() {
+  callTool(
+    "ScheduleWakeup",
+    { stop: true },
+    {
+      scheduledFor: 0,
+      clampedDelaySeconds: 0,
+      wasClamped: false,
+      stopped: true,
+      cancelledWakeups: 1,
+    },
+  );
+}
+function subagentFinished(taskId) {
+  send({
+    type: "system",
+    subtype: "task_notification",
+    task_id: taskId,
+    status: "completed",
+    output_file: "",
+    summary: `Agent "${taskId}" finished`,
+  });
+}
+/** The turn Claude Code starts by itself for a subagent's completion notice. */
+function notificationTurn(taskId, work) {
+  send({
+    type: "user",
+    origin: { kind: "task-notification" },
+    message: { role: "user", content: `<task-notification>${taskId}</task-notification>` },
+  });
+  work();
+}
+/** Holds background work until the test drops `.ocd-release` into the worker's directory. */
+function onRelease(fn) {
+  const timer = setInterval(() => {
+    if (!existsSync(".ocd-release")) return;
+    clearInterval(timer);
+    unlinkSync(".ocd-release");
+    fn();
+  }, 20);
+}
+const finalText = (prompt, text) => (prompt.includes("[no-report]") ? text : `${text}\n${report}`);
+
 createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
+  if (m.type === "control_response" && subagentAsk && m.response.request_id === subagentAsk.id) {
+    const { answered } = subagentAsk;
+    subagentAsk = null;
+    return answered(m.response.response.behavior);
+  }
   if (m.type === "control_response" && waiting && m.response.request_id === waiting) {
     waiting = null;
     const r = m.response.response;
@@ -91,6 +183,78 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   });
   send({ type: "assistant", message: { content: [{ type: "text", text: "working" }] } });
   if (text.includes("[args]")) return result(`args: ${args.join(" ")}`);
+  if (text.includes("[subagent-wakeup]")) {
+    writeFileSync("server.txt", "ported\n");
+    launchSubagent("scripts");
+    scheduleWakeup();
+    const status = "Status: the server is ported. One scripts subagent is still working.";
+    say(status);
+    result(status);
+    return onRelease(() => {
+      subagentFinished("scripts");
+      notificationTurn("scripts", () => {
+        writeFileSync("scripts.txt", "ported\n");
+        stopWakeups();
+        const done = finalText(text, "The scripts are ported too.");
+        say(done);
+        result(done);
+      });
+    });
+  }
+  if (text.includes("[mapping]")) {
+    launchSubagent("api-map");
+    launchSubagent("agent-map");
+    const first =
+      "Instant-chat side is mapped. Still waiting on the api/ and agent/ mapping agents before I write the plan.";
+    say(first);
+    result(first);
+    setTimeout(() => {
+      subagentFinished("api-map");
+      notificationTurn("api-map", () => {
+        say("The api/ map is in. Waiting on the agent/ map.");
+        result("The api/ map is in. Waiting on the agent/ map.");
+      });
+    }, 100);
+    return void setTimeout(() => {
+      subagentFinished("agent-map");
+      notificationTurn("agent-map", () => {
+        const done = finalText(text, "Both maps are in. Here is the plan.");
+        say(done);
+        result(done);
+      });
+    }, 250);
+  }
+  if (text.includes("[queued]")) {
+    // The subagent finishes while the turn is still running: its notice is
+    // queued as the next turn, and the result says so.
+    launchSubagent("quick");
+    subagentFinished("quick");
+    result("Launched a quick check.", { queued_turn_count: 1 });
+    return notificationTurn("quick", () => result(`The check passed.\n${report}`));
+  }
+  if (text.includes("[bg-perm]")) {
+    // A background subagent asks for a permission and is still waiting for the
+    // answer when the worker's own turn ends.
+    launchSubagent("tests");
+    subagentAsk = {
+      id: "req-subagent",
+      answered: (behavior) => {
+        subagentFinished("tests");
+        notificationTurn("tests", () => result(`Tests ran (${behavior}).\n${report}`));
+      },
+    };
+    send({
+      type: "control_request",
+      request_id: subagentAsk.id,
+      request: {
+        subtype: "can_use_tool",
+        tool_name: "Bash",
+        input: { command: "npm test" },
+        tool_use_id: "toolu_sub_1",
+      },
+    });
+    return result("Waiting on the test subagent.");
+  }
   if (text.includes("[transcript]")) {
     // Claude Code emits one assistant message per content block, sharing message.id.
     const block = (uuid, content) =>
