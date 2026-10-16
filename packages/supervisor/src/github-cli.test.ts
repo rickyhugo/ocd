@@ -21,8 +21,15 @@ import {
   runGh,
   type GhLocation,
 } from "./github-cli.ts";
-import { GhPullRequests, RecordingPullRequests } from "./pull-requests.ts";
-import { declareRepos, makeRepo, startHarness, waitForState, type Harness } from "./testkit.ts";
+import { GhPullRequests } from "./pull-requests.ts";
+import {
+  RecordingPullRequests,
+  declareRepos,
+  makeRepo,
+  startHarness,
+  waitForState,
+  type Harness,
+} from "./testkit.ts";
 
 // A stand-in gh: a /bin/sh script that logs its argv, stdin and environment
 // next to itself and behaves according to a `mode` file. No network, no real gh.

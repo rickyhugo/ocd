@@ -9,34 +9,10 @@ import type {
   TranscriptSource,
 } from "@ocd/core";
 
-/** What an adapter has implemented and tested against a recorded harness version. */
+/** What varies between adapters. */
 export interface Capabilities {
-  start: boolean;
-  inspect: boolean;
-  steer: boolean;
-  interrupt: boolean;
-  resume: boolean;
-  pendingInteractions: boolean;
-  structuredResults: boolean;
-  usage: boolean;
   /** Emits `todos` events: the worker's own checklist/plan, as the harness exposes it. */
   todos: boolean;
-  /** Read-only recent messages / tool activity (`transcript`). */
-  transcript: boolean;
-}
-
-export type Capability = keyof Capabilities;
-
-export class UnsupportedCapabilityError extends Error {
-  readonly harness: HarnessName;
-  readonly capability: Capability;
-
-  constructor(harness: HarnessName, capability: Capability) {
-    super(`The ${harness} adapter does not support "${capability}"`);
-    this.harness = harness;
-    this.capability = capability;
-    this.name = "UnsupportedCapabilityError";
-  }
 }
 
 export interface SessionSpec {
@@ -189,11 +165,6 @@ export class InvalidCursorError extends Error {
     super(message);
     this.name = "InvalidCursorError";
   }
-}
-
-export function requireCapability(adapter: HarnessAdapter, capability: Capability): void {
-  if (!adapter.capabilities[capability])
-    throw new UnsupportedCapabilityError(adapter.harness, capability);
 }
 
 /**

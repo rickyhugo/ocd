@@ -5,8 +5,8 @@ import { join } from "node:path";
 import type { Task } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { RecordingPullRequests } from "./pull-requests.ts";
 import {
+  RecordingPullRequests,
   declareRepos,
   makeRepo,
   setupRepo,

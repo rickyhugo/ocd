@@ -18,16 +18,25 @@ import {
   type FakeAdapterOptions,
   type HarnessAdapter,
 } from "@ocd/adapters";
-import { OcdClient, type OcdPaths, type Actor, type RepoConfig } from "@ocd/core";
+import {
+  OcdClient,
+  type Actor,
+  type GitHubCliStatus,
+  type MergeMethod,
+  type OcdPaths,
+  type RepoConfig,
+} from "@ocd/core";
 
 import type { SupervisorConfigInput } from "./config.ts";
 import { startDaemon, type Daemon, type DaemonOptions } from "./daemon.ts";
 import { systemGit, type ExecResult, type GitRunner } from "./git.ts";
 import { createLogger } from "./logger.ts";
 import { RecordingManagerChannel, RecordingNotifier } from "./notify.ts";
+import type { PullRequestHost, PullRequestInput, PullRequestStatus } from "./pull-requests.ts";
 
 // Fixtures for routine tests: temporary state directories and git repositories,
-// fake harnesses, and recording notifiers. Nothing here calls a real model.
+// fake harnesses, recording notifiers and a recording pull-request host. Nothing
+// here calls a real model.
 
 export function tempDir(prefix = "ocd-test-"): string {
   // Short base path keeps Unix socket paths under the 104-byte limit.
@@ -248,4 +257,59 @@ export function failingGit(
         : systemGit.run(args, options),
     capped: (args, options) => systemGit.capped(args, options),
   };
+}
+
+export class RecordingPullRequests implements PullRequestHost {
+  readonly created: PullRequestInput[] = [];
+  readonly merged: { url: string; method: MergeMethod; matchHead?: string | undefined }[] = [];
+  /** Status to report per URL; defaults to an open, clean, green PR. */
+  readonly statuses = new Map<string, Partial<PullRequestStatus>>();
+  /** Open PRs on GitHub by head branch, reused by create. */
+  readonly openByHead = new Map<string, string>();
+  /** When set, every gh call fails with it (e.g. a GhError). */
+  failure: Error | null = null;
+  /** What probe reports; a function can hang or throw to test startup. */
+  probeResult: GitHubCliStatus | (() => Promise<GitHubCliStatus>) | null = null;
+
+  async create(input: PullRequestInput): Promise<{ url: string; existing?: boolean }> {
+    if (this.failure) throw this.failure;
+    const existing = this.openByHead.get(input.head);
+    if (existing) return { url: existing, existing: true };
+    this.created.push(input);
+    return { url: `https://example.test/pr/${this.created.length}` };
+  }
+
+  async status(url: string): Promise<PullRequestStatus> {
+    if (this.failure) throw this.failure;
+    const merged = this.merged.some((m) => m.url === url);
+    return {
+      state: merged ? "merged" : "open",
+      draft: false,
+      mergeable: "mergeable",
+      mergeState: "CLEAN",
+      failingChecks: [],
+      pendingChecks: [],
+      ...this.statuses.get(url),
+    };
+  }
+
+  async merge(url: string, _cwd: string, method: MergeMethod, matchHead?: string): Promise<void> {
+    if (this.failure) throw this.failure;
+    this.merged.push({ url, method, ...(matchHead ? { matchHead } : {}) });
+  }
+
+  async probe(): Promise<GitHubCliStatus> {
+    if (typeof this.probeResult === "function") return this.probeResult();
+    return (
+      this.probeResult ?? {
+        available: true,
+        path: "/test/gh",
+        version: "0.0.0",
+        auth: "ok",
+        problem: null,
+        problems: [],
+        checkedAt: new Date(0).toISOString(),
+      }
+    );
+  }
 }

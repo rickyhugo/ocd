@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
@@ -106,26 +106,4 @@ export function verifyBackup(path: string): void {
   } finally {
     sqlite.close();
   }
-}
-
-/**
- * Replaces the database with a verified backup. The caller must hold the
- * supervisor lock. The previous database (and its WAL) is kept, never deleted.
- */
-export function restoreDb(dbPath: string, backupPath: string): { previous: string | null } {
-  verifyBackup(backupPath);
-  let previous: string | null = null;
-  if (existsSync(dbPath)) {
-    // Fold the WAL into the main file before moving it aside.
-    const current = new Database(dbPath);
-    current.pragma("wal_checkpoint(TRUNCATE)");
-    current.close();
-    previous = `${dbPath}.pre-restore-${new Date().toISOString().replaceAll(/[:.]/g, "-")}`;
-    renameSync(dbPath, previous);
-    for (const suffix of ["-wal", "-shm"]) {
-      if (existsSync(dbPath + suffix)) renameSync(dbPath + suffix, previous + suffix);
-    }
-  }
-  copyFileSync(backupPath, dbPath);
-  return { previous };
 }

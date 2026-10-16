@@ -37,18 +37,7 @@ import {
 
 export const CODEX_TESTED_VERSIONS = ["0.162.1"] as const;
 
-const CAPABILITIES: Capabilities = {
-  start: true,
-  inspect: true,
-  steer: true,
-  interrupt: true,
-  resume: true,
-  pendingInteractions: true,
-  structuredResults: true,
-  usage: false,
-  todos: true,
-  transcript: true,
-};
+const CAPABILITIES: Capabilities = { todos: true };
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const APPROVAL_METHODS = new Set([

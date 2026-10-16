@@ -6,9 +6,11 @@ to know about it). Nothing outside `packages/adapters` names a harness; a test
 
 1. **Write the adapter** in `packages/adapters/src/<name>.ts`: a class that
    implements `HarnessAdapter` (`types.ts`). Start from `claude.ts` (a process
-   per session) or `opencode.ts` (an external service). Declare what it supports
-   in `capabilities`; report subscription limits with `limits` events, or
-   `readLimits()` if they can be read without a model call.
+   per session) or `opencode.ts` (an external service). Set `capabilities.todos`
+   when it emits `todos` events, and implement the optional methods it can
+   support (`transcript()` for `ocd task peek`, `revive()`, ...); report
+   subscription limits with `limits` events, or `readLimits()` if they can be
+   read without a model call.
 2. **Write the descriptor** in `packages/adapters/src/<name>-harness.ts`, a
    `HarnessDescriptor` (`harness.ts`):
    - `name` (the `harness` value in profiles and the `ocd.jsonc` section),

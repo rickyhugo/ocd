@@ -4,8 +4,14 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { RecordingPullRequests } from "./pull-requests.ts";
-import { declareRepos, makeRepo, startHarness, waitForState, type Harness } from "./testkit.ts";
+import {
+  RecordingPullRequests,
+  declareRepos,
+  makeRepo,
+  startHarness,
+  waitForState,
+  type Harness,
+} from "./testkit.ts";
 
 let h: Harness | null = null;
 afterEach(async () => {

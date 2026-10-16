@@ -137,7 +137,6 @@ export interface Daemon {
   readonly usage: UsageTracker;
 }
 
-/** Opens the database, creating it on first use and refusing silent upgrades. */
 /**
  * Opens the database and applies pending reviewed migrations. An existing
  * database is backed up first; all pending migrations run in one transaction,
