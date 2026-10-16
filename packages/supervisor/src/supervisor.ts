@@ -119,12 +119,14 @@ function sanitizeReport(report: WorkerReport): WorkerReport {
   };
 }
 
+type ResumeVerdict = ApiError | { mode: "relaunch" } | { mode: "reattach"; sessionId: string };
+
 /**
- * Why `actor` may not resume `task` in `mode`, or null when it may. The
- * manager may only reattach (same session, same workspace); a relaunch starts
- * an uncertain run over in a new session, so it stays the human's call.
+ * Whether `actor` may resume `task` in `mode`. The manager may only reattach:
+ * a relaunch starts an uncertain run over in a new session, so it stays the
+ * human's call.
  */
-function resumeRefusal(task: Task, mode: "reattach" | "relaunch", actor: Actor): ApiError | null {
+function resumeVerdict(task: Task, mode: "reattach" | "relaunch", actor: Actor): ResumeVerdict {
   const why = RESUME_REFUSALS[task.state];
   if (why) return conflict("not_resumable", `A ${task.state} task cannot be resumed: ${why}`);
   const relaunch = `ocd task resume ${task.id} --mode relaunch`;
@@ -139,7 +141,7 @@ function resumeRefusal(task: Task, mode: "reattach" | "relaunch", actor: Actor):
         "not_resumable",
         "Cancel or reattach a blocked task instead of relaunching it",
       );
-    return null;
+    return { mode };
   }
   if (!task.sessionId)
     return conflict(
@@ -148,7 +150,7 @@ function resumeRefusal(task: Task, mode: "reattach" | "relaunch", actor: Actor):
         ? "No recorded session to reattach; use relaunch"
         : `No recorded session to reattach; only the human can relaunch it (\`${relaunch}\`)`,
     );
-  return null;
+  return { mode, sessionId: task.sessionId };
 }
 
 const ACTIVITY_WRITE_INTERVAL_MS = 10_000;
@@ -1604,12 +1606,13 @@ export class Supervisor {
     {
       const task = this.store.requireTask(taskId);
       if (!["running", "blocked", "ready_for_review"].includes(task.state)) {
-        const refusal = resumeRefusal(task, "reattach", actor);
-        const guidance = refusal
-          ? refusal.message
-          : actor === "human"
-            ? `Resume it with \`ocd task resume ${task.id} --mode reattach\`, then send instructions.`
-            : "If the human wants it continued, resume it with ocd_resume_task: the worker continues in the same session and workspace. Then send instructions.";
+        const verdict = resumeVerdict(task, "reattach", actor);
+        const guidance =
+          verdict instanceof ApiError
+            ? verdict.message
+            : actor === "human"
+              ? `Resume it with \`ocd task resume ${task.id} --mode reattach\`, then send instructions.`
+              : "If the human wants it continued, resume it with ocd_resume_task: the worker continues in the same session and workspace. Then send instructions.";
         throw conflict(
           "not_steerable",
           `Cannot send instructions to a ${task.state} task. ${guidance}`,
@@ -1882,15 +1885,12 @@ export class Supervisor {
     });
   }
 
-  /**
-   * Explicit recovery for interrupted, failed, blocked or ambiguous tasks: by
-   * the human, or by the manager reattaching the same session.
-   */
+  /** Explicit recovery of a task that stopped; see resumeVerdict() for who may resume what. */
   async resume(taskId: string, mode: "reattach" | "relaunch", actor: Actor): Promise<Task> {
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
-      const refusal = resumeRefusal(task, mode, actor);
-      if (refusal) throw refusal;
+      const verdict = resumeVerdict(task, mode, actor);
+      if (verdict instanceof ApiError) throw verdict;
       const adapter = this.adapterFor(task.harness);
       // Open requests are settled only once the resume is known to go ahead.
       const settleOpen = () => {
@@ -1906,7 +1906,7 @@ export class Supervisor {
           });
         }
       };
-      if (mode === "relaunch") {
+      if (verdict.mode === "relaunch") {
         this.store.tx(() => {
           settleOpen();
           this.store.transition(taskId, "queued", {
@@ -1916,8 +1916,7 @@ export class Supervisor {
         return this.queueAndTick(taskId);
       }
       requireCapability(adapter, "resume");
-      // resumeRefusal() refuses a reattach without a session.
-      const sessionId = task.sessionId!;
+      const { sessionId } = verdict;
       let snap = await adapter.inspect({ sessionId });
       if (snap.status === "missing" && adapter.revive) {
         // A process-owned worker died with the supervisor; continue its session from disk.

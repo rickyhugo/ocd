@@ -101,10 +101,7 @@ export const TAKEOVER_STATES: ReadonlySet<TaskState> = new Set([
   "failed",
 ]);
 
-/**
- * Why an explicit resume (`ocd task resume`, the manager's resume_task)
- * cannot continue a task in each state; null where it can.
- */
+/** Why a task in each state cannot be resumed; null where it can. */
 export const RESUME_REFUSALS: Record<TaskState, string | null> = {
   queued: "its worker has not started yet",
   starting: "its worker is still starting",

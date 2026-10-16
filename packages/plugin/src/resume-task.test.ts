@@ -12,7 +12,6 @@ afterEach(async () => {
   await h?.cleanup();
 });
 
-/** Runs a real manager tool as the configured manager session. */
 function managerTools(harness: Harness) {
   const tools = new Map(
     buildTools((sessionId, directory) => harness.manager(sessionId, directory)).map((t) => [
