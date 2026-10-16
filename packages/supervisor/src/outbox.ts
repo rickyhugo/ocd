@@ -1,4 +1,4 @@
-import { truncate } from "@ocd/core";
+import { truncate, type Scheduler, type Timer } from "@ocd/core";
 
 import type { SupervisorConfig } from "./config.ts";
 import type { Logger } from "./logger.ts";
@@ -49,8 +49,8 @@ export function digest(payloads: readonly NotifyPayload[]): NotifyPayload {
  * sending but before marking delivered may repeat a notification, never lose it.
  */
 export class OutboxWorker {
-  private timer: NodeJS.Timeout | null = null;
-  private digestTimer: NodeJS.Timeout | null = null;
+  private timer: Timer | null = null;
+  private digestTimer: Timer | null = null;
   private running: Promise<void> | null = null;
   private stopped = false;
 
@@ -59,6 +59,7 @@ export class OutboxWorker {
   private readonly notifier: Notifier;
   private readonly managerChannel: ManagerChannel | null;
   private readonly logger: Logger;
+  private readonly scheduler: Scheduler;
 
   constructor(
     store: Store,
@@ -66,26 +67,28 @@ export class OutboxWorker {
     notifier: Notifier,
     managerChannel: ManagerChannel | null,
     logger: Logger,
+    scheduler: Scheduler,
   ) {
     this.store = store;
     this.config = config;
     this.notifier = notifier;
     this.managerChannel = managerChannel;
     this.logger = logger;
+    this.scheduler = scheduler;
   }
 
   start(): void {
     this.stopped = false;
-    this.timer = setInterval(() => this.tick(), this.config.outbox.intervalMs);
+    this.timer = this.scheduler.setInterval(() => this.tick(), this.config.outbox.intervalMs);
     this.timer.unref();
   }
 
   /** Stops the timers. A flush after this sends held notifications instead of waiting out the window. */
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) this.scheduler.clearInterval(this.timer);
     this.timer = null;
-    if (this.digestTimer) clearTimeout(this.digestTimer);
+    if (this.digestTimer) this.scheduler.clearTimeout(this.digestTimer);
     this.digestTimer = null;
     await this.running;
   }
@@ -107,7 +110,7 @@ export class OutboxWorker {
   /** Flushes again when the current digest window closes. */
   private armDigest(delayMs: number): void {
     if (this.stopped || this.digestTimer) return;
-    this.digestTimer = setTimeout(() => {
+    this.digestTimer = this.scheduler.setTimeout(() => {
       this.digestTimer = null;
       this.tick();
     }, delayMs);

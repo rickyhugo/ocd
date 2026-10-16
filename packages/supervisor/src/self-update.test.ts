@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { FakeScheduler } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { createLogger } from "./logger.ts";
@@ -110,7 +111,6 @@ describe("self-update", () => {
     next.u.start();
     next.u.stop();
     expect(next.calls.notify).toEqual([`update-applied:${sha}`]);
-    await new Promise((r) => setTimeout(r, 10));
     expect(next.calls.after).toBe(1);
     const again = updater(w);
     again.u.start();
@@ -123,8 +123,14 @@ describe("self-update", () => {
     seedInstall(w);
     const sha = w.land("feat: reload");
     await updater(w).u.check();
+    // Only the after-update step runs: no periodic checks share its 30 s timer.
+    const afterOnly = {
+      settings: () => ({ enabled: false, repo: "ocd", intervalMinutes: 10, build: [] }),
+    };
+    const time = new FakeScheduler(Date.now());
     const failing = updater(w, {
-      afterAppliedRetryMs: 5,
+      ...afterOnly,
+      scheduler: time,
       afterApplied: {
         run: async () => {
           throw new Error("opencode reload: Directory not found");
@@ -133,7 +139,9 @@ describe("self-update", () => {
       },
     });
     failing.u.start();
-    await new Promise((r) => setTimeout(r, 100));
+    await time.advance(29_999);
+    expect(failing.calls.notify).toEqual([`update-applied:${sha}`]);
+    await time.advance(1);
     failing.u.stop();
     expect(failing.calls.notify).toEqual([`update-applied:${sha}`, `update-after-failed:${sha}`]);
 
@@ -142,8 +150,10 @@ describe("self-update", () => {
     w2.land("feat: reload again");
     await updater(w2).u.check();
     let attempts = 0;
+    const flakyTime = new FakeScheduler(Date.now());
     const flaky = updater(w2, {
-      afterAppliedRetryMs: 5,
+      ...afterOnly,
+      scheduler: flakyTime,
       afterApplied: {
         run: async () => {
           attempts += 1;
@@ -153,7 +163,7 @@ describe("self-update", () => {
       },
     });
     flaky.u.start();
-    await new Promise((r) => setTimeout(r, 100));
+    await flakyTime.advance(30_000);
     flaky.u.stop();
     expect(attempts).toBe(2);
     expect(flaky.calls.notify).toHaveLength(1);

@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
+import { systemScheduler } from "@ocd/core";
+
 /** Live children, so a supervisor that exits without stop() does not orphan their groups. */
 const live = new Set<JsonLineProcess>();
 let exitHookInstalled = false;
@@ -111,7 +113,8 @@ export class JsonLineProcess {
   async stop(graceMs = 3000): Promise<void> {
     if (!this.running) return;
     this.child.stdin.end();
-    const timeout = (ms: number) => new Promise((r) => setTimeout(r, ms).unref());
+    const timeout = (ms: number) =>
+      new Promise<void>((r) => systemScheduler.setTimeout(r, ms).unref());
     if (await Promise.race([this.exited.then(() => true), timeout(graceMs).then(() => false)]))
       return;
     this.killGroup("SIGTERM");

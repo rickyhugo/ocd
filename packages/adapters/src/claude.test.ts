@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { FakeScheduler } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { ClaudeAdapter, parseClaudeModel } from "./claude.ts";
@@ -276,13 +277,26 @@ describe("Claude Code worker lifecycle", () => {
   it("stops idle workers and resumes them transparently on the next prompt", async () => {
     const { spec } = setup();
     await adapter!.close();
-    adapter = new ClaudeAdapter({ command: [process.execPath, FAKE], idleStopMs: 100 });
+    const time = new FakeScheduler();
+    adapter = new ClaudeAdapter({
+      command: [process.execPath, FAKE],
+      idleStopMs: 60_000,
+      scheduler: time,
+    });
     const ref = await adapter.createSession(spec);
     await adapter.prompt(ref, "first");
     await until(
       () => adapter!.inspect(ref),
       (s) => s.status === "idle" && s.lastAssistantText !== null,
     );
+    await time.advance(59_999);
+    await adapter.prompt(ref, "[args]");
+    const kept = await until(
+      () => adapter!.inspect(ref),
+      (s) => s.status === "idle" && (s.lastAssistantText ?? "").startsWith("args:"),
+    );
+    expect(kept.lastAssistantText).not.toContain("--resume");
+    await time.advance(60_000);
     await until(
       () => adapter!.activeWorkers(),
       (n) => n === 0,
@@ -291,7 +305,7 @@ describe("Claude Code worker lifecycle", () => {
     await adapter.prompt(ref, "[args]");
     const snap = await until(
       () => adapter!.inspect(ref),
-      (s) => (s.lastAssistantText ?? "").startsWith("args:"),
+      (s) => s.status === "idle" && s.lastAssistantText !== kept.lastAssistantText,
     );
     expect(snap.lastAssistantText).toContain(`--resume ${ref.sessionId}`);
     expect(adapter.activeWorkers()).toBe(1);

@@ -1,5 +1,6 @@
 import { chmodSync, writeFileSync } from "node:fs";
 
+import { systemScheduler } from "@ocd/core";
 import Database from "better-sqlite3";
 
 export class LockHeldError extends Error {
@@ -41,7 +42,7 @@ export class SupervisorLock {
     // Informational only; ownership is proven by the lock, never by this file.
     writeFileSync(
       `${path}.owner`,
-      JSON.stringify({ ...owner, startedAt: new Date().toISOString() }),
+      JSON.stringify({ ...owner, startedAt: new Date(systemScheduler.now()).toISOString() }),
       {
         mode: 0o600,
       },

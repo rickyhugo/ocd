@@ -16,6 +16,7 @@ import {
   type Briefing,
   type ManagerInfo,
   type ParsedRequest,
+  type Scheduler,
   type ShutdownReport,
   type TaskDetail,
   type TaskProgress,
@@ -58,6 +59,7 @@ export interface ApiDeps {
   /** Invoked after the shutdown response is sent. */
   requestShutdown: () => Promise<ShutdownReport>;
   live: LiveConfig;
+  scheduler: Scheduler;
   /** Self-update; null when this daemon does not manage OCD's own installs. */
   updater: SelfUpdater | null;
   /** Subscription usage limits; absent in tests that do not need it. */
@@ -384,7 +386,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
         briefing.text,
         "",
         "### Subscription usage limits (as the harnesses last reported)",
-        ...usageLines(usage, Date.now()).map((line) => `- ${line}`),
+        ...usageLines(usage, deps.scheduler.now()).map((line) => `- ${line}`),
         "Prefer profiles whose harness has headroom; a task that hits a limit waits for the reset.",
       ].join("\n"),
     };

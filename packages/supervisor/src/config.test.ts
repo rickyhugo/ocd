@@ -85,6 +85,34 @@ describe("ocd.jsonc", () => {
     );
   });
 
+  // Node runs a timer longer than 2^31 - 1 ms after 1 ms, so a larger interval
+  // would repeat its work every millisecond.
+  it("rejects a timer interval longer than Node can wait, naming the field", () => {
+    const longest = 2 ** 31 - 1;
+    const fields: [string, number][] = [
+      ["schedulerIntervalMs", longest],
+      ["reconcileIntervalMs", longest],
+      ["outbox.intervalMs", longest],
+      ["notifications.digestWindowMs", longest],
+      ["branchSync.intervalMs", longest],
+      ["workerIdleMinutes", Math.floor(longest / 60_000)],
+      ["selfUpdate.intervalMinutes", Math.floor(longest / 60_000)],
+      ["usageLimits.pollMinutes", Math.floor(longest / 60_000)],
+    ];
+    const configWith = (field: string, value: number) =>
+      writeConfig(
+        JSON.stringify(
+          field.split(".").reduceRight<unknown>((inner, key) => ({ [key]: inner }), value),
+        ),
+      );
+    for (const [field, max] of fields) {
+      expect(() => loadConfig(configWith(field, max)), field).not.toThrow();
+      expect(() => loadConfig(configWith(field, max + 1)), field).toThrow(
+        new RegExp(`\\n  ${field.replaceAll(".", "\\.")}: `),
+      );
+    }
+  });
+
   it("keeps the per-harness sections and their strictness", () => {
     const config = loadConfig(
       writeConfig(

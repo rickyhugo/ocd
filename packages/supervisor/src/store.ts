@@ -15,6 +15,7 @@ import {
   type OutboxKind,
   type Profile,
   type Repository,
+  type Scheduler,
   type Task,
   type TaskEvent,
   type TaskEventType,
@@ -38,7 +39,7 @@ import {
   workerRuns,
 } from "./db/schema.ts";
 import { ApiError, conflict, notFound } from "./errors.ts";
-import { iso, newId, type Clock } from "./ids.ts";
+import { iso, newId } from "./ids.ts";
 import { attentionNotification, type Notice } from "./notification.ts";
 
 type TaskRow = typeof tasks.$inferSelect;
@@ -104,15 +105,15 @@ export interface TransitionOptions {
 
 export class Store {
   readonly db: Db;
-  private readonly clock: Clock;
+  private readonly scheduler: Scheduler;
 
-  constructor(db: Db, clock: Clock) {
+  constructor(db: Db, scheduler: Scheduler) {
     this.db = db;
-    this.clock = clock;
+    this.scheduler = scheduler;
   }
 
   now(): string {
-    return iso(this.clock());
+    return iso(this.scheduler.now());
   }
 
   /** Runs fn atomically. Nested calls become savepoints. */
@@ -739,7 +740,7 @@ export class Store {
             attempts,
             lastError: redact(truncate(error, 2000)),
             status: dead ? "dead" : "pending",
-            nextAttemptAt: iso(this.clock() + delay),
+            nextAttemptAt: iso(this.scheduler.now() + delay),
           })
           .where(eq(outbox.id, id))
           .run();

@@ -1,9 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 
-import { boundTodos, textEntry, toolEntry, type AdapterStatus, type TodoItem } from "@ocd/core";
+import {
+  boundTodos,
+  systemScheduler,
+  textEntry,
+  toolEntry,
+  type AdapterStatus,
+  type TodoItem,
+} from "@ocd/core";
 
 import { TranscriptStore } from "./transcript-buffer.ts";
 import type {
@@ -265,16 +271,32 @@ export class FakeAdapter implements HarnessAdapter {
     this.fault("prompt", "after");
   }
 
+  /** Rejects when the signal aborts, as `timers/promises` would. */
+  private sleep(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      const onAbort = () => {
+        systemScheduler.clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = systemScheduler.setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   private async run(session: FakeSession, steps: FakeStep[], signal: AbortSignal): Promise<void> {
     try {
       for (const [index, step] of steps.entries()) {
         // Stable per prompt and step, like a harness item id.
         const itemId = `${session.prompts.length}:${index}`;
-        await delay(this.stepDelayMs, undefined, { signal });
+        await this.sleep(this.stepDelayMs, signal);
         this.state.emit({ type: "activity", sessionId: session.id });
         switch (step.type) {
           case "wait":
-            await delay(step.ms, undefined, { signal });
+            await this.sleep(step.ms, signal);
             break;
           case "write": {
             const target = join(session.spec.directory, step.file);
@@ -283,7 +305,7 @@ export class FakeAdapter implements HarnessAdapter {
             this.transcripts.live(session.id).upsert(
               toolEntry({
                 id: `tool:${itemId}`,
-                at: new Date().toISOString(),
+                at: new Date(systemScheduler.now()).toISOString(),
                 name: "write",
                 callId: null,
                 status: "completed",
@@ -307,7 +329,13 @@ export class FakeAdapter implements HarnessAdapter {
             session.lastAssistantText = step.text;
             this.transcripts
               .live(session.id)
-              .upsert(textEntry(`msg:${itemId}`, new Date().toISOString(), step.text));
+              .upsert(
+                textEntry(
+                  `msg:${itemId}`,
+                  new Date(systemScheduler.now()).toISOString(),
+                  step.text,
+                ),
+              );
             break;
           case "todos":
             this.state.emit({

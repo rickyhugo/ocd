@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { FakeScheduler } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { CodexAdapter, parseCodexModel } from "./codex.ts";
@@ -246,13 +247,26 @@ describe("Codex worker lifecycle", () => {
   it("stops idle app-servers and resumes the thread on the next prompt", async () => {
     const { spec } = setup();
     await adapter!.close();
-    adapter = new CodexAdapter({ command: [process.execPath, FAKE], idleStopMs: 100 });
+    const time = new FakeScheduler();
+    adapter = new CodexAdapter({
+      command: [process.execPath, FAKE],
+      idleStopMs: 60_000,
+      scheduler: time,
+    });
     const ref = await adapter.createSession(spec);
     await adapter.prompt(ref, "first");
     await until(
       () => adapter!.inspect(ref),
       (s) => s.status === "idle" && s.lastAssistantText !== null,
     );
+    await time.advance(59_999);
+    await adapter.prompt(ref, "[params]");
+    const kept = await until(
+      () => adapter!.inspect(ref),
+      (s) => s.status === "idle" && (s.lastAssistantText ?? "").startsWith("{"),
+    );
+    expect(JSON.parse(kept.lastAssistantText!)).not.toHaveProperty("resumed");
+    await time.advance(60_000);
     await until(
       () => adapter!.activeWorkers(),
       (n) => n === 0,
@@ -267,6 +281,23 @@ describe("Codex worker lifecycle", () => {
       resumed: true,
       threadId: ref.sessionId,
     });
+  });
+
+  it("waits on the app-server in real time, whatever the injected scheduler reads", async () => {
+    const { spec } = setup();
+    await adapter!.close();
+    const time = new FakeScheduler();
+    adapter = new CodexAdapter({ command: [process.execPath, FAKE], scheduler: time });
+    const creating = adapter.createSession(spec);
+    await time.advance(60_000);
+    const ref = await creating;
+    await adapter.prompt(ref, "[hang]");
+    await until(
+      () => adapter!.inspect(ref),
+      (s) => s.status === "busy",
+    );
+    await adapter.interrupt(ref);
+    expect((await adapter.inspect(ref)).status).toBe("idle");
   });
 
   it("releases a finished session's worker", async () => {

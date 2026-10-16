@@ -1,3 +1,4 @@
+import { systemScheduler } from "@ocd/core";
 import type { OpenCodeEvent } from "@opencode/client";
 
 import type { OpenCodeApi } from "./opencode.ts";
@@ -61,7 +62,7 @@ export class FakeOpenCodeService {
   emit(type: string, data: Record<string, unknown>): void {
     const event = {
       id: this.nextId("evt"),
-      created: Date.now(),
+      created: systemScheduler.now(),
       type,
       data,
     } as unknown as OpenCodeEvent;
@@ -81,7 +82,7 @@ export class FakeOpenCodeService {
       id: this.nextId("msg"),
       type: "assistant",
       content: [{ type: "text", text }],
-      time: { created: Date.now() },
+      time: { created: systemScheduler.now() },
       finish: "stop",
     });
     session.outcome = "succeeded";
@@ -93,7 +94,9 @@ export class FakeOpenCodeService {
   /** Appends a raw history message (e.g. an assistant message with tool parts). */
   addMessage(sessionID: string, message: Record<string, unknown>): string {
     const id = (message["id"] as string | undefined) ?? this.nextId("msg");
-    this.sessions.get(sessionID)!.messages.push({ time: { created: Date.now() }, ...message, id });
+    this.sessions
+      .get(sessionID)!
+      .messages.push({ time: { created: systemScheduler.now() }, ...message, id });
     return id;
   }
 
@@ -103,7 +106,7 @@ export class FakeOpenCodeService {
       id: this.nextId("msg"),
       type: "assistant",
       content: [],
-      time: { created: Date.now() },
+      time: { created: systemScheduler.now() },
       error,
     });
     session.outcome = "failed";
@@ -192,7 +195,7 @@ export class FakeOpenCodeService {
           id: this.nextId("msg"),
           type: "user",
           text,
-          time: { created: Date.now() },
+          time: { created: systemScheduler.now() },
         });
         this.active.add(sessionID);
         queueMicrotask(() => this.emit("session.status", { sessionID, status: { type: "busy" } }));
@@ -308,7 +311,7 @@ export class FakeOpenCodeService {
         const queue: (OpenCodeEvent | null)[] = [
           {
             id: "evt_connected",
-            created: Date.now(),
+            created: systemScheduler.now(),
             type: "server.connected",
             data: {},
           } as unknown as OpenCodeEvent,

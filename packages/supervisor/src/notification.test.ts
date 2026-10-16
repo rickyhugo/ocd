@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { systemScheduler } from "@ocd/core";
+
 import { attentionNotification, changedFilesText, notification } from "./notification.ts";
 import { setupRepo, startHarness, waitFor, waitForState, type Harness } from "./testkit.ts";
 
@@ -146,7 +148,10 @@ describe("desktop notifications from the supervisor", () => {
 
   it("expired request: names the task, not the attention id", async () => {
     let now = Date.now();
-    h = await startHarness({ clock: () => now, config: { attentionExpiryMinutes: 10 } });
+    h = await startHarness({
+      scheduler: { ...systemScheduler, now: () => now },
+      config: { attentionExpiryMinutes: 10 },
+    });
     const { taskId } = await firstNotification("x [fake:permission]");
     now += 11 * 60_000;
     await h.daemon.supervisor.reconcile("periodic");
@@ -167,7 +172,7 @@ describe("desktop notifications from the supervisor", () => {
   it("stall: how long the worker has been quiet", async () => {
     let now = Date.now();
     h = await startHarness({
-      clock: () => now,
+      scheduler: { ...systemScheduler, now: () => now },
       fake: { script: () => [{ type: "hang" }] },
       config: { stallAfterMinutes: 30, reconcileIntervalMs: 60_000 },
     });

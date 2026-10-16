@@ -13,6 +13,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { FakeScheduler } from "@ocd/core";
+
 import {
   GhError,
   classifyGhOutput,
@@ -194,7 +196,11 @@ describe("running gh", () => {
 describe("startup check (probeGh)", () => {
   it("reports version, path and a working login", async () => {
     const gh = fakeGh();
-    const status = await probeGh({ pathEnv: join(gh, ".."), cwd: root, now: () => new Date(0) });
+    const status = await probeGh({
+      pathEnv: join(gh, ".."),
+      cwd: root,
+      scheduler: new FakeScheduler(0),
+    });
     expect(status).toEqual({
       available: true,
       path: gh,

@@ -20,7 +20,9 @@ import {
   type LandPlan,
   type LandResult,
   type MergeMethod,
+  type Scheduler,
   type TaskDiff,
+  type Timer,
   type ShutdownReport,
   type SupervisorStatus,
   type TakeOverResult,
@@ -55,7 +57,7 @@ import { LandingService } from "./landing.ts";
 import { PEEK_TIMEOUT_MS, PeekService } from "./peek.ts";
 import type { PullRequestHost } from "./pull-requests.ts";
 import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } from "./errors.ts";
-import { iso, type Clock } from "./ids.ts";
+import { iso } from "./ids.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
 import { changedFilesText, managerWake, notification, type Notice } from "./notification.ts";
@@ -89,7 +91,7 @@ export interface SupervisorOptions {
   memory: MemoryService;
   outbox: OutboxWorker;
   logger: Logger;
-  clock: Clock;
+  scheduler: Scheduler;
   instanceId: string;
   hooks?: SupervisorHooks;
   live: LiveConfig;
@@ -134,10 +136,10 @@ export class Supervisor {
   private githubProbes = 0;
   /** Latest checklist per task. Progress display only: not persisted, not orchestration state. */
   private readonly todos = new Map<string, { items: TodoItem[]; at: string }>();
-  private schedulerTimer: NodeJS.Timeout | null = null;
-  private reconcileTimer: NodeJS.Timeout | null = null;
-  private syncTimer: NodeJS.Timeout | null = null;
-  private cleanupTimer: NodeJS.Timeout | null = null;
+  private schedulerTimer: Timer | null = null;
+  private reconcileTimer: Timer | null = null;
+  private syncTimer: Timer | null = null;
+  private cleanupTimer: Timer | null = null;
   private syncing: Promise<void> | null = null;
   private readonly branchSync: BranchSyncer;
   private readonly landing: LandingService;
@@ -154,7 +156,7 @@ export class Supervisor {
   constructor(o: SupervisorOptions) {
     this.o = o;
     for (const adapter of o.adapters) this.adapters.set(adapter.harness, adapter);
-    this.startedAt = iso(o.clock());
+    this.startedAt = iso(o.scheduler.now());
     this.branchSync = new BranchSyncer({
       store: o.store,
       workspaces: o.workspaces,
@@ -168,6 +170,7 @@ export class Supervisor {
       store: o.store,
       adapterFor: (harness) => this.adapters.get(harness),
       timeoutMs: () => o.hooks?.peekTimeoutMs ?? PEEK_TIMEOUT_MS,
+      scheduler: o.scheduler,
     });
     this.landing = new LandingService({
       store: o.store,
@@ -175,7 +178,7 @@ export class Supervisor {
       pullRequests: o.pullRequests,
       live: o.live,
       logger: o.logger,
-      clock: o.clock,
+      scheduler: o.scheduler,
       autoCleanup: () => o.config.autoCleanup,
       attentionExpiryMinutes: () => o.config.attentionExpiryMinutes,
       stopped: () => this.stopped,
@@ -215,20 +218,23 @@ export class Supervisor {
       );
     }
     await this.reconcile("startup");
-    this.lastReconcileTick = this.o.clock();
-    this.activityBaseline = this.o.clock();
-    this.schedulerTimer = setInterval(() => void this.tick(), this.o.config.schedulerIntervalMs);
-    this.reconcileTimer = setInterval(
+    this.lastReconcileTick = this.o.scheduler.now();
+    this.activityBaseline = this.o.scheduler.now();
+    this.schedulerTimer = this.o.scheduler.setInterval(
+      () => void this.tick(),
+      this.o.config.schedulerIntervalMs,
+    );
+    this.reconcileTimer = this.o.scheduler.setInterval(
       () => void this.periodicReconcile(),
       this.o.config.reconcileIntervalMs,
     );
     // Cheap when every repository is off: no git command runs.
-    this.syncTimer = setInterval(
+    this.syncTimer = this.o.scheduler.setInterval(
       () => void this.syncBranches(),
       this.o.config.branchSync.intervalMs,
     );
     // Finished tasks' worktrees, when autoCleanup is on: hourly, never forced.
-    this.cleanupTimer = setInterval(() => void this.autoCleanup(), 3_600_000);
+    this.cleanupTimer = this.o.scheduler.setInterval(() => void this.autoCleanup(), 3_600_000);
     this.cleanupTimer.unref();
     this.o.outbox.start();
     void this.tick();
@@ -263,10 +269,10 @@ export class Supervisor {
   }
 
   private clearTimers(): void {
-    if (this.schedulerTimer) clearInterval(this.schedulerTimer);
-    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
-    if (this.syncTimer) clearInterval(this.syncTimer);
-    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    if (this.schedulerTimer) this.o.scheduler.clearInterval(this.schedulerTimer);
+    if (this.reconcileTimer) this.o.scheduler.clearInterval(this.reconcileTimer);
+    if (this.syncTimer) this.o.scheduler.clearInterval(this.syncTimer);
+    if (this.cleanupTimer) this.o.scheduler.clearInterval(this.cleanupTimer);
     this.cleanupTimer = null;
     this.schedulerTimer = null;
     this.reconcileTimer = null;
@@ -534,7 +540,7 @@ export class Supervisor {
       const live = this.store.rowsInStates([...LIVE_STATES]).length;
       if (live >= this.o.config.concurrency) return;
       // A harness that just refused connections is retried later, not hammered.
-      if ((this.harnessRetryAt.get(row.harness) ?? 0) > this.o.clock()) continue;
+      if ((this.harnessRetryAt.get(row.harness) ?? 0) > this.o.scheduler.now()) continue;
       try {
         await this.admitOne(row.id);
       } catch (error) {
@@ -770,7 +776,7 @@ export class Supervisor {
 
     if (error instanceof HarnessUnavailableError && !current.sessionId) {
       // Nothing reached the harness, so the launch was provably not admitted: queue it again.
-      this.harnessRetryAt.set(task.harness, this.o.clock() + HARNESS_RETRY_MS);
+      this.harnessRetryAt.set(task.harness, this.o.scheduler.now() + HARNESS_RETRY_MS);
       this.store.tx(() => {
         this.store.updateRun(run.id, { ...end, exitReason: `harness_unavailable: ${message}` });
         this.store.transition(taskId, "queued", {
@@ -927,7 +933,7 @@ export class Supervisor {
   }
 
   private recordActivity(taskId: string): void {
-    const now = this.o.clock();
+    const now = this.o.scheduler.now();
     if (now - (this.lastActivityWrite.get(taskId) ?? 0) < ACTIVITY_WRITE_INTERVAL_MS) return;
     this.lastActivityWrite.set(taskId, now);
     this.store.touchActivity(taskId, iso(now));
@@ -935,7 +941,7 @@ export class Supervisor {
 
   private recordTodos(taskId: string, items: TodoItem[]): void {
     this.todos.delete(taskId);
-    this.todos.set(taskId, { items, at: iso(this.o.clock()) });
+    this.todos.set(taskId, { items, at: iso(this.o.scheduler.now()) });
     for (const oldest of this.todos.keys()) {
       if (this.todos.size <= TODO_TASKS_MAX) break;
       this.todos.delete(oldest);
@@ -1074,7 +1080,7 @@ export class Supervisor {
         dedupeKey,
         reason: truncate(redact(`${askPrefix}: ${interaction.summary}`), 2000),
         resolvableBy,
-        expiresAt: iso(this.o.clock() + this.o.config.attentionExpiryMinutes * 60_000),
+        expiresAt: iso(this.o.scheduler.now() + this.o.config.attentionExpiryMinutes * 60_000),
         ...binding,
       },
       notify: true,
@@ -1289,7 +1295,7 @@ export class Supervisor {
   // Reconciliation
 
   private async periodicReconcile(): Promise<void> {
-    const now = this.o.clock();
+    const now = this.o.scheduler.now();
     const gap = now - this.lastReconcileTick;
     this.lastReconcileTick = now;
     if (gap > this.o.config.reconcileIntervalMs * 3) {
@@ -1452,10 +1458,12 @@ export class Supervisor {
       task.lastActivityAt ? Date.parse(task.lastActivityAt) : 0,
       this.activityBaseline,
     );
-    const idleMs = this.o.clock() - last;
+    const idleMs = this.o.scheduler.now() - last;
     if (idleMs < this.o.config.stallAfterMinutes * 60_000) return;
     // One alert per window; the dedupe key rate-limits repeats.
-    const window = Math.floor(this.o.clock() / (this.o.config.stallRealertMinutes * 60_000));
+    const window = Math.floor(
+      this.o.scheduler.now() / (this.o.config.stallRealertMinutes * 60_000),
+    );
     this.store.raiseAttention(
       {
         taskId: task.id,

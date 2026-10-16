@@ -3,9 +3,21 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { MANAGER_HOST, configurableHarnesses, findHarness, harnessNames } from "@ocd/adapters";
-import { BranchSyncMode, MergeMethod, ProfilesConfig, ReposConfig, type Profile } from "@ocd/core";
+import {
+  BranchSyncMode,
+  MAX_TIMER_DELAY_MS,
+  MergeMethod,
+  ProfilesConfig,
+  ReposConfig,
+  systemScheduler,
+  type Profile,
+  type Scheduler,
+  type Timer,
+} from "@ocd/core";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { z } from "zod";
+
+const MAX_TIMER_MINUTES = Math.floor(MAX_TIMER_DELAY_MS / 60_000);
 
 // ocd.jsonc: supervisor settings and execution profiles in one declarative,
 // human-edited file. Unknown keys are errors so typos never pass silently.
@@ -47,12 +59,14 @@ const SupervisorConfigSchema = z
       .number()
       .int()
       .min(10)
+      .max(MAX_TIMER_DELAY_MS)
       .default(1000)
       .describe("How often queued work is admitted."),
     reconcileIntervalMs: z
       .number()
       .int()
       .min(100)
+      .max(MAX_TIMER_DELAY_MS)
       .default(30_000)
       .describe("How often live workers are reconciled against the harnesses."),
     stallAfterMinutes: z
@@ -76,7 +90,7 @@ const SupervisorConfigSchema = z
       ),
     outbox: z
       .object({
-        intervalMs: z.number().int().min(10).default(2000),
+        intervalMs: z.number().int().min(10).max(MAX_TIMER_DELAY_MS).default(2000),
         maxAttempts: z.number().int().min(1).default(8),
         baseDelayMs: z.number().int().min(10).default(5000),
       })
@@ -89,6 +103,7 @@ const SupervisorConfigSchema = z
           .number()
           .int()
           .min(0)
+          .max(MAX_TIMER_DELAY_MS)
           .default(3000)
           .describe(
             'Notifications raised within this many milliseconds of the first one are sent as one digest ("4 ready for review, 1 needs you"). 0 sends on the next outbox pass without waiting.',
@@ -105,6 +120,7 @@ const SupervisorConfigSchema = z
     workerIdleMinutes: z
       .number()
       .min(1)
+      .max(MAX_TIMER_MINUTES)
       .default(10)
       .describe(
         "Worker processes the supervisor owns stop after this long idle; their sessions resume on the next instruction.",
@@ -162,6 +178,7 @@ const SupervisorConfigSchema = z
           .number()
           .int()
           .min(100)
+          .max(MAX_TIMER_DELAY_MS)
           .default(300_000)
           .describe("How often task branches are compared with their base (restart to apply)."),
         maxTasksPerTick: z
@@ -207,6 +224,7 @@ const SupervisorConfigSchema = z
         intervalMinutes: z
           .number()
           .min(1)
+          .max(MAX_TIMER_MINUTES)
           .default(10)
           .describe(
             "How often origin is checked for a new version (also right after a task lands in that repository).",
@@ -248,6 +266,7 @@ const SupervisorConfigSchema = z
         pollMinutes: z
           .number()
           .min(0)
+          .max(MAX_TIMER_MINUTES)
           .default(15)
           .describe(
             "How often limits are read, for the harnesses that can be read without a model call (no tokens). 0 reads them only from running workers; other harnesses report them only while a worker runs.",
@@ -461,20 +480,22 @@ export class ConfigWatcher {
   private readonly onChange: () => void;
   private readonly debounceMs: number;
   private watchers: FSWatcher[] = [];
-  private timer: NodeJS.Timeout | null = null;
-  private poll: NodeJS.Timeout | null = null;
+  private timer: Timer | null = null;
+  private poll: Timer | null = null;
   private readonly pollMs: number;
+  private readonly scheduler: Scheduler;
   private fingerprint: string;
 
   constructor(
     path: string,
     onChange: () => void,
-    options: { debounceMs?: number; pollMs?: number } = {},
+    options: { debounceMs?: number; pollMs?: number; scheduler?: Scheduler } = {},
   ) {
     this.path = path;
     this.onChange = onChange;
     this.debounceMs = options.debounceMs ?? 150;
     this.pollMs = options.pollMs ?? 2000;
+    this.scheduler = options.scheduler ?? systemScheduler;
     this.fingerprint = this.stat();
   }
 
@@ -504,7 +525,7 @@ export class ConfigWatcher {
       watcher.on("error", () => undefined);
       this.watchers.push(watcher);
     }
-    this.poll = setInterval(() => {
+    this.poll = this.scheduler.setInterval(() => {
       if (this.stat() !== this.fingerprint) this.schedule();
     }, this.pollMs);
     this.poll.unref();
@@ -512,16 +533,16 @@ export class ConfigWatcher {
 
   private schedule(): void {
     this.fingerprint = this.stat();
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
+    if (this.timer) this.scheduler.clearTimeout(this.timer);
+    this.timer = this.scheduler.setTimeout(() => {
       this.timer = null;
       this.onChange();
     }, this.debounceMs);
   }
 
   stop(): void {
-    if (this.timer) clearTimeout(this.timer);
-    if (this.poll) clearInterval(this.poll);
+    if (this.timer) this.scheduler.clearTimeout(this.timer);
+    if (this.poll) this.scheduler.clearInterval(this.poll);
     for (const watcher of this.watchers.splice(0)) watcher.close();
   }
 }

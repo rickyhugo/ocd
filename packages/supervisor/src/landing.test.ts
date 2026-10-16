@@ -1,4 +1,4 @@
-import type { Task } from "@ocd/core";
+import { FakeScheduler, type Task } from "@ocd/core";
 import { describe, expect, it } from "vite-plus/test";
 
 import { LandingService, type LandingOptions } from "./landing.ts";
@@ -88,7 +88,7 @@ function setup(task: Task, pr?: Partial<PullRequestStatus>) {
     pullRequests: host,
     live: { mergeMethod: () => "squash" },
     logger: createLogger({ level: "silent" }),
-    clock: () => NOW,
+    scheduler: new FakeScheduler(NOW),
     autoCleanup: () => ({ enabled: false, afterHours: 24 }),
     attentionExpiryMinutes: () => 60,
     stopped: () => false,

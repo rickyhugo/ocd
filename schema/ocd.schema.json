@@ -18,14 +18,14 @@
       "description": "How often queued work is admitted.",
       "type": "integer",
       "minimum": 10,
-      "maximum": 9007199254740991
+      "maximum": 2147483647
     },
     "reconcileIntervalMs": {
       "default": 30000,
       "description": "How often live workers are reconciled against the harnesses.",
       "type": "integer",
       "minimum": 100,
-      "maximum": 9007199254740991
+      "maximum": 2147483647
     },
     "stallAfterMinutes": {
       "default": 30,
@@ -53,7 +53,7 @@
           "default": 2000,
           "type": "integer",
           "minimum": 10,
-          "maximum": 9007199254740991
+          "maximum": 2147483647
         },
         "maxAttempts": {
           "default": 8,
@@ -84,7 +84,7 @@
           "description": "Notifications raised within this many milliseconds of the first one are sent as one digest (\"4 ready for review, 1 needs you\"). 0 sends on the next outbox pass without waiting.",
           "type": "integer",
           "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 2147483647
         },
         "focusApp": {
           "description": "Terminal app to bring forward when a notification is clicked: its bundle id (com.mitchellh.ghostty) or window class (kitty). Detected from tmux by default.",
@@ -97,7 +97,8 @@
       "default": 10,
       "description": "Worker processes the supervisor owns stop after this long idle; their sessions resume on the next instruction.",
       "type": "number",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 35791
     },
     "opencode": {
       "default": {},
@@ -212,7 +213,7 @@
           "description": "How often task branches are compared with their base (restart to apply).",
           "type": "integer",
           "minimum": 100,
-          "maximum": 9007199254740991
+          "maximum": 2147483647
         },
         "maxTasksPerTick": {
           "default": 25,
@@ -252,7 +253,8 @@
           "default": 10,
           "description": "How often origin is checked for a new version (also right after a task lands in that repository).",
           "type": "number",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 35791
         },
         "build": {
           "default": ["pnpm install --frozen-lockfile", "pnpm run build"],
@@ -303,7 +305,8 @@
           "default": 15,
           "description": "How often limits are read, for the harnesses that can be read without a model call (no tokens). 0 reads them only from running workers; other harnesses report them only while a worker runs.",
           "type": "number",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 35791
         }
       },
       "additionalProperties": false

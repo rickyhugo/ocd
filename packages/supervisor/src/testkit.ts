@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 
 import {
   FakeAdapter,
@@ -18,7 +17,7 @@ import {
   type FakeAdapterOptions,
   type HarnessAdapter,
 } from "@ocd/adapters";
-import { OcdClient, type OcdPaths, type Actor, type RepoConfig } from "@ocd/core";
+import { OcdClient, systemScheduler, type OcdPaths, type Actor, type RepoConfig } from "@ocd/core";
 
 import type { SupervisorConfigInput } from "./config.ts";
 import { startDaemon, type Daemon, type DaemonOptions } from "./daemon.ts";
@@ -87,7 +86,7 @@ export interface HarnessOptions {
   adapters: (fake: FakeAdapter) => HarnessAdapter[];
   fake: Omit<FakeAdapterOptions, "state">;
   hooks: DaemonOptions["hooks"];
-  clock: DaemonOptions["clock"];
+  scheduler: DaemonOptions["scheduler"];
 }
 
 export const TEST_CONFIG: Partial<SupervisorConfigInput> = {
@@ -129,7 +128,7 @@ export async function startHarness(options: Partial<HarnessOptions> = {}): Promi
       ...(opts.pullRequests ? { pullRequests: opts.pullRequests } : {}),
       logger: createLogger({ level: process.env["OCD_TEST_LOG"] ?? "silent" }),
       ...(opts.hooks ? { hooks: opts.hooks } : {}),
-      ...(opts.clock ? { clock: opts.clock } : {}),
+      ...(opts.scheduler ? { scheduler: opts.scheduler } : {}),
     });
     return daemon;
   };
@@ -201,15 +200,15 @@ export async function waitFor<T>(
   predicate: (value: T) => boolean,
   timeoutMs = 5000,
 ): Promise<T> {
-  const started = Date.now();
+  const started = systemScheduler.now();
   let last: T = await fn();
   while (!predicate(last)) {
-    if (Date.now() - started > timeoutMs) {
+    if (systemScheduler.now() - started > timeoutMs) {
       throw new Error(
         `waitFor timed out; last value: ${JSON.stringify(last, null, 2)?.slice(0, 2000)}`,
       );
     }
-    await delay(15);
+    await new Promise<void>((resolve) => systemScheduler.setTimeout(resolve, 15));
     last = await fn();
   }
   return last;
