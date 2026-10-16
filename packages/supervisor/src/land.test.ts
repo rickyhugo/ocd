@@ -237,6 +237,35 @@ describe("landing directly on the base branch", () => {
     });
     expect(originLog(s, 1)[0]!.startsWith("Write the file|")).toBe(true);
   });
+
+  it("refuses to approve a push whose stored plan is unreadable, and still lets it be denied", async () => {
+    const s = await setup();
+    const task = await finishedTask(s, "damaged");
+    const origin = git(s.origin, "rev-parse", "main");
+    for (const stored of [null, "{}", '{"head":42}']) {
+      const asked = await s.h.manager("mgr").landTask(task.id, { direct: true });
+      s.h.daemon.store.db.$client
+        .prepare("UPDATE attention_requests SET operation = ? WHERE id = ?")
+        .run(stored, asked.attentionId);
+
+      const listed = (await s.h.human.listAttention({ status: "open" })).find(
+        (a) => a.id === asked.attentionId,
+      );
+      expect(listed).toMatchObject({ kind: "land", operation: null });
+      const inspected = (await s.h.human.inspectTask(task.id)).attention.find(
+        (a) => a.id === asked.attentionId,
+      );
+      expect(inspected).toMatchObject({ status: "open", operation: null });
+
+      await expect(
+        s.h.human.resolveAttention(asked.attentionId!, { type: "approve" }),
+      ).rejects.toMatchObject({ status: 409, code: "stale_request" });
+      expect(git(s.origin, "rev-parse", "main")).toBe(origin);
+
+      const denied = await s.h.human.resolveAttention(asked.attentionId!, { type: "deny" });
+      expect(denied).toMatchObject({ status: "resolved", response: { type: "deny" } });
+    }
+  });
 });
 
 describe("landing through a pull request", () => {
