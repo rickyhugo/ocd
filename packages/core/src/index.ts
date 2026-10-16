@@ -6,6 +6,7 @@ export * from "./land.ts";
 export * from "./paths.ts";
 export * from "./redact.ts";
 export * from "./report.ts";
+export * from "./scheduler.ts";
 export * from "./schemas.ts";
 export * from "./spill.ts";
 export * from "./states.ts";
