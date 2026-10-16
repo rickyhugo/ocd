@@ -287,6 +287,7 @@ export function landingActions(options: {
 export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickAction[] {
   const message = { label: "Message the manager about it…", kind: "message" as const };
   const details = { label: "Details", kind: "details" as const };
+  const cancel = { label: "Cancel it", message: "Cancel this task." };
   if (row.attention?.kind === "land") {
     return [
       { label: "Review and confirm the push…", kind: "land_confirm" },
@@ -307,7 +308,8 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
   }
   const landing = row.task && landable(row.task) ? landingActions(options) : [];
   const can = row.task ? capabilitiesOf(row.task) : null;
-  const discard = can?.worktree ? [{ label: "Discard the work…", kind: "discard" as const }] : [];
+  // Without a worktree there is no work to discard, but the task still needs a way to close.
+  const close = can?.worktree ? { label: "Discard the work…", kind: "discard" as const } : cancel;
   const diff = row.task?.workspacePath ? [{ label: "View the diff", kind: "diff" as const }] : [];
   // Manual mode needs a worker session to open.
   const takeover =
@@ -336,7 +338,7 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
           message: "Summarize the result and anything I should check before accepting.",
         },
         message,
-        ...discard,
+        close,
         details,
       ];
     case "running":
@@ -347,7 +349,7 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
         ...diff,
         ...takeover,
         message,
-        { label: "Cancel it", message: "Cancel this task." },
+        cancel,
         details,
       ];
     case "failed":
@@ -359,25 +361,20 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
         ...diff,
         ...takeover,
         message,
-        ...discard,
+        close,
         details,
       ];
     case "completed":
     case "cancelled":
       return [
         ...(row.task.workspacePath
-          ? [
-              ...diff,
-              ...landing,
-              { label: "Clean up the worktree", kind: "clean" as const },
-              ...discard,
-            ]
+          ? [...diff, ...landing, { label: "Clean up the worktree", kind: "clean" as const }, close]
           : []),
         message,
         details,
       ];
     default:
-      return [message, { label: "Cancel it", message: "Cancel this task." }, details];
+      return [message, cancel, details];
   }
 }
 

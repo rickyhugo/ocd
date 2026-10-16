@@ -55,8 +55,9 @@ export const WORKSPACE_CAPABILITIES = {
   none: { worktree: false, land: false, takeOver: false },
 } as const satisfies Record<WorkspaceMode, WorkspaceCapabilities>;
 
-export function capabilitiesOf(task: { workspaceMode: WorkspaceMode }): WorkspaceCapabilities {
-  return WORKSPACE_CAPABILITIES[task.workspaceMode];
+/** A task from a supervisor that predates workspace modes has no workspaceMode; it is isolated. */
+export function capabilitiesOf(task: { workspaceMode?: WorkspaceMode }): WorkspaceCapabilities {
+  return WORKSPACE_CAPABILITIES[task.workspaceMode ?? "isolated"];
 }
 
 const TRANSITIONS: Record<TaskState, readonly TaskState[]> = {

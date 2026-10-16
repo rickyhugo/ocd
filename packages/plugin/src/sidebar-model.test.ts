@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { actionsFor, age, buildSidebar, landable, updateBanner } from "./sidebar-model.ts";
 
 const PR_ON = { pullRequests: true };
+const CANCEL = { label: "Cancel it", message: "Cancel this task." };
 
 const NOW = Date.parse("2026-10-13T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
@@ -214,6 +215,7 @@ describe("sidebar model", () => {
         message: "Summarize the result and anything I should check before accepting.",
       },
       { label: "Message the manager about it…", kind: "message" },
+      CANCEL,
       { label: "Details", kind: "details" },
     ]);
     expect(landable(task("n", "ready_for_review", none))).toBe(false);
@@ -228,6 +230,23 @@ describe("sidebar model", () => {
         state,
       ).toEqual([]);
     }
+  });
+
+  it("offers a way to close a stopped task without a workspace", () => {
+    for (const state of ["failed", "interrupted", "needs_attention"] as const) {
+      const t = task("n", state, { workspaceMode: "none" });
+      const row = buildSidebar([t], [], NOW).sections.flatMap((s) => s.rows)[0]!;
+      expect(actionsFor(row, PR_ON), state).toContainEqual(CANCEL);
+    }
+  });
+
+  it("treats a task from a supervisor that predates workspace modes as isolated", () => {
+    const current = task("o", "ready_for_review", { sessionId: "s", workspacePath: "/ws/o" });
+    const old = JSON.parse(JSON.stringify({ ...current, workspaceMode: undefined })) as Task;
+    expect("workspaceMode" in old).toBe(false);
+    expect(landable(old)).toBe(true);
+    const row = (t: Task) => buildSidebar([t], [], NOW).sections[0]!.rows[0]!;
+    expect(actionsFor(row(old), PR_ON)).toEqual(actionsFor(row(current), PR_ON));
   });
 
   it("lands only finished work that still has a worktree", () => {
