@@ -134,6 +134,8 @@ export class Supervisor {
   private githubProbes = 0;
   /** Latest checklist per task. Progress display only: not persisted, not orchestration state. */
   private readonly todos = new Map<string, { items: TodoItem[]; at: string }>();
+  /** Tasks whose current launch already has its worker.responded event. */
+  private readonly responded = new Set<string>();
   private schedulerTimer: NodeJS.Timeout | null = null;
   private reconcileTimer: NodeJS.Timeout | null = null;
   private syncTimer: NodeJS.Timeout | null = null;
@@ -624,6 +626,9 @@ export class Supervisor {
         ? "This workspace may contain changes from an earlier attempt. Inspect `git status` and `git log` first and continue from there; do not discard existing changes."
         : "",
       syncNote ?? "",
+      this.adapters.get(task.harness)?.capabilities.todos
+        ? "Start by recording a short plan with your todo or plan tool and keep it current as you finish steps; OCD shows it to the human as your progress."
+        : "",
       "When your changes are complete, commit them to the current branch with a clear message. Do not push, merge, delete branches or worktrees, or try to dispatch other tasks.",
       REPORT_INSTRUCTIONS,
     ];
@@ -662,6 +667,7 @@ export class Supervisor {
         harnessVersion: this.versions.get(row.harness)?.version ?? null,
       });
       this.store.appendEvent(taskId, "launch.intent", { runId: run.id, attempt });
+      this.responded.delete(taskId);
     });
     this.crashPoint("after_intent", taskId);
 
@@ -897,9 +903,11 @@ export class Supervisor {
       await this.withTaskLock(row.id, async () => {
         switch (event.type) {
           case "activity":
+            this.noteResponse(row.id);
             this.recordActivity(row.id);
             return;
           case "interaction":
+            this.noteResponse(row.id);
             this.recordActivity(row.id);
             await this.onInteraction(adapter, row.id, event.interaction);
             return;
@@ -907,6 +915,7 @@ export class Supervisor {
             this.onInteractionResolved(row.id, event.interactionId);
             return;
           case "todos":
+            this.noteResponse(row.id);
             this.recordActivity(row.id);
             this.recordTodos(row.id, event.todos);
             return;
@@ -924,6 +933,27 @@ export class Supervisor {
       if (!this.handleCrash(error))
         this.log.error({ err: error, event }, "failed to handle harness event");
     }
+  }
+
+  /**
+   * Records the worker's first output after its launch prompt, once per launch.
+   * Reads the log rather than trusting memory, so a restart neither repeats it
+   * nor misses it for a task launched before this event existed.
+   */
+  private noteResponse(taskId: string): void {
+    if (this.responded.has(taskId)) return;
+    const last = this.store.latestEvent(taskId, [
+      "launch.intent",
+      "prompt.intent",
+      "worker.responded",
+    ]);
+    // Output before the prompt went out is not a response to it; check again on the next event.
+    if (last?.type === "launch.intent") return;
+    if (last?.type === "prompt.intent")
+      this.store.appendEvent(taskId, "worker.responded", {
+        runId: (last.data as { runId?: string } | null)?.runId,
+      });
+    this.responded.add(taskId);
   }
 
   private recordActivity(taskId: string): void {

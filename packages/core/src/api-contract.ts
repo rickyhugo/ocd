@@ -42,6 +42,7 @@ import {
   type TaskProgress,
   type UpdateStatus,
 } from "./schemas.ts";
+import type { TaskView } from "./lifecycle.ts";
 import { PeekTaskInput, type TaskTranscript } from "./transcript.ts";
 import type { UsageStatus } from "./usage.ts";
 
@@ -189,7 +190,7 @@ export const routes = {
     method: "GET",
     path: "/v1/tasks",
     query: TaskListQuery,
-    output: type<Task[]>(),
+    output: type<TaskView[]>(),
   }),
   inspectTask: route({ method: "GET", path: task(), params: IdParams, output: type<TaskDetail>() }),
   taskProgress: route({

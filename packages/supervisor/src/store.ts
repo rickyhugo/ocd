@@ -461,6 +461,36 @@ export class Store {
       .map((e) => ({ ...e, data: e.data ?? null }));
   }
 
+  /** Every event of these tasks, oldest first. */
+  eventsOf(taskIds: readonly string[]): Map<string, TaskEvent[]> {
+    const out = new Map<string, TaskEvent[]>();
+    if (!taskIds.length) return out;
+    const rows = this.db
+      .select()
+      .from(taskEvents)
+      .where(inArray(taskEvents.taskId, [...taskIds]))
+      .orderBy(asc(taskEvents.id))
+      .all();
+    for (const e of rows) {
+      let list = out.get(e.taskId);
+      if (!list) out.set(e.taskId, (list = []));
+      list.push({ ...e, data: e.data ?? null });
+    }
+    return out;
+  }
+
+  /** The task's most recent event of one of these types. */
+  latestEvent(taskId: string, types: readonly TaskEventType[]): TaskEvent | null {
+    const row = this.db
+      .select()
+      .from(taskEvents)
+      .where(and(eq(taskEvents.taskId, taskId), inArray(taskEvents.type, [...types])))
+      .orderBy(desc(taskEvents.id))
+      .limit(1)
+      .get();
+    return row ? { ...row, data: row.data ?? null } : null;
+  }
+
   // -------------------------------------------------------------------------
   // Worker runs
 
