@@ -148,7 +148,42 @@ describe("the manager's resume_task", () => {
     expect(detail.attention.find((a) => a.id === decision.id)?.status).toBe("open");
 
     await h.human.sendToWorker(task.id, "carry on");
+    const continued = await h.human.inspectTask(task.id);
+    expect(continued.attention.find((a) => a.id === decision.id)).toMatchObject({
+      status: "resolved",
+      resolvedBy: "human",
+    });
     await waitForState(h, task.id, "ready_for_review");
+  });
+
+  it("lets the manager send to a task the human continued past a usage limit", async () => {
+    h = await startHarness({ fake: { survive: true } });
+    await setupRepo(h, "app");
+    const run = managerTools(h);
+    const task = await dispatch("work [fake:quota]", "send-after-human");
+    await waitForState(h, task.id, "blocked");
+    await h.human.sendToWorker(task.id, "carry on");
+    await waitForState(h, task.id, "ready_for_review");
+
+    expect(
+      await run("send_to_worker", { id: task.id, instructions: "one more [fake:question]" }),
+    ).toMatch(/^Sent\. /);
+    await waitForState(h, task.id, "blocked");
+    expect(
+      await run("send_to_worker", { id: task.id, instructions: "use the simple one" }),
+    ).toMatch(/^Sent\. /);
+  });
+
+  it("leaves a permission request open when the human sends to its blocked task", async () => {
+    h = await startHarness();
+    await setupRepo(h, "app");
+    const task = await dispatch("clean up [fake:permission]", "send-permission");
+    const blocked = await waitForState(h, task.id, "blocked");
+    const permission = blocked.attention.find((a) => a.kind === "permission")!;
+
+    await h.human.sendToWorker(task.id, "keep going [fake:hang]");
+    const after = await h.human.inspectTask(task.id);
+    expect(after.attention.find((a) => a.id === permission.id)?.status).toBe("open");
   });
 
   it("lets the manager send to a blocked task whose open items are its own", async () => {
