@@ -162,6 +162,10 @@ describe("dispatch and review", () => {
     const detail = await waitForState(h, task.id, "needs_attention");
     expect(detail.task.result?.reportError).toMatch(/No ocd-report/);
     expect(detail.task.result?.verification?.changedFiles).toEqual(["ocd-fake.txt"]);
+    await expect(h.human.sendToWorker(task.id, "carry on")).rejects.toMatchObject({
+      code: "not_steerable",
+      message: expect.stringContaining(`ocd task resume ${task.id} --mode reattach`),
+    });
   });
 
   it("respects serial capacity and dependencies", async () => {

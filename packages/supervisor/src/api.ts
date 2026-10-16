@@ -286,8 +286,8 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   // Read-only: any authenticated caller that may inspect tasks may peek, in
   // every task state (manual mode included); it never changes the worker.
   register(routes.peekTask, ({ params, query }) => supervisor.peek(params.id, query));
-  register(routes.sendToWorker, ({ params, body }) =>
-    supervisor.sendToWorker(params.id, body.instructions),
+  register(routes.sendToWorker, ({ req, params, body }) =>
+    supervisor.sendToWorker(params.id, body.instructions, req.actor),
   );
   register(routes.cancelTask, ({ req, params, body }) => {
     if (req.actor !== "human" && store.requireTask(params.id).state === "manual")
@@ -321,10 +321,8 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     ({ req, params, body }) => supervisor.giveBack(params.id, body.mode, body.note, req.actor),
     { caller: false },
   );
-  register(
-    routes.resumeTask,
-    ({ req, params, body }) => supervisor.resume(params.id, body.mode, req.actor),
-    { caller: false },
+  register(routes.resumeTask, ({ req, params, body }) =>
+    supervisor.resume(params.id, body.mode, req.actor),
   );
 
   // -- attention ---------------------------------------------------------------
