@@ -3,9 +3,15 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
-import { redact, truncate, type GitHubCliProblem, type GitHubCliStatus } from "@ocd/core";
+import {
+  redact,
+  truncate,
+  type ErrorCode,
+  type GitHubCliProblem,
+  type GitHubCliStatus,
+} from "@ocd/core";
 
-import { ApiError } from "./errors.ts";
+import { DomainError } from "./errors.ts";
 
 // The one place OCD runs the GitHub CLI. Every pull request action goes
 // through runGh: gh found on the supervisor's PATH (which `ocd daemon` takes
@@ -15,20 +21,20 @@ import { ApiError } from "./errors.ts";
 
 export type GhProblem = GitHubCliProblem;
 
-const CODES: Record<GhProblem, { status: number; code: string }> = {
-  not_found: { status: 422, code: "gh_not_found" },
-  auth_missing: { status: 422, code: "gh_auth_required" },
-  auth_invalid: { status: 422, code: "gh_auth_required" },
-  unreachable: { status: 503, code: "gh_unreachable" },
-  failed: { status: 502, code: "gh_failed" },
+const CODES: Record<GhProblem, ErrorCode> = {
+  not_found: "gh_not_found",
+  auth_missing: "gh_auth_required",
+  auth_invalid: "gh_auth_required",
+  unreachable: "gh_unreachable",
+  failed: "gh_failed",
 };
 
 /** A gh failure, surfaced through the API with a stable code and recovery advice. */
-export class GhError extends ApiError {
+export class GhError extends DomainError {
   readonly problem: GhProblem;
 
   constructor(problem: GhProblem, message: string, details?: unknown) {
-    super(CODES[problem].status, CODES[problem].code, message, details);
+    super(CODES[problem], message, details);
     this.problem = problem;
     this.name = "GhError";
   }

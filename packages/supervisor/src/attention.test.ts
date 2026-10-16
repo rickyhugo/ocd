@@ -177,6 +177,7 @@ describe("request expiry", () => {
     const request = blocked.attention.find((a) => a.kind === "permission")!;
     now += 11 * 60_000;
     await expect(h.human.resolveAttention(request.id, { type: "approve" })).rejects.toMatchObject({
+      status: 410,
       code: "expired",
     });
     await h.daemon.supervisor.reconcile("periodic");

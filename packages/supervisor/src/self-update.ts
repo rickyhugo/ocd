@@ -18,7 +18,7 @@ import { configurableHarnesses } from "@ocd/adapters";
 import { redact, truncate, type UpdateStatus } from "@ocd/core";
 
 import { normalizeDirectory } from "./config.ts";
-import { conflict, forbidden } from "./errors.ts";
+import { DomainError } from "./errors.ts";
 import { iso } from "./ids.ts";
 import type { Logger } from "./logger.ts";
 import { type GitRunner, gitText, systemGit } from "./git.ts";
@@ -273,10 +273,10 @@ export class SelfUpdater {
   private async checkOnce(): Promise<UpdateStatus> {
     const settings = this.o.settings();
     if (!settings.enabled)
-      throw conflict("update_disabled", "selfUpdate.enabled is off in ocd.jsonc");
+      throw new DomainError("update_disabled", "selfUpdate.enabled is off in ocd.jsonc");
     const repoPath = this.sourcePath();
     if (!repoPath || (settings.path && !existsSync(repoPath)))
-      throw conflict(
+      throw new DomainError(
         "update_no_repo",
         settings.path
           ? `selfUpdate.path ${settings.path} does not exist`
@@ -423,11 +423,14 @@ export class SelfUpdater {
   async rollback(): Promise<UpdateStatus> {
     const { current, previous } = this.state;
     if (!previous || !existsSync(join(this.buildsDir, dirName(previous))))
-      throw conflict("update_no_previous", "There is no previous version to go back to");
+      throw new DomainError("update_no_previous", "There is no previous version to go back to");
     if (!this.o.restart || !this.runningFromInstall)
-      throw forbidden("update_not_installed", this.cannotApply() ?? "not running from the install");
+      throw new DomainError(
+        "update_not_installed",
+        this.cannotApply() ?? "not running from the install",
+      );
     if (current && migrations(this.buildDir(current)) > migrations(this.buildDir(previous)))
-      throw conflict(
+      throw new DomainError(
         "rollback_unsafe",
         `${short(current)} migrated the database beyond what ${short(previous)} can read; restore a pre-migrate backup to go back (see README, Maintenance)`,
       );

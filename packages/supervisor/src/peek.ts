@@ -13,7 +13,7 @@ import {
 import { InvalidCursorError, type HarnessAdapter, type TranscriptPage } from "@ocd/adapters";
 import type { z } from "zod";
 
-import { badRequest } from "./errors.ts";
+import { DomainError } from "./errors.ts";
 import type { Store } from "./store.ts";
 
 export const PEEK_TIMEOUT_MS = 10_000;
@@ -88,7 +88,10 @@ export class PeekService {
     if (input.before !== undefined) {
       const cursor = decodeCursor(input.before);
       if (!cursor || cursor.t !== task.id || cursor.s !== sessionId)
-        throw badRequest("invalid_cursor", "The cursor does not belong to this task's session");
+        throw new DomainError(
+          "invalid_cursor",
+          "The cursor does not belong to this task's session",
+        );
       before = cursor.b;
     }
     const adapter = this.o.adapterFor(task.harness);
@@ -146,7 +149,8 @@ export class PeekService {
         }
       }
     } catch (error) {
-      if (error instanceof InvalidCursorError) throw badRequest("invalid_cursor", error.message);
+      if (error instanceof InvalidCursorError)
+        throw new DomainError("invalid_cursor", error.message);
       return unavailable(
         `Reading the ${task.harness} transcript failed: ${truncate(redact((error as Error).message ?? String(error)), 300)}`,
       );

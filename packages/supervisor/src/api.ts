@@ -14,6 +14,7 @@ import {
   type AnyRoute,
   type ApiErrorBody,
   type Briefing,
+  type ErrorCode,
   type ManagerInfo,
   type ParsedRequest,
   type ShutdownReport,
@@ -32,7 +33,7 @@ import Fastify, {
 import { ZodError } from "zod";
 
 import { normalizeDirectory, type LiveConfig } from "./config.ts";
-import { ApiError, conflict, forbidden } from "./errors.ts";
+import { DomainError } from "./errors.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
 import type { Store } from "./store.ts";
@@ -64,6 +65,88 @@ export interface ApiDeps {
   usage?: UsageTracker;
 }
 
+const HTTP_STATUS: Record<ErrorCode, number> = {
+  actor_required: 400,
+  api_version_required: 400,
+  bad_request: 400,
+  bad_response: 400,
+  branch_collision: 409,
+  cleanup_failed: 409,
+  confirmation_required: 409,
+  empty_query: 400,
+  expired: 410,
+  fetch_failed: 409,
+  gh_auth_required: 422,
+  gh_failed: 502,
+  gh_not_found: 422,
+  gh_unreachable: 503,
+  harness_disabled: 422,
+  harness_unavailable: 422,
+  harness_unsupported: 422,
+  has_pull_request: 409,
+  human_only: 403,
+  idempotency_mismatch: 409,
+  incompatible_api_version: 400,
+  internal: 500,
+  invalid_cursor: 400,
+  invalid_request: 400,
+  land_conflict: 409,
+  land_unsupported: 409,
+  looks_like_secret: 400,
+  manual_mode: 403,
+  no_manager: 403,
+  no_pull_request: 409,
+  no_session: 409,
+  no_workspace: 409,
+  not_a_repo: 400,
+  not_accepted: 409,
+  not_finished: 409,
+  not_found: 404,
+  not_manager: 403,
+  not_manual: 409,
+  not_open: 409,
+  not_repo_root: 400,
+  not_resumable: 409,
+  not_reviewable: 409,
+  not_steerable: 409,
+  not_supported: 409,
+  not_takeoverable: 409,
+  nothing_to_push: 409,
+  plan_changed: 409,
+  pr_blocked: 409,
+  pr_checks_failed: 409,
+  pr_checks_pending: 409,
+  pr_closed: 409,
+  pr_conflicts: 409,
+  pr_draft: 409,
+  pr_not_ready: 409,
+  pr_unavailable: 422,
+  profile_required: 400,
+  push_rejected: 409,
+  repo_in_workspaces: 400,
+  repo_missing: 400,
+  repo_moved: 409,
+  retired: 400,
+  rollback_unsafe: 409,
+  scope_mismatch: 400,
+  session_in_use: 409,
+  session_missing: 409,
+  stale_request: 409,
+  state_changed: 409,
+  task_finished: 409,
+  unauthenticated: 401,
+  unmerged_commits: 409,
+  unsupported_capability: 422,
+  update_disabled: 409,
+  update_no_previous: 409,
+  update_no_repo: 409,
+  update_not_installed: 403,
+  update_unavailable: 409,
+  worker_session: 403,
+  workspace_collision: 409,
+  workspace_dirty: 409,
+};
+
 export function buildApi(deps: ApiDeps): FastifyInstance {
   const { store, supervisor, memory } = deps;
   const app = Fastify({
@@ -82,25 +165,23 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     // chooses between trusted clients, it never grants authority by itself.
     const presented = Buffer.from(String(req.headers[HEADER_AUTHORIZATION] ?? ""));
     if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
-      throw new ApiError(
-        401,
+      throw new DomainError(
         "unauthenticated",
         "OCD's API only accepts its own clients (the ocd CLI, the TUI and the manager plugin). Workers report through their final message instead.",
       );
     }
     const version = req.headers[HEADER_API_VERSION];
     if (version === undefined)
-      throw new ApiError(400, "api_version_required", `Missing ${HEADER_API_VERSION} header`);
+      throw new DomainError("api_version_required", `Missing ${HEADER_API_VERSION} header`);
     if (Number(version) !== API_VERSION) {
-      throw new ApiError(
-        400,
+      throw new DomainError(
         "incompatible_api_version",
         `Client speaks API v${String(version)}, supervisor speaks v${API_VERSION}`,
       );
     }
     const actor = Actor.safeParse(req.headers[HEADER_ACTOR]);
     if (!actor.success)
-      throw new ApiError(400, "actor_required", `Missing or invalid ${HEADER_ACTOR} header`);
+      throw new DomainError("actor_required", `Missing or invalid ${HEADER_ACTOR} header`);
     req.actor = actor.data;
     const session = req.headers[HEADER_SESSION];
     req.sessionId = typeof session === "string" && session ? session : null;
@@ -109,11 +190,11 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
       req.directory =
         typeof directory === "string" && directory ? decodeURIComponent(directory) : null;
     } catch {
-      throw new ApiError(400, "bad_request", `Malformed ${HEADER_DIRECTORY} header`);
+      throw new DomainError("bad_request", `Malformed ${HEADER_DIRECTORY} header`);
     }
     if (req.sessionId && store.isWorkerSession(req.sessionId)) {
       // Plugins load in worker sessions too; workers never get control-plane tools.
-      throw forbidden("worker_session", "Worker sessions cannot use OCD control tools");
+      throw new DomainError("worker_session", "Worker sessions cannot use OCD control tools");
     }
   });
 
@@ -126,7 +207,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     if (req.actor !== "manager") return;
     const managerDirectory = deps.live.managerDirectory;
     if (!managerDirectory) {
-      throw forbidden(
+      throw new DomainError(
         "no_manager",
         "No manager is configured. Set manager.directory in ocd.jsonc.",
       );
@@ -136,7 +217,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
       !req.directory ||
       normalizeDirectory(req.directory) !== managerDirectory
     ) {
-      throw forbidden(
+      throw new DomainError(
         "not_manager",
         `Only ${MANAGER_HOST.label} sessions started in ${managerDirectory} may use OCD control tools`,
       );
@@ -145,10 +226,9 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   }
 
   app.setErrorHandler((error, req, reply) => {
-    let status = 500;
+    let status: number | undefined;
     let body: ApiErrorBody;
     if (error instanceof ZodError) {
-      status = 400;
       body = {
         error: {
           code: "invalid_request",
@@ -156,17 +236,16 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
           details: error.issues,
         },
       };
-    } else if (error instanceof ApiError) {
-      status = error.status;
+    } else if (error instanceof DomainError) {
       body = { error: { code: error.code, message: error.message, details: error.details } };
     } else if (
       typeof (error as { statusCode?: number }).statusCode === "number" &&
       (error as { statusCode: number }).statusCode < 500
     ) {
+      // Fastify's own request errors (an oversized or malformed body) keep their status.
       status = (error as { statusCode: number }).statusCode;
       body = { error: { code: "bad_request", message: (error as Error).message } };
     } else if ((error as { name?: string }).name === "UnsupportedCapabilityError") {
-      status = 422;
       body = { error: { code: "unsupported_capability", message: (error as Error).message } };
     } else {
       req.log.error({ err: error }, "request failed");
@@ -174,7 +253,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
         error: { code: "internal", message: redact((error as Error).message ?? "Internal error") },
       };
     }
-    void reply.status(status).send(body);
+    void reply.status(status ?? HTTP_STATUS[body.error.code]).send(body);
   });
 
   /**
@@ -222,18 +301,22 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   );
   const updater = () => {
     if (!deps.updater)
-      throw conflict("update_unavailable", "This supervisor does not manage OCD's own updates");
+      throw new DomainError(
+        "update_unavailable",
+        "This supervisor does not manage OCD's own updates",
+      );
     return deps.updater;
   };
   register(routes.updateStatus, () => deps.updater?.status() ?? null, { caller: false });
   register(routes.checkUpdate, () => updater().check());
   /** Switch to the pending version now; `force` interrupts workers a restart would interrupt. Human only. */
   register(routes.applyUpdate, ({ req, body }) => {
-    if (req.actor !== "human") throw forbidden("human_only", "Only a human can apply an update");
+    if (req.actor !== "human")
+      throw new DomainError("human_only", "Only a human can apply an update");
     return updater().tryApply(body.force);
   });
   register(routes.rollbackUpdate, ({ req }) => {
-    if (req.actor !== "human") throw forbidden("human_only", "Only a human can roll back");
+    if (req.actor !== "human") throw new DomainError("human_only", "Only a human can roll back");
     return updater().rollback();
   });
   register(routes.pause, () => {
@@ -248,7 +331,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     routes.shutdown,
     async ({ req, reply }) => {
       if (req.actor !== "human")
-        throw forbidden("human_only", "Only a human can stop the supervisor");
+        throw new DomainError("human_only", "Only a human can stop the supervisor");
       const report = await deps.requestShutdown();
       return reply.send(report);
     },
@@ -291,7 +374,10 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
   );
   register(routes.cancelTask, ({ req, params, body }) => {
     if (req.actor !== "human" && store.requireTask(params.id).state === "manual")
-      throw forbidden("manual_mode", "The human is driving this task; only they can cancel it");
+      throw new DomainError(
+        "manual_mode",
+        "The human is driving this task; only they can cancel it",
+      );
     return supervisor.cancel(params.id, body.reason);
   });
   register(routes.cleanupTask, ({ req, params, body }) =>

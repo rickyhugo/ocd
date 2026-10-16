@@ -32,7 +32,10 @@ describe("memory", () => {
     expect(
       await h.human.recall({ query: "integration tests", repo: "app", includeProposed: true }),
     ).toHaveLength(1);
-    await expect(mgr.confirmMemory(inferred.id)).rejects.toMatchObject({ code: "human_only" });
+    await expect(mgr.confirmMemory(inferred.id)).rejects.toMatchObject({
+      status: 403,
+      code: "human_only",
+    });
     await h.human.confirmMemory(inferred.id);
     const [hit] = await h.human.recall({ query: "integration tests", repo: "app" });
     expect(hit?.snippet).toContain("[Integration]");
@@ -46,7 +49,7 @@ describe("memory", () => {
         content: "deploy token: ghp_abcdefghijklmnopqrstuvwxyz012345",
         source: "human",
       }),
-    ).rejects.toMatchObject({ code: "looks_like_secret" });
+    ).rejects.toMatchObject({ status: 400, code: "looks_like_secret" });
   });
 
   it("keeps repository memory scoped (AT12)", async () => {

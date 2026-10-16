@@ -9,7 +9,7 @@ import {
 } from "@ocd/core";
 
 import type { LiveConfig } from "./config.ts";
-import { ApiError, conflict, forbidden } from "./errors.ts";
+import { DomainError } from "./errors.ts";
 import { iso, type Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
 import { managerWake } from "./notification.ts";
@@ -145,11 +145,11 @@ export class LandingService {
     options: { auto?: boolean } = {},
   ): Promise<Task> {
     if (force && actor !== "human")
-      throw forbidden("human_only", "Only a human can force a cleanup that discards work");
+      throw new DomainError("human_only", "Only a human can force a cleanup that discards work");
     return this.o.withTaskLock(taskId, async () => {
       const task = this.o.store.requireTask(taskId);
       if (task.state !== "completed" && task.state !== "cancelled") {
-        throw conflict(
+        throw new DomainError(
           "not_finished",
           `Only completed or cancelled tasks can be cleaned up (task is ${task.state})`,
         );
@@ -159,7 +159,7 @@ export class LandingService {
       const safety = await this.o.workspaces.branchSafety(repo.path, task.workspacePath, branch);
       if (!safety.worktreeExists && !safety.branchExists) return task;
       if (!force && safety.dirtyFiles.length > 0) {
-        throw conflict(
+        throw new DomainError(
           "workspace_dirty",
           `${safety.dirtyFiles.length} uncommitted file(s) in ${task.workspacePath}; commit or open a PR first, or force`,
           {
@@ -173,7 +173,7 @@ export class LandingService {
       if (!force && safety.unmergedCommits > 0) {
         landedIn = await this.landedBase(repo.path, branch, task.baseRef);
         if (!landedIn)
-          throw conflict(
+          throw new DomainError(
             "unmerged_commits",
             `${safety.unmergedCommits} commit(s) on ${branch} exist on no other branch or remote and are not in the base branch; land them (ocd task land), or force`,
           );
@@ -186,8 +186,8 @@ export class LandingService {
           force || landedIn !== null,
         );
       } catch (error) {
-        if (error instanceof ApiError) throw error;
-        throw conflict(
+        if (error instanceof DomainError) throw error;
+        throw new DomainError(
           "cleanup_failed",
           `Could not remove ${task.workspacePath ?? branch}: ${truncate(redact(error instanceof Error ? error.message : String(error)), 500)}`,
         );
@@ -226,19 +226,18 @@ export class LandingService {
       const task = this.o.store.requireTask(taskId);
       if (task.pullRequestUrl) return task;
       if (task.state !== "ready_for_review" && task.state !== "completed") {
-        throw conflict(
+        throw new DomainError(
           "not_reviewable",
           `Open a pull request after the work is done (task is ${task.state})`,
         );
       }
       if (!this.o.pullRequests)
-        throw new ApiError(
-          422,
+        throw new DomainError(
           "pr_unavailable",
           'Pull requests are off; set "github": { "enabled": true } in ocd.jsonc and restart the supervisor',
         );
       if (!task.workspacePath || !task.branch || !task.baseRef)
-        throw conflict("no_workspace", "The task has no workspace to push");
+        throw new DomainError("no_workspace", "The task has no workspace to push");
       const repo = this.o.store.requireRepo(task.repo, { includeRetired: true });
       if (options.commit)
         await this.o.workspaces.commitAll(
@@ -250,12 +249,12 @@ export class LandingService {
         baseRef: task.baseRef,
       });
       if (facts.dirty)
-        throw conflict(
+        throw new DomainError(
           "workspace_dirty",
           "The worktree has uncommitted changes; commit them first (--commit)",
         );
       if (facts.commitsAhead === 0)
-        throw conflict("nothing_to_push", `${task.branch} has no commits beyond its base`);
+        throw new DomainError("nothing_to_push", `${task.branch} has no commits beyond its base`);
       const remote = "origin";
       const base = options.base ?? (await this.o.workspaces.defaultBranch(repo.path, remote));
       await this.o.workspaces.push(task.workspacePath, remote, task.branch);
@@ -308,13 +307,16 @@ export class LandingService {
     {
       const task = this.o.store.requireTask(taskId);
       const url = task.pullRequestUrl;
-      if (!url) throw conflict("no_pull_request", "The task has no pull request; open one first");
+      if (!url)
+        throw new DomainError("no_pull_request", "The task has no pull request; open one first");
       if (task.state !== "completed")
-        throw conflict("not_accepted", `Accept the task before merging (task is ${task.state})`);
+        throw new DomainError(
+          "not_accepted",
+          `Accept the task before merging (task is ${task.state})`,
+        );
       const host = this.o.pullRequests;
       if (!host)
-        throw new ApiError(
-          422,
+        throw new DomainError(
           "pr_unavailable",
           'Pull requests are off; set "github": { "enabled": true } in ocd.jsonc and restart the supervisor',
         );
@@ -324,33 +326,33 @@ export class LandingService {
         this.recordPullRequestFailure(taskId, { stage, url, actor }, fn);
       let status = await gh("status", () => host.status(url, repo.path));
       if (status.state === "closed")
-        throw conflict("pr_closed", `${url} is closed without merging`);
+        throw new DomainError("pr_closed", `${url} is closed without merging`);
       if (status.state === "open") {
         if (status.draft)
-          throw conflict("pr_draft", `${url} is a draft; mark it ready for review first`);
+          throw new DomainError("pr_draft", `${url} is a draft; mark it ready for review first`);
         if (status.mergeable === "conflicting")
-          throw conflict("pr_conflicts", `${url} has merge conflicts with its base`);
+          throw new DomainError("pr_conflicts", `${url} has merge conflicts with its base`);
         if (status.failingChecks.length) {
-          throw conflict(
+          throw new DomainError(
             "pr_checks_failed",
             `Checks failing on ${url}: ${status.failingChecks.join(", ")}`,
             { checks: status.failingChecks },
           );
         }
         if (status.pendingChecks.length) {
-          throw conflict(
+          throw new DomainError(
             "pr_checks_pending",
             `Checks still running on ${url}: ${status.pendingChecks.join(", ")}`,
             { checks: status.pendingChecks },
           );
         }
         if (status.mergeable === "unknown")
-          throw conflict(
+          throw new DomainError(
             "pr_not_ready",
             "GitHub is still computing mergeability; try again shortly",
           );
         if (status.mergeState === "BLOCKED") {
-          throw conflict(
+          throw new DomainError(
             "pr_blocked",
             `${url} is blocked by branch protection or required reviews; OCD never overrides that`,
           );
@@ -446,14 +448,17 @@ export class LandingService {
 
   private async planLanding(task: Task): Promise<LandPlan> {
     if (task.state !== "ready_for_review" && task.state !== "completed")
-      throw conflict("not_reviewable", `Land a task once its work is done (task is ${task.state})`);
+      throw new DomainError(
+        "not_reviewable",
+        `Land a task once its work is done (task is ${task.state})`,
+      );
     if (!task.workspacePath || !task.branch)
-      throw conflict("no_workspace", "The task has no worktree to land");
+      throw new DomainError("no_workspace", "The task has no worktree to land");
     const repo = this.o.store.requireRepo(task.repo, { includeRetired: true });
     const remote = "origin";
     const base = await this.o.workspaces.defaultBranch(repo.path, remote);
     if (!(await this.o.workspaces.fetchBranch(task.workspacePath, remote, base)))
-      throw conflict(
+      throw new DomainError(
         "fetch_failed",
         `Could not fetch ${remote}/${base}; check the network and your git credentials`,
       );
@@ -481,7 +486,7 @@ export class LandingService {
     try {
       this.assertDirectLandable(plan);
     } catch (error) {
-      if (!(error instanceof ApiError)) throw error;
+      if (!(error instanceof DomainError)) throw error;
       plan.blocker = { code: error.code, message: error.message };
     }
     return plan;
@@ -521,8 +526,7 @@ export class LandingService {
     let task = this.o.store.requireTask(taskId);
     const host = this.o.pullRequests;
     if (!host)
-      throw new ApiError(
-        422,
+      throw new DomainError(
         "pr_unavailable",
         'Landing through a pull request needs "github": { "enabled": true } in ocd.jsonc (then restart the supervisor); or push directly with ocd task land --direct',
       );
@@ -561,7 +565,7 @@ export class LandingService {
       );
       task = merged.task;
     } catch (error) {
-      if (error instanceof ApiError && PR_WAITING.has(error.code))
+      if (error instanceof DomainError && PR_WAITING.has(error.code))
         return result(task, { code: error.code, message: error.message });
       throw error;
     }
@@ -583,18 +587,18 @@ export class LandingService {
   /** The checks openPullRequest would fail on, run before the task is accepted. */
   private async assertPullRequestOpenable(task: Task, commit: boolean): Promise<void> {
     if (!task.workspacePath || !task.branch || !task.baseRef)
-      throw conflict("no_workspace", "The task has no workspace to push");
+      throw new DomainError("no_workspace", "The task has no workspace to push");
     const facts = await this.o.workspaces.verify({
       path: task.workspacePath,
       baseRef: task.baseRef,
     });
     if (facts.dirty && !commit)
-      throw conflict(
+      throw new DomainError(
         "workspace_dirty",
         "The worktree has uncommitted changes; commit them first (--commit)",
       );
     if (facts.commitsAhead === 0 && !(facts.dirty && commit))
-      throw conflict("nothing_to_push", `${task.branch} has no commits beyond its base`);
+      throw new DomainError("nothing_to_push", `${task.branch} has no commits beyond its base`);
   }
 
   private async landDirect(
@@ -646,7 +650,7 @@ export class LandingService {
       };
     }
     if (!confirm || confirm.length < 7 || !plan.head.startsWith(confirm))
-      throw conflict(
+      throw new DomainError(
         "confirmation_required",
         `Confirm the push to ${plan.remote}/${plan.base} first (ocd task land ${taskId} --direct asks)`,
         { plan },
@@ -656,17 +660,17 @@ export class LandingService {
 
   private assertDirectLandable(plan: Omit<LandPlan, "blocker">): void {
     if (plan.pullRequestUrl)
-      throw conflict(
+      throw new DomainError(
         "has_pull_request",
         `The task already has a pull request (${plan.pullRequestUrl}); land it through the pull request`,
       );
     if (plan.dirty)
-      throw conflict(
+      throw new DomainError(
         "workspace_dirty",
         "The worktree has uncommitted changes; have the worker commit them, or commit them yourself, then land",
       );
     if (!plan.commits.length)
-      throw conflict(
+      throw new DomainError(
         "nothing_to_push",
         `The task branch has no commits that ${plan.remote}/${plan.base} does not already have`,
       );
@@ -688,7 +692,7 @@ export class LandingService {
     const plan = await this.planLanding(this.o.store.requireTask(taskId));
     this.assertDirectLandable(plan);
     if (plan.head !== confirmedHead)
-      throw conflict(
+      throw new DomainError(
         "plan_changed",
         `The task branch moved since the push was confirmed (${short(confirmedHead)} is now ${short(plan.head)}); confirm again`,
       );
@@ -769,7 +773,8 @@ export class LandingService {
    * branch even if that loses uncommitted changes or unpushed commits.
    */
   async discard(taskId: string, reason: string | undefined, actor: Actor): Promise<Task> {
-    if (actor !== "human") throw forbidden("human_only", "Only a human can discard a task's work");
+    if (actor !== "human")
+      throw new DomainError("human_only", "Only a human can discard a task's work");
     const task = this.o.store.requireTask(taskId);
     if (task.state !== "completed" && task.state !== "cancelled")
       await this.o.cancel(taskId, reason ?? "discarded");

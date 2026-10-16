@@ -37,7 +37,7 @@ import {
   tasks,
   workerRuns,
 } from "./db/schema.ts";
-import { ApiError, conflict, notFound } from "./errors.ts";
+import { DomainError, notFound } from "./errors.ts";
 import { iso, newId, type Clock } from "./ids.ts";
 import { attentionNotification, type Notice } from "./notification.ts";
 
@@ -259,7 +259,7 @@ export class Store {
             JSON.stringify(input.acceptanceCriteria) ||
           !sameDeps(existingDeps, input.dependsOn)
         ) {
-          throw conflict(
+          throw new DomainError(
             "idempotency_mismatch",
             "Idempotency key was already used for a different task",
             {
@@ -396,7 +396,7 @@ export class Store {
       const row = this.taskRow(taskId);
       if (!row) throw notFound(`Task ${taskId}`);
       if (options.from && !options.from.includes(row.state)) {
-        throw conflict(
+        throw new DomainError(
           "state_changed",
           `Task ${taskId} is ${row.state}, expected ${options.from.join("/")}`,
         );
@@ -1119,5 +1119,3 @@ function toRepo(row: RepoRow): Repository {
     updatedAt: row.updatedAt,
   };
 }
-
-export { ApiError };

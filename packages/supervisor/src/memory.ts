@@ -14,7 +14,7 @@ import {
 import type { z } from "zod";
 import { sql, type SQL } from "drizzle-orm";
 
-import { badRequest, forbidden, notFound } from "./errors.ts";
+import { DomainError, notFound } from "./errors.ts";
 import type { Store } from "./store.ts";
 
 const BRIEFING_LIMIT = 20;
@@ -26,7 +26,7 @@ export function toFtsQuery(text: string): string {
     .split(/[^\p{L}\p{N}_]+/u)
     .filter((t) => t.length > 1)
     .slice(0, 16);
-  if (terms.length === 0) throw badRequest("empty_query", "Query has no searchable terms");
+  if (terms.length === 0) throw new DomainError("empty_query", "Query has no searchable terms");
   return terms.map((t) => `"${t.replaceAll('"', '""')}"`).join(" OR ");
 }
 
@@ -40,7 +40,7 @@ export class MemoryService {
   remember(input: z.output<typeof RememberInput>, actor: Actor): Memory {
     const secrets = findSecrets(input.content);
     if (secrets.length > 0) {
-      throw badRequest(
+      throw new DomainError(
         "looks_like_secret",
         `Refusing to store memory that looks like a secret (${secrets.join(", ")})`,
       );
@@ -50,7 +50,7 @@ export class MemoryService {
       const task = this.store.taskRow(input.taskId);
       if (!task) throw notFound(`Task ${input.taskId}`);
       if (repo && task.repoId !== repo.id)
-        throw badRequest("scope_mismatch", "Task does not belong to that repository");
+        throw new DomainError("scope_mismatch", "Task does not belong to that repository");
     }
     const taskRepoId = input.taskId ? (this.store.taskRow(input.taskId)?.repoId ?? null) : null;
     // Explicit human statements are confirmed immediately; inferred lessons are proposals.
@@ -69,7 +69,7 @@ export class MemoryService {
         const old = this.store.memoryRow(input.supersedes);
         if (!old) throw notFound(`Memory ${input.supersedes}`);
         if (old.status === "confirmed" && actor !== "human")
-          throw forbidden("human_only", "Only a human can supersede confirmed memory");
+          throw new DomainError("human_only", "Only a human can supersede confirmed memory");
         this.store.updateMemory(old.id, { status: "retired", supersededBy: memory.id });
       }
       return memory;
@@ -95,10 +95,10 @@ export class MemoryService {
 
   confirm(id: string, actor: Actor): Memory {
     if (actor !== "human")
-      throw forbidden("human_only", "Only a human can confirm proposed memory");
+      throw new DomainError("human_only", "Only a human can confirm proposed memory");
     const memory = this.store.requireMemory(id);
     if (memory.status === "retired")
-      throw badRequest("retired", "Retired memory cannot be confirmed");
+      throw new DomainError("retired", "Retired memory cannot be confirmed");
     return this.store.updateMemory(id, { status: "confirmed" });
   }
 
@@ -106,7 +106,7 @@ export class MemoryService {
     const memory = this.store.memoryRow(id);
     if (!memory) throw notFound(`Memory ${id}`);
     if (memory.status === "confirmed" && actor !== "human")
-      throw forbidden("human_only", "Only a human can forget confirmed memory");
+      throw new DomainError("human_only", "Only a human can forget confirmed memory");
     return this.store.deleteMemory(id);
   }
 

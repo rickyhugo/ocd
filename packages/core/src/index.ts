@@ -1,6 +1,7 @@
 export * from "./api-contract.ts";
 export * from "./client.ts";
 export * from "./diff.ts";
+export * from "./errors.ts";
 export * from "./events.ts";
 export * from "./land.ts";
 export * from "./paths.ts";
