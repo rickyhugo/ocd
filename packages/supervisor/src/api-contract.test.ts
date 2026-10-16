@@ -47,7 +47,7 @@ describe("API contract", () => {
     }) as typeof client.call;
     const methods = Object.entries(client).filter(
       (entry): entry is [string, (arg: string) => Promise<unknown>] =>
-        typeof entry[1] === "function" && entry[0] !== "call" && entry[0] !== "withSession",
+        typeof entry[1] === "function" && entry[0] !== "call",
     );
     for (const [, method] of methods) await method("t_1");
 

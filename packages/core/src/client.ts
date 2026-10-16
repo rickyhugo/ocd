@@ -101,10 +101,6 @@ export class OcdClient {
     this.options = options;
   }
 
-  withSession(sessionId: string): OcdClient {
-    return new OcdClient({ ...this.options, sessionId });
-  }
-
   async call<T>(
     method: string,
     path: string,
