@@ -1,7 +1,14 @@
-import type { Attention, Task } from "@ocd/core";
+import { TAKEOVER_STATES, TASK_STATES, type Attention, type Task } from "@ocd/core";
 import { describe, expect, it } from "vite-plus/test";
 
-import { actionsFor, age, buildSidebar, landable, updateBanner } from "./sidebar-model.ts";
+import {
+  actionsFor,
+  age,
+  buildSidebar,
+  landable,
+  updateBanner,
+  type Row,
+} from "./sidebar-model.ts";
 
 const PR_ON = { pullRequests: true };
 
@@ -189,6 +196,25 @@ describe("sidebar model", () => {
     expect(actionsFor(running, PR_ON).map((a) => a.label)).toContain("Take over (manual mode)");
     const queued = model.sections[2]!.rows[0]!;
     expect(actionsFor(queued, PR_ON).map((a) => a.label)).not.toContain("Take over (manual mode)");
+  });
+
+  it("offers take-over only in states the supervisor accepts it from", () => {
+    const row = (t: Task): Row => ({
+      key: t.id,
+      glyph: "",
+      tone: "muted",
+      title: t.title,
+      meta: "",
+      task: t,
+      attention: null,
+    });
+    const offered = TASK_STATES.filter((state) =>
+      actionsFor(row(task("t", state, { sessionId: "s-t", workspacePath: "/ws/t" })), PR_ON).some(
+        (a) => a.label === "Take over (manual mode)",
+      ),
+    );
+    expect(offered).not.toContain("starting");
+    expect(offered).toEqual(TASK_STATES.filter((state) => TAKEOVER_STATES.has(state)));
   });
 
   it("offers confirm and decline for a push the manager asked for", () => {
