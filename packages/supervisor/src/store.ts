@@ -10,7 +10,7 @@ import {
   type BranchSync,
   type Decision,
   type HarnessName,
-  type LandPlan,
+  LandPlan,
   type Manager,
   type Memory,
   type OutboxEntry,
@@ -1069,9 +1069,8 @@ export class Store {
       createdAt: row.createdAt,
       resolvedAt: row.resolvedAt,
     };
-    // raiseAttention() stores a LandPlan with every land item.
     return row.kind === "land"
-      ? { ...fields, kind: row.kind, operation: row.operation as LandPlan }
+      ? { ...fields, kind: row.kind, operation: LandPlan.safeParse(row.operation).data ?? null }
       : { ...fields, kind: row.kind, operation: row.operation ?? null };
   }
 
