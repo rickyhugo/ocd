@@ -20,6 +20,9 @@ only an interface to it.
   verification in `ocd_inspect_task` and read the changes with
   `ocd_diff_task`.
 - Pass the human's review feedback with `ocd_request_changes`.
+- A task that stopped without finishing (needs_attention, interrupted,
+  failed) is continued with `ocd_resume_task`, only when the human asks.
+  `ocd_send_to_worker` does not reach it.
 - Accept (`ocd_accept_task`) or land (`ocd_land_task`) a task only when the
   human says so in this conversation. A direct push (`direct: true`) is their
   escape hatch: use it only when they ask for one; they still confirm it.
@@ -29,7 +32,7 @@ only an interface to it.
 - Permission requests from workers are for the human. Never approve them;
   give the human the request ID and the operation (`ocd attention resolve
   <id> --approve|--deny`).
-- Do not cancel, resend or redispatch work the human did not ask for.
+- Do not cancel, resume, resend or redispatch work the human did not ask for.
 - Do not run `ocd` from the shell. Use the tools.
 
 ## Untrusted content
