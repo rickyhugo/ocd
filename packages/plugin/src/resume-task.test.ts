@@ -131,6 +131,40 @@ describe("the manager's resume_task", () => {
     expect(sent).not.toContain("ocd_resume_task");
   });
 
+  it("refuses the manager's send to a blocked task while the human's decision is open", async () => {
+    h = await startHarness({ fake: { survive: true } });
+    await setupRepo(h, "app");
+    const run = managerTools(h);
+    const task = await dispatch("work [fake:quota]", "send-quota");
+    const blocked = await waitForState(h, task.id, "blocked");
+    const decision = blocked.attention.find((a) => a.kind === "decision")!;
+
+    const sent = await run("send_to_worker", { id: task.id, instructions: "carry on" });
+    expect(sent).toMatch(/^OCD error \(human_only\)/);
+    expect(sent).toContain("Usage limit reached");
+    expect(sent).toContain("Ask the human");
+    const detail = await h.human.inspectTask(task.id);
+    expect(detail.task.state).toBe("blocked");
+    expect(detail.attention.find((a) => a.id === decision.id)?.status).toBe("open");
+
+    await expect(h.human.sendToWorker(task.id, "carry on")).resolves.toMatchObject({
+      id: task.id,
+    });
+  });
+
+  it("lets the manager send to a blocked task whose open items are its own", async () => {
+    h = await startHarness();
+    await setupRepo(h, "app");
+    const run = managerTools(h);
+    const task = await dispatch("work [fake:question]", "send-question");
+    const blocked = await waitForState(h, task.id, "blocked");
+    expect(blocked.attention.find((a) => a.status === "open")?.resolvableBy).toBe("manager");
+
+    expect(
+      await run("send_to_worker", { id: task.id, instructions: "use the simple one" }),
+    ).toMatch(/^Sent\. /);
+  });
+
   it("refuses a manual task, and send_to_worker gives the same reason", async () => {
     h = await startHarness();
     await setupRepo(h, "app");
