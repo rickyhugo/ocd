@@ -6,6 +6,7 @@ import {
   routes,
   type AnyRoute,
   type RouteArgs,
+  type RouteQuery,
   type RouteOutput,
 } from "./api-contract.ts";
 import type {
@@ -310,24 +311,25 @@ export class OcdClient {
       },
     });
 
-  listAttention = (query: { status?: string; taskId?: string; limit?: number } = {}) =>
+  listAttention = (query: RouteQuery<typeof routes.listAttention> = {}) =>
     this.send(routes.listAttention, { query });
   resolveAttention = (id: string, response: AttentionResponse) =>
     this.send(routes.resolveAttention, { params: { id }, body: { response } });
 
   remember = (input: RememberInput) => this.send(routes.remember, { body: input });
   recall = (input: RecallInput) => this.send(routes.recall, { body: input });
-  listMemories = (query: { status?: string; scope?: string; repo?: string } = {}) =>
+  listMemories = (query: RouteQuery<typeof routes.listMemories> = {}) =>
     this.send(routes.listMemories, { query });
   confirmMemory = (id: string) => this.send(routes.confirmMemory, { params: { id } });
   forget = (id: string) => this.send(routes.forget, { params: { id } });
 
   recordDecision = (input: DecisionInput) => this.send(routes.recordDecision, { body: input });
-  listDecisions = (query: { repo?: string; taskId?: string } = {}) =>
+  listDecisions = (query: RouteQuery<typeof routes.listDecisions> = {}) =>
     this.send(routes.listDecisions, { query });
 
   getManager = () => this.send(routes.getManager);
   briefing = () => this.send(routes.briefing);
 
-  listOutbox = (query: { status?: string } = {}) => this.send(routes.listOutbox, { query });
+  listOutbox = (query: RouteQuery<typeof routes.listOutbox> = {}) =>
+    this.send(routes.listOutbox, { query });
 }
