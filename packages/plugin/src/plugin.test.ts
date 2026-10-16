@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { OpenCodeAdapter } from "@ocd/adapters";
 import { FakeOpenCodeService } from "@ocd/adapters/testing";
-import { OcdClient } from "@ocd/core";
+import { OcdClient, taskLifecycle, type Task } from "@ocd/core";
 import { RecordingNotifier, createLogger, startDaemon, type Daemon } from "@ocd/supervisor";
 import { makeRepo, rmrf, tempDir, testPaths, waitFor } from "@ocd/supervisor/testkit";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -265,6 +265,47 @@ describe("tool input and output guards", () => {
 
   it("marks task lists as untrusted", async () => {
     expect(await runTool(tools.get("list_tasks")!, {}, ctx)).toMatch(/untrusted/);
+  });
+});
+
+describe("lifecycle in manager tools", () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+  const raw = {
+    id: "t_1",
+    state: "running",
+    repo: "r",
+    harness: "h",
+    model: "m",
+    title: "Fix it",
+    instructions: "Fix it",
+    profile: { name: "p" },
+    createdAt: minutesAgo(60),
+    updatedAt: minutesAgo(4),
+    lastActivityAt: minutesAgo(1),
+  } as Task;
+  const task = { ...raw, lifecycle: taskLifecycle(raw, []) };
+  const fake = {
+    listTasks: async () => [task],
+    inspectTask: async () => ({ task, runs: [], events: [], attention: [] }),
+    peekTask: async () => ({ notice: "", entries: [], notes: [], available: false }),
+  } as unknown as OcdClient;
+  const tools = new Map(buildTools(() => fake).map((t) => [t.name, t]));
+  const ctx = { sessionID: "s", callID: "c", directory: "/d" };
+
+  it("lists each task with its stage and inspects it with stage timings", async () => {
+    expect(await runTool(tools.get("list_tasks")!, {}, ctx)).toMatch(
+      /t_1 \[running · Working 4m \d+s\] r/,
+    );
+    const inspected = await runTool(tools.get("inspect_task")!, { id: "t_1" }, ctx);
+    expect(inspected).toMatch(/"stage: Working 4m \d+s · last worker signal 1m \d+s ago"/);
+    expect(inspected).toContain('"timings: queued 56m');
+    expect(inspected).not.toContain('"spans"');
+  });
+
+  it("answers an empty peek with what the supervisor knows instead of nothing", async () => {
+    const out = await runTool(tools.get("peek_task")!, { id: "t_1" }, ctx);
+    expect(out).toContain("Activity history is unavailable or empty. Lifecycle:");
+    expect(out).toMatch(/stage: Working 4m/);
   });
 });
 

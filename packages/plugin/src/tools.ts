@@ -10,14 +10,18 @@ import {
   RecallInput,
   RememberInput,
   RequestChangesInput,
+  STAGE_LABEL,
   SendToWorkerInput,
   TaskStateSchema,
   describeLandResult,
   formatDiffStat,
+  formatDuration,
+  lifecycleLines,
   renderTranscript,
   truncate,
   type OcdClient,
   type Task,
+  type TaskView,
 } from "@ocd/core";
 import { z } from "zod";
 
@@ -65,8 +69,13 @@ const UNTRUSTED =
 
 const taskId = (description = "Task ID") => IdParams.shape.id.describe(description);
 
-function taskLine(t: Task): string {
-  return `${t.id} [${t.state}] ${t.repo} (${t.harness}/${t.model}): ${truncate(t.title, 100)}`;
+/** Dispatch and cancel results are plain tasks; list and inspect add the lifecycle stage. */
+function taskLine(t: Task | TaskView): string {
+  const stage =
+    "lifecycle" in t
+      ? ` · ${STAGE_LABEL[t.lifecycle.stage]} ${formatDuration(Date.now() - Date.parse(t.lifecycle.since))}`
+      : "";
+  return `${t.id} [${t.state}${stage}] ${t.repo} (${t.harness}/${t.model}): ${truncate(t.title, 100)}`;
 }
 
 function json(value: unknown): string {
@@ -155,12 +164,15 @@ export function buildTools(
       input: z.object({ id: taskId() }),
       run: async ({ id }, ctx) => {
         const d = await clientFor(ctx.sessionID, ctx.directory).inspectTask(id);
+        // The stage lines below say what the raw spans would, in far fewer tokens.
+        const { lifecycle: _, ...task } = d.task;
         return `${UNTRUSTED}\n\n${json({
           task: {
-            ...d.task,
-            instructions: truncate(d.task.instructions, 1000),
-            profile: d.task.profile.name,
+            ...task,
+            instructions: truncate(task.instructions, 1000),
+            profile: task.profile.name,
           },
+          lifecycle: lifecycleLines(d.task, Date.now()),
           attention: d.attention.map((a) => ({
             id: a.id,
             kind: a.kind,
@@ -187,12 +199,17 @@ export function buildTools(
         ),
       }),
       run: async (i, ctx) => {
-        const t = await clientFor(ctx.sessionID, ctx.directory).peekTask(i.id, {
+        const client = clientFor(ctx.sessionID, ctx.directory);
+        const t = await client.peekTask(i.id, {
           limit: i.limit,
           ...(i.before ? { before: i.before } : {}),
           reasoningSummaries: i.reasoning_summaries,
         });
-        return `${UNTRUSTED}\n${t.notice}\n\n${renderTranscript(t)}`;
+        const out = `${UNTRUSTED}\n${t.notice}\n\n${renderTranscript(t)}`;
+        if (t.entries.length) return out;
+        // An empty transcript is not "nothing happened": say what the supervisor knows.
+        const { task } = await client.inspectTask(i.id);
+        return `${out}\n\nActivity history is unavailable or empty. Lifecycle:\n${lifecycleLines(task, Date.now()).join("\n")}`;
       },
     }),
     defineTool({
