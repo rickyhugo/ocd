@@ -2,7 +2,7 @@
   "name": "@ocd/adapters",
   "version": "0.0.0",
   "private": true,
-  "description": "Harness adapters (fake, OpenCode) behind a common capability-checked interface.",
+  "description": "Harness adapters (Claude Code, Codex, OpenCode, fake) behind one interface.",
   "type": "module",
   "exports": {
     ".": {

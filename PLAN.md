@@ -204,8 +204,9 @@ claims from independently run verification. Successful execution becomes
 Every adapter implements start, inspect, steer, interrupt, resume, pending
 permissions/questions, and structured results. What varies is an optional
 method (transcript, revive, usage limits) or the `todos` capability flag; the
-supervisor checks for it and degrades clearly when it is missing. Each profile selects a real harness, its supported
-model, instructions/agent preset where supported, and a permission policy.
+supervisor checks for it and degrades clearly when it is missing. Each profile
+selects a real harness, its supported model, instructions/agent preset where
+supported, and a permission policy.
 
 | Harness     | First integration path                                                 | Important boundary                                                                       |
 | ----------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -223,8 +224,8 @@ guards this. OpenCode's other role, hosting the manager (wake-ups, the plugin,
 
 Use each installed harness's normal authentication, subject to its vendor terms
 and usage limits. Do not copy subscription tokens between products or infer that
-an SDK accepts the same authentication as its CLI. Record binary versions and
-capability checks; missing binaries/authentication produce actionable errors.
+an SDK accepts the same authentication as its CLI. Record binary versions;
+missing binaries/authentication produce actionable errors.
 
 Forward only selected environment variables. Do not inherit unrelated credentials
 into worker shells. Passing a task to another harness does not transfer OpenCode
