@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { WorkspaceMode } from "@ocd/core";
@@ -22,6 +22,20 @@ const branches = (repo: string) =>
     .trim()
     .split("\n");
 
+/** Every ref update git commits in the repository, so a branch created and deleted again still shows. */
+function recordRefUpdates(harness: Harness, repo: string): () => string[] {
+  const hooks = join(harness.root, "hooks");
+  const log = join(hooks, "ref-updates.log");
+  mkdirSync(hooks, { recursive: true });
+  writeFileSync(
+    join(hooks, "reference-transaction"),
+    `#!/bin/sh\nwhile read -r line; do [ "$1" = committed ] && echo "$line" >> "${log}"; done\nexit 0\n`,
+    { mode: 0o755 },
+  );
+  execFileSync("git", ["config", "core.hooksPath", hooks], { cwd: repo });
+  return () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
+}
+
 async function dispatch(harness: Harness, key: string, workspaceMode?: WorkspaceMode) {
   const { task } = await harness.manager("mgr").dispatch({
     repo: "app",
@@ -38,6 +52,7 @@ describe("dispatch without a workspace", () => {
     h = await startHarness();
     const repo = await setupRepo(h, "app");
     execFileSync("git", ["remote", "add", "origin", "git@github.com:acme/app.git"], { cwd: repo });
+    const refUpdates = recordRefUpdates(h, repo);
     const queued = await dispatch(h, "full", "none");
     expect(queued.workspaceMode).toBe("none");
 
@@ -58,7 +73,6 @@ describe("dispatch without a workspace", () => {
     expect(prompt).not.toContain("commit");
     expect(prompt).not.toContain("relative/to/repo");
     expect(readdirSync(h.paths.workspaces, { recursive: true })).toEqual([]);
-    expect(branches(repo)).toEqual(["main"]);
 
     const refused = { code: "no_workspace" };
     await expect(h.human.taskDiff(task.id)).rejects.toMatchObject(refused);
@@ -83,7 +97,7 @@ describe("dispatch without a workspace", () => {
     await expect(h.human.cleanupTask(task.id, true)).resolves.toMatchObject({
       state: "completed",
     });
-    expect(branches(repo)).toEqual(["main"]);
+    expect(refUpdates()).toEqual([]);
   });
 
   it("tells the worker when the repository has no GitHub remote, without naming its path", async () => {
@@ -103,13 +117,14 @@ describe("dispatch without a workspace", () => {
   it("discarding cancels the task, removes its scratch directory and leaves the repository alone", async () => {
     h = await startHarness();
     const repo = await setupRepo(h, "app");
+    const refUpdates = recordRefUpdates(h, repo);
     const task = await dispatch(h, "discard", "none");
     await waitForState(h, task.id, "ready_for_review");
     const scratch = join(h.paths.scratch, task.id);
     expect(existsSync(scratch)).toBe(true);
     await expect(h.human.discardTask(task.id)).resolves.toMatchObject({ state: "cancelled" });
     expect(existsSync(scratch)).toBe(false);
-    expect(branches(repo)).toEqual(["main"]);
+    expect(refUpdates()).toEqual([]);
   });
 
   it("automatic cleanup removes the scratch directory of an old finished task", async () => {
@@ -153,13 +168,15 @@ describe("dispatch without a workspace", () => {
       }
     };
     h = await startHarness({ hooks: { at: crashOnce }, fake: { survive: true } });
-    await setupRepo(h, "app");
+    const repo = await setupRepo(h, "app");
+    const refUpdates = recordRefUpdates(h, repo);
     const task = await dispatch(h, "crash", "none");
     await h.daemon.closed;
     await h.restart({ hooks: {} });
     await waitForState(h, task.id, "ready_for_review");
     expect(h.fakeState.createdCount).toBe(1);
     expect(h.fakeState.promptCount).toBe(1);
+    expect(refUpdates()).toEqual([]);
   });
 });
 
@@ -167,11 +184,14 @@ describe("dispatch workspace mode", () => {
   it("defaults to an isolated worktree on its own branch", async () => {
     h = await startHarness();
     const repo = await setupRepo(h, "app");
+    const refUpdates = recordRefUpdates(h, repo);
     const queued = await dispatch(h, "default");
     expect(queued.workspaceMode).toBe("isolated");
-    const { task } = await waitForState(h, queued.id, "ready_for_review");
+    // Each ref update runs the hook, so creating the worktree is slower than usual.
+    const { task } = await waitForState(h, queued.id, "ready_for_review", 15_000);
     expect(existsSync(join(task.workspacePath!, "ocd-fake.txt"))).toBe(true);
     expect(branches(repo)).toEqual(["main", `ocd/${task.id}`]);
+    expect(refUpdates().some((line) => line.endsWith(` refs/heads/ocd/${task.id}`))).toBe(true);
   });
 
   it("is part of what an idempotency key identifies", async () => {
