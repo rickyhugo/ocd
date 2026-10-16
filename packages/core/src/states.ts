@@ -31,6 +31,35 @@ export const OUTBOX_KINDS = ["notify", "manager_wake"] as const;
 
 export const OUTBOX_STATUSES = ["pending", "delivered", "dead"] as const;
 
+/**
+ * What a task works in, chosen at dispatch and fixed for the task's life.
+ * isolated: OCD's own task branch and worktree. none: no repository checkout,
+ * only a scratch directory (research, external actions such as filing an issue).
+ */
+export const WORKSPACE_MODES = ["isolated", "none"] as const;
+
+export type WorkspaceMode = (typeof WORKSPACE_MODES)[number];
+
+export interface WorkspaceCapabilities {
+  /** OCD owns a task branch and worktree: git verification, diff, branch sync and cleanup apply. */
+  worktree: boolean;
+  /** The work can land (pull request, merge, direct push). */
+  land: boolean;
+  /** A human can take over the worker session (manual mode). */
+  takeOver: boolean;
+}
+
+// Supervisor, CLI and sidebar decide what a task allows from this table, never from the mode itself.
+export const WORKSPACE_CAPABILITIES = {
+  isolated: { worktree: true, land: true, takeOver: true },
+  none: { worktree: false, land: false, takeOver: false },
+} as const satisfies Record<WorkspaceMode, WorkspaceCapabilities>;
+
+/** A task from a supervisor that predates workspace modes has no workspaceMode; it is isolated. */
+export function capabilitiesOf(task: { workspaceMode?: WorkspaceMode }): WorkspaceCapabilities {
+  return WORKSPACE_CAPABILITIES[task.workspaceMode ?? "isolated"];
+}
+
 const TRANSITIONS: Record<TaskState, readonly TaskState[]> = {
   queued: ["starting", "cancelled", "needs_attention"],
   // "queued" again only when reconciliation proves the launch was not admitted.

@@ -43,6 +43,13 @@
       "when": 1791902309205,
       "tag": "0005_task_branch_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792151335020,
+      "tag": "0006_task_workspace_mode",
+      "breakpoints": true
     }
   ]
 }

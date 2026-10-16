@@ -7,6 +7,7 @@ import {
   OUTBOX_STATUSES,
   RUN_STATES,
   TASK_STATES,
+  WORKSPACE_MODES,
 } from "./states.ts";
 import type { TaskEventType } from "./events.ts";
 import type { HarnessUsage, UsageStatus } from "./usage.ts";
@@ -32,6 +33,8 @@ export const Actor = z.enum(["human", "manager"]);
 export type Actor = z.infer<typeof Actor>;
 
 export const TaskStateSchema = z.enum(TASK_STATES);
+
+export const WorkspaceModeSchema = z.enum(WORKSPACE_MODES);
 
 const EnvVarName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/, "Environment variable names only");
 
@@ -148,6 +151,9 @@ export const DispatchTaskInput = z.object({
   /** Duplicate requests with the same key return the original task. */
   idempotencyKey: z.string().min(8).max(128),
   dependsOn: z.array(z.string().min(1)).max(20).default([]),
+  workspaceMode: WorkspaceModeSchema.default("isolated").describe(
+    "isolated: the worker gets its own task branch and worktree of the repository, and the work can be diffed and landed. none: no repository checkout, only a scratch directory, for work that changes no code in the repository (research, or external actions such as creating a GitHub issue); the result is reviewed and accepted, never landed.",
+  ),
 });
 export type DispatchTaskInput = z.input<typeof DispatchTaskInput>;
 
@@ -227,7 +233,32 @@ export interface BranchSync {
   } | null;
 }
 
-export interface Task {
+/** A task's own branch and worktree; null before the first launch, workspacePath null again after cleanup. */
+export interface IsolatedTaskWorkspace {
+  workspaceMode: "isolated";
+  workspacePath: string | null;
+  branch: string | null;
+  baseRef: string | null;
+  pullRequestUrl: string | null;
+  /** Null until the branch-sync watchdog has looked at the task. */
+  branchSync: BranchSync | null;
+}
+
+/** No repository checkout: nothing to verify, diff, sync, land or clean up. */
+export interface NoTaskWorkspace {
+  workspaceMode: "none";
+  workspacePath: null;
+  branch: null;
+  baseRef: null;
+  pullRequestUrl: null;
+  branchSync: null;
+}
+
+export type TaskWorkspace = IsolatedTaskWorkspace | NoTaskWorkspace;
+
+export type Task = TaskBase & TaskWorkspace;
+
+interface TaskBase {
   id: string;
   idempotencyKey: string;
   repo: string;
@@ -238,13 +269,7 @@ export interface Task {
   instructions: string;
   acceptanceCriteria: string[];
   state: z.infer<typeof TaskStateSchema>;
-  workspacePath: string | null;
-  branch: string | null;
-  baseRef: string | null;
   sessionId: string | null;
-  pullRequestUrl: string | null;
-  /** Null until the branch-sync watchdog has looked at the task. */
-  branchSync: BranchSync | null;
   attempts: number;
   result: TaskResult | null;
   error: string | null;

@@ -10,6 +10,8 @@ export interface OcdPaths {
   lock: string;
   logs: string;
   workspaces: string;
+  /** Per-task working directories of tasks dispatched without a workspace. */
+  scratch: string;
   backups: string;
   /** API token that authenticates OCD's own clients; lives next to the socket. */
   token: string;
@@ -56,6 +58,7 @@ export function resolveOcdPaths(env: NodeJS.ProcessEnv = process.env): OcdPaths 
     lock: join(runDir, "supervisor.lock"),
     logs: join(home, "logs"),
     workspaces: join(home, "workspaces"),
+    scratch: join(home, "scratch"),
     backups: join(home, "backups"),
     token: apiTokenPath(socket),
   };

@@ -20,6 +20,15 @@ export interface Workspace {
 
 const MAX_UNTRACKED_FILES = 50;
 
+/** "owner/name" of a github.com remote URL (https, ssh or scp-like); null for any other URL. */
+export function githubSlug(url: string): string | null {
+  const match =
+    /^(?:(?:https?|ssh):\/\/(?:[^@/]+@)?|git@)github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i.exec(
+      url,
+    );
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+
 /** One managed git worktree per editing task. Never deletes anything. */
 export class WorkspaceManager {
   private readonly root: string;
@@ -563,6 +572,12 @@ export class WorkspaceManager {
       if (merged === baseTree.stdout.trim()) return base;
     }
     return null;
+  }
+
+  /** The GitHub owner/name of the origin remote, or null when origin is missing or not on GitHub. */
+  async githubRepo(repoPath: string): Promise<string | null> {
+    const result = await this.git.run(["remote", "get-url", "origin"], { cwd: repoPath });
+    return result.code === 0 ? githubSlug(result.stdout.trim()) : null;
   }
 
   /** The remote's default branch (e.g. main), falling back to "main". */

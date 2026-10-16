@@ -17,6 +17,7 @@ import {
   OcdClient,
   TAKEOVER_STATES,
   buildSpill,
+  capabilitiesOf,
   collectSpill,
   baseLabel,
   describeLandResult,
@@ -279,7 +280,9 @@ export default Plugin.define({
     const runDirect = async (task: Task, kind: "accept" | "clean") => {
       if (kind === "accept") {
         await client.acceptTask(task.id);
-        toast(`Accepted “${clip(task.title, 40)}”; worktree kept`);
+        toast(
+          `Accepted “${clip(task.title, 40)}”${capabilitiesOf(task).worktree ? "; worktree kept" : ""}`,
+        );
       } else {
         try {
           await client.cleanupTask(task.id);
@@ -1024,7 +1027,10 @@ export default Plugin.define({
             try {
               const task = await pickTask(
                 "Take over which task?",
-                (t) => !!t.sessionId && (t.state === "manual" || TAKEOVER_STATES.has(t.state)),
+                (t) =>
+                  capabilitiesOf(t).takeOver &&
+                  !!t.sessionId &&
+                  (t.state === "manual" || TAKEOVER_STATES.has(t.state)),
               );
               if (task) await takeOver(task);
             } catch (error) {

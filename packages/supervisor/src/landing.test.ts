@@ -18,6 +18,7 @@ function fakeTask(patch: Partial<Task> = {}): Task {
     harness: "claude",
     model: "m",
     state: "ready_for_review",
+    workspaceMode: "isolated",
     workspacePath: "/work/t1",
     branch: "ocd/t1",
     baseRef: "abc",

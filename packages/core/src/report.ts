@@ -1,15 +1,28 @@
 import { WorkerReport } from "./schemas.ts";
+import type { WorkspaceMode } from "./states.ts";
 
 const FENCE = "ocd-report";
 
+/** What a worker lists as changedFiles: OCD verifies them only in a worktree. */
+const CHANGED_FILES: Record<WorkspaceMode, { example: string; note: string }> = {
+  isolated: { example: "path/relative/to/repo", note: "" },
+  none: {
+    example: "path/relative/to/your/scratch/directory",
+    note: "You have no repository checkout, so changedFiles lists only files you wrote in your scratch directory; leave it empty if there are none.\n\n",
+  },
+};
+
 /** Appended to worker instructions so results can be collected structurally. */
-export const REPORT_INSTRUCTIONS = `When you have finished (or cannot continue), end your final message with a fenced block tagged \`${FENCE}\` containing JSON with exactly these fields:
+export function reportInstructions(mode: WorkspaceMode): string {
+  const { example, note } = CHANGED_FILES[mode];
+  return `When you have finished (or cannot continue), end your final message with a fenced block tagged \`${FENCE}\` containing JSON with exactly these fields:
 
 \`\`\`${FENCE}
-{"summary": "what you did and why", "changedFiles": ["path/relative/to/repo"], "tests": [{"command": "command you ran", "outcome": "passed|failed|not_run", "details": "optional"}], "unresolved": ["anything left open or uncertain"]}
+{"summary": "what you did and why", "changedFiles": ["${example}"], "tests": [{"command": "command you ran", "outcome": "passed|failed|not_run", "details": "optional"}], "unresolved": ["anything left open or uncertain"]}
 \`\`\`
 
-Report only what you actually did. Do not merge, push to protected branches, or delete work.`;
+${note}Report only what you actually did. Do not merge, push to protected branches, or delete work.`;
+}
 
 export type ParsedReport = { ok: true; report: WorkerReport } | { ok: false; error: string };
 

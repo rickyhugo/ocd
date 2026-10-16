@@ -12,6 +12,7 @@ import {
   RequestChangesInput,
   SendToWorkerInput,
   TaskStateSchema,
+  capabilitiesOf,
   describeLandResult,
   formatDiffStat,
   renderTranscript,
@@ -98,7 +99,7 @@ export function buildTools(
     defineTool({
       name: "dispatch_task",
       description:
-        "Delegate a coding task to a worker in an isolated worktree of an allowlisted repository. Returns the task ID immediately; the supervisor owns the worker and will report back.",
+        "Delegate a task to a worker for an allowlisted repository, by default in an isolated worktree of it. Returns the task ID immediately; the supervisor owns the worker and will report back.",
       input: z.object({
         repo: DispatchTaskInput.shape.repo.describe("Registered repository name"),
         profile: DispatchTaskInput.shape.profile.describe(
@@ -115,6 +116,9 @@ export function buildTools(
         depends_on: DispatchTaskInput.shape.dependsOn.describe(
           "Task IDs that must be accepted first",
         ),
+        workspace_mode: DispatchTaskInput.shape.workspaceMode.describe(
+          "isolated (default): the worker gets its own branch and worktree, for any change to the repository. none: no repository checkout, only a scratch directory; pick it only for work that changes nothing in the repository, such as Slack research or creating a GitHub issue. A none task is reviewed and accepted, never diffed or landed.",
+        ),
       }),
       run: async (i, ctx) => {
         const { task, created } = await clientFor(ctx.sessionID, ctx.directory).dispatch({
@@ -124,6 +128,7 @@ export function buildTools(
           instructions: i.instructions,
           acceptanceCriteria: i.acceptance_criteria,
           dependsOn: i.depends_on,
+          workspaceMode: i.workspace_mode,
           idempotencyKey: `opencode:${ctx.sessionID}:${ctx.callID}`,
         });
         return `${created ? "Dispatched" : "Already dispatched"}: ${taskLine(task)}`;
@@ -216,7 +221,7 @@ export function buildTools(
     defineTool({
       name: "accept_task",
       description:
-        "Mark a task that is ready for review as completed. Only do this when the human has approved the result in this conversation. Nothing is merged; the work stays on the task's branch.",
+        "Mark a task that is ready for review as completed. Only do this when the human has approved the result in this conversation. Nothing is merged or removed; the work stays on the task's branch, or in its scratch directory for a task without a workspace.",
       input: z.object({ id: taskId() }),
       run: async ({ id }, ctx) =>
         `Accepted. ${taskLine(await clientFor(ctx.sessionID, ctx.directory).acceptTask(id))}`,
@@ -305,11 +310,13 @@ export function buildTools(
     defineTool({
       name: "cleanup_task",
       description:
-        "Remove a completed or cancelled task's worktree and branch. Refuses if that would lose work (uncommitted changes, or commits not on any other branch or remote); only the human can force it.",
+        "Remove a completed or cancelled task's worktree and branch, or the scratch directory of a task without a workspace. Refuses if that would lose work (uncommitted changes, or commits not on any other branch or remote); only the human can force it.",
       input: z.object({ id: taskId() }),
       run: async ({ id }, ctx) => {
-        await clientFor(ctx.sessionID, ctx.directory).cleanupTask(id);
-        return `Removed the worktree and branch of ${id}.`;
+        const task = await clientFor(ctx.sessionID, ctx.directory).cleanupTask(id);
+        return capabilitiesOf(task).worktree
+          ? `Removed the worktree and branch of ${id}.`
+          : `${id} has no worktree or branch, and its scratch directory is gone.`;
       },
     }),
     defineTool({

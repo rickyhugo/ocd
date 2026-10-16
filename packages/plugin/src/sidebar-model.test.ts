@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { actionsFor, age, buildSidebar, landable, updateBanner } from "./sidebar-model.ts";
 
 const PR_ON = { pullRequests: true };
+const CANCEL = { label: "Cancel it", message: "Cancel this task." };
 
 const NOW = Date.parse("2026-10-13T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
@@ -14,6 +15,7 @@ function task(id: string, state: Task["state"], extra: Partial<Task> = {}): Task
     title: `Task ${id}`,
     repo: "dotfiles",
     state,
+    workspaceMode: "isolated",
     createdAt: minutesAgo(60),
     updatedAt: minutesAgo(5),
     startedAt: minutesAgo(30),
@@ -200,6 +202,51 @@ describe("sidebar model", () => {
       { label: "Review and confirm the push…", kind: "land_confirm" },
       { label: "Decline the push", kind: "land_decline" },
     ]);
+  });
+
+  it("offers only review, result and message actions for a task without a workspace", () => {
+    const none = { workspaceMode: "none", sessionId: "s" } as const;
+    const [review] = buildSidebar([task("n", "ready_for_review", none)], [], NOW).sections[0]!.rows;
+    expect(actionsFor(review!, PR_ON)).toEqual([
+      { label: "Request changes…", kind: "request_changes" },
+      { label: "Accept", kind: "accept" },
+      {
+        label: "Summarize the result",
+        message: "Summarize the result and anything I should check before accepting.",
+      },
+      { label: "Message the manager about it…", kind: "message" },
+      CANCEL,
+      { label: "Details", kind: "details" },
+    ]);
+    expect(landable(task("n", "ready_for_review", none))).toBe(false);
+    const gitActions = ["diff", "land", "land_direct", "takeover", "discard", "clean"];
+    for (const state of ["running", "failed", "completed"] as const) {
+      const t = task("n", state, { ...none, finishedAt: minutesAgo(5) });
+      const model = buildSidebar(state === "completed" ? [] : [t], [], NOW, [t]);
+      const row = [...model.sections.flatMap((s) => s.rows), ...model.recent][0]!;
+      const kinds = actionsFor(row, PR_ON).flatMap((a) => ("kind" in a ? [a.kind] : []));
+      expect(
+        kinds.filter((k) => gitActions.includes(k)),
+        state,
+      ).toEqual([]);
+    }
+  });
+
+  it("offers a way to close a stopped task without a workspace", () => {
+    for (const state of ["failed", "interrupted", "needs_attention"] as const) {
+      const t = task("n", state, { workspaceMode: "none" });
+      const row = buildSidebar([t], [], NOW).sections.flatMap((s) => s.rows)[0]!;
+      expect(actionsFor(row, PR_ON), state).toContainEqual(CANCEL);
+    }
+  });
+
+  it("treats a task from a supervisor that predates workspace modes as isolated", () => {
+    const current = task("o", "ready_for_review", { sessionId: "s", workspacePath: "/ws/o" });
+    const old = JSON.parse(JSON.stringify({ ...current, workspaceMode: undefined })) as Task;
+    expect("workspaceMode" in old).toBe(false);
+    expect(landable(old)).toBe(true);
+    const row = (t: Task) => buildSidebar([t], [], NOW).sections[0]!.rows[0]!;
+    expect(actionsFor(row(old), PR_ON)).toEqual(actionsFor(row(current), PR_ON));
   });
 
   it("lands only finished work that still has a worktree", () => {

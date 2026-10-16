@@ -19,7 +19,9 @@ import {
   type TaskEvent,
   type TaskEventType,
   type TaskState,
+  type TaskWorkspace,
   type WorkerRun,
+  type WorkspaceMode,
 } from "@ocd/core";
 import { and, asc, desc, eq, inArray, isNull, lte, sql, type SQL } from "drizzle-orm";
 
@@ -42,6 +44,8 @@ import { iso, newId, type Clock } from "./ids.ts";
 import { attentionNotification, type Notice } from "./notification.ts";
 
 type TaskRow = typeof tasks.$inferSelect;
+/** A task row update; the workspace mode is fixed at dispatch. */
+type TaskPatch = Partial<Omit<TaskRow, "id" | "state" | "workspaceMode">>;
 type RepoRow = typeof repositories.$inferSelect;
 type RunRow = typeof workerRuns.$inferSelect;
 type AttentionRow = typeof attentionRequests.$inferSelect;
@@ -96,7 +100,7 @@ const FOREVER_DEDUPE_KINDS: ReadonlySet<AttentionKind> = new Set([
 export interface TransitionOptions {
   /** Compare-and-set: the transition only applies from one of these states. */
   from?: readonly TaskState[];
-  patch?: Partial<Omit<TaskRow, "id" | "state">>;
+  patch?: TaskPatch;
   event?: { type: TaskEventType; data?: unknown };
   outbox?: OutboxInput[];
   attention?: { input: AttentionInput; notify: boolean; wake: boolean; notice?: Notice }[];
@@ -234,6 +238,7 @@ export class Store {
     instructions: string;
     acceptanceCriteria: string[];
     dependsOn: string[];
+    workspaceMode: WorkspaceMode;
   }): { task: Task; created: boolean } {
     return this.tx(() => {
       const existing = this.db
@@ -254,6 +259,7 @@ export class Store {
           existing.instructions !== input.instructions ||
           existing.repoId !== input.repo.id ||
           existing.title !== input.title ||
+          existing.workspaceMode !== input.workspaceMode ||
           existing.profileSnapshot.name !== input.profile.name ||
           JSON.stringify(existing.acceptanceCriteria) !==
             JSON.stringify(input.acceptanceCriteria) ||
@@ -289,6 +295,7 @@ export class Store {
           instructions: input.instructions,
           acceptanceCriteria: input.acceptanceCriteria,
           state: "queued",
+          workspaceMode: input.workspaceMode,
           createdAt: now,
           updatedAt: now,
         })
@@ -420,7 +427,7 @@ export class Store {
 
   patchTask(
     taskId: string,
-    patch: Partial<Omit<TaskRow, "id" | "state">>,
+    patch: TaskPatch,
     event?: { type: TaskEventType; data?: unknown },
   ): void {
     this.tx(() => {
@@ -1041,12 +1048,8 @@ export class Store {
       instructions: row.instructions,
       acceptanceCriteria: row.acceptanceCriteria,
       state: row.state,
-      workspacePath: row.workspacePath,
-      branch: row.branch,
-      baseRef: row.baseRef,
+      ...taskWorkspace(row),
       sessionId: row.sessionId,
-      pullRequestUrl: row.pullRequestUrl,
-      branchSync: row.branchSync ?? null,
       attempts: row.attempts,
       result: row.result ?? null,
       error: row.error,
@@ -1106,6 +1109,27 @@ export class Store {
       updatedAt: row.updatedAt,
     };
   }
+}
+
+function taskWorkspace(row: TaskRow): TaskWorkspace {
+  if (row.workspaceMode === "none") {
+    return {
+      workspaceMode: "none",
+      workspacePath: null,
+      branch: null,
+      baseRef: null,
+      pullRequestUrl: null,
+      branchSync: null,
+    };
+  }
+  return {
+    workspaceMode: "isolated",
+    workspacePath: row.workspacePath,
+    branch: row.branch,
+    baseRef: row.baseRef,
+    pullRequestUrl: row.pullRequestUrl,
+    branchSync: row.branchSync ?? null,
+  };
 }
 
 function toRepo(row: RepoRow): Repository {
