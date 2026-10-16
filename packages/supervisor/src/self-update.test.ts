@@ -80,6 +80,7 @@ function updater(
       intervalMinutes: 10,
       build: build ?? [BUILD],
     }),
+    configPath: join(w.root, "ocd.jsonc"),
     repoPath: (name) => (name === "ocd" ? w.repo : null),
     blockers: () => blockers,
     notify: (key) => void calls.notify.push(key),

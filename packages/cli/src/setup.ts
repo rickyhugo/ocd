@@ -1019,13 +1019,14 @@ export function systemSetupDeps(input: {
         notify: () => undefined,
         restart: null,
         runningFrom: input.cliPath,
+        configPath: input.configPath,
         logger: createLogger({ level: "silent" }),
       });
       try {
         const s = await updater.check();
         return {
           sha: s.current,
-          error: s.lastError && s.lastError.sha !== s.current ? s.lastError.message : null,
+          error: s.lastError && s.lastError.sha !== s.current ? s.lastError.message : s.cannotApply,
         };
       } catch (error) {
         return { sha: null, error: error instanceof Error ? error.message : String(error) };

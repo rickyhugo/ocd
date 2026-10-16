@@ -103,6 +103,8 @@ Supervisor
   ocd doctor [--notify]             Check harnesses (and profile model names), the manager host service, notifications, the service manager and
                                     the tools (git; gh and tmux when enabled) on the supervisor's PATH (your login shell's);
                                     --notify sends a test notification (click it to try \`ocd focus\`)
+  ocd config check                  Load ocd.jsonc (OCD_CONFIG) the way the supervisor does, without starting or
+                                    changing anything; exits 1 with the errors. Self-update runs it before a switch
   ocd focus                         Switch to the manager session (tmux pane when tmux.enabled + terminal window); what a notification click runs
 
 Configuration (human only)
@@ -536,6 +538,12 @@ async function run(
           ].join("\n"),
         );
       } else fail("usage: ocd service install|status|uninstall");
+      return;
+    }
+    case "config": {
+      if (sub !== "check") fail("usage: ocd config check");
+      loadConfig(paths.config);
+      print({ path: paths.config, valid: true }, json, () => `${paths.config} is valid`);
       return;
     }
     case "focus": {

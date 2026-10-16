@@ -78,6 +78,8 @@ export interface SelfUpdaterOptions {
   restart: (() => void) | null;
   /** Real path of the CLI the running supervisor was started from. */
   runningFrom: string;
+  /** The ocd.jsonc the running supervisor loaded; a new version must load it before a switch. */
+  configPath: string;
   logger: Logger;
   /** Defaults to the real git; tests substitute a fake. */
   git?: GitRunner;
@@ -101,6 +103,8 @@ export class SelfUpdater {
   private checking: Promise<UpdateStatus> | null = null;
   private timers: NodeJS.Timeout[] = [];
   private stopped = false;
+  /** Checking a config takes a CLI start, so a rejection holds until the file changes. */
+  private rejected: { sha: string; config: string | null; reason: string } | null = null;
 
   /** The build directory the running supervisor was started from; never pruned. */
   private readonly runningBuild: string | null;
@@ -167,6 +171,9 @@ export class SelfUpdater {
 
   status(): UpdateStatus {
     const settings = this.o.settings();
+    const pending = this.state.pending;
+    const rejected =
+      this.rejected && this.rejected.sha === pending?.sha ? this.rejected.reason : null;
     return {
       enabled: settings.enabled,
       current: this.state.current,
@@ -175,7 +182,7 @@ export class SelfUpdater {
       blockedBy: this.state.pending && !this.cannotApply() ? this.o.blockers() : [],
       building: this.building,
       lastError: this.state.lastError,
-      cannotApply: this.state.pending ? this.cannotApply() : null,
+      cannotApply: pending ? (rejected ?? this.cannotApply()) : null,
       checkedAt: this.state.checkedAt,
     };
   }
@@ -388,6 +395,9 @@ export class SelfUpdater {
       );
       return this.status();
     }
+    const rejected = await this.configRejection(pending.sha);
+    // Another tryApply may have switched while this one waited for the check.
+    if (rejected || this.stopped || this.state.pending?.sha !== pending.sha) return this.status();
     this.switchTo(pending.sha);
     this.state.pending = null;
     const reason = this.cannotApply();
@@ -417,6 +427,26 @@ export class SelfUpdater {
     this.o.logger.info({ sha: pending.sha }, "switching to a new OCD version; restarting");
     this.o.restart!();
     return this.status();
+  }
+
+  /** Why the built version cannot load the live ocd.jsonc, or null when it can. */
+  private async configRejection(sha: string): Promise<string | null> {
+    const config = readText(this.o.configPath);
+    if (this.rejected?.sha === sha && this.rejected.config === config) return this.rejected.reason;
+    const error = await checkConfig(this.buildDir(sha), this.o.configPath);
+    if (!error) {
+      this.rejected = null;
+      return null;
+    }
+    const reason = `it cannot load ${this.o.configPath}; fix the file and it applies: ${error}`;
+    this.rejected = { sha, config, reason };
+    this.o.logger.warn({ sha, error }, "the new OCD version rejects ocd.jsonc");
+    this.o.notify(
+      `update-config-rejected:${sha}`,
+      "OCD: Update not applied",
+      `${short(sha)} cannot load ${this.o.configPath}; still running ${this.state.current ? short(this.state.current) : "the current version"}. Fix the file and the update applies. ${error.slice(0, 160)}`,
+    );
+    return reason;
   }
 
   /** Back to the previous version, unless it predates the database's migrations. */
@@ -493,6 +523,43 @@ function migrations(buildDir: string): number {
   } catch {
     return 0;
   }
+}
+
+function readText(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Runs the build's own `ocd config check` on the live config file and returns
+ * its errors, or null when it loads. The check only reads; its home is a
+ * throwaway directory all the same.
+ */
+function checkConfig(buildDir: string, configPath: string): Promise<string | null> {
+  const home = mkdtempSync(join(tmpdir(), "ocd-config-"));
+  const cli = join(buildDir, "packages/cli/dist/ocd.mjs");
+  return new Promise((resolve) =>
+    execFile(
+      process.execPath,
+      [cli, "config", "check"],
+      {
+        cwd: home,
+        env: { ...process.env, OCD_HOME: home, OCD_CONFIG: configPath },
+        timeout: 60_000,
+      },
+      (error, _stdout, stderr) => {
+        rmSync(home, { recursive: true, force: true });
+        if (!error) return resolve(null);
+        const output = tail(stderr)
+          .replace(/^ocd: /, "")
+          .replaceAll(/\s*\n\s*/g, " ");
+        resolve(truncate(redact(output || error.message), 600));
+      },
+    ),
+  );
 }
 
 /** Runs a shell command in its own process group; the group is killed on timeout. */
