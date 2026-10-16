@@ -513,8 +513,10 @@ describe("pull request actions in the supervisor", () => {
   it("runs the gh found on PATH for real pull request calls end to end", async () => {
     const gh = fakeGh();
     h = await startHarness({ pullRequests: () => new GhPullRequests({ pathEnv: join(gh, "..") }) });
+    // The startup check runs this freshly written script twice in the
+    // background; on a loaded machine a single exec of it can take seconds.
     await expect
-      .poll(async () => (await h!.human.status()).github)
+      .poll(async () => (await h!.human.status()).github, { timeout: 10_000 })
       .toMatchObject({ path: gh, auth: "ok" });
     const task = await finishedTaskWithOrigin(h, "gh-end-to-end");
     const opened = await h.human.openPullRequest(task.id, { commit: true });

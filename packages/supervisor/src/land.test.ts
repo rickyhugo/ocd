@@ -1,20 +1,27 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Task } from "@ocd/core";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { RecordingPullRequests } from "./pull-requests.ts";
 import {
   declareRepos,
   makeRepo,
+  rmrf,
   startHarness,
+  tempDir,
   waitFor,
   waitForState,
   type Harness,
   type HarnessOptions,
 } from "./testkit.ts";
+
+// Every landing plans with a real fetch, so a test here runs dozens of git
+// commands in series, and their cost grows with machine load. The slowest test
+// took 17s at load average 13 on 10 cores, too close to the default 20s.
+vi.setConfig({ testTimeout: 60_000 });
 
 let h: Harness | null = null;
 afterEach(async () => {
@@ -33,21 +40,35 @@ interface Setup {
   other: string;
 }
 
-async function setup(options: Partial<HarnessOptions> = {}): Promise<Setup> {
-  const harness = await startHarness(options);
-  h = harness;
-  const repo = makeRepo(harness.root, "app");
-  const origin = join(harness.root, "origin.git");
+// The repo, its origin and the other clone are built once with git, then
+// copied for each test: every git process costs tens to hundreds of
+// milliseconds on a loaded machine, and these tests already spawn hundreds.
+let template: string;
+beforeAll(() => {
+  template = tempDir();
+  const repo = makeRepo(template, "app");
+  const origin = join(template, "origin.git");
   execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
+  appendFileSync(join(origin, "config"), "[maintenance]\n\tauto = false\n");
   git(repo, "remote", "add", "origin", origin);
   git(repo, "push", "-q", "-u", "origin", "main");
   git(repo, "remote", "set-head", "origin", "main");
+  const config = ["maintenance.auto=false", "user.email=other@example.com", "user.name=Other"];
+  const other = join(template, "other");
+  execFileSync("git", ["clone", "-q", ...config.flatMap((c) => ["-c", c]), origin, other]);
+});
+afterAll(() => rmrf(template));
+
+async function setup(options: Partial<HarnessOptions> = {}): Promise<Setup> {
+  const harness = await startHarness(options);
+  h = harness;
+  cpSync(template, harness.root, { recursive: true });
+  const repo = join(harness.root, "app");
   const other = join(harness.root, "other");
-  execFileSync("git", ["clone", "-q", origin, other]);
-  git(other, "config", "user.email", "other@example.com");
-  git(other, "config", "user.name", "Other");
+  for (const config of [join(repo, ".git", "config"), join(other, ".git", "config")])
+    writeFileSync(config, readFileSync(config, "utf8").replaceAll(template, harness.root));
   await declareRepos(harness, { app: { path: repo, profile: "fake" } });
-  return { h: harness, repo, origin, other };
+  return { h: harness, repo, origin: join(harness.root, "origin.git"), other };
 }
 
 /** A task ready for review whose worker change is committed in two commits. */
@@ -121,7 +142,7 @@ describe("landing directly on the base branch", () => {
     );
   });
 
-  it("replays each commit for rebase and makes a merge commit for merge", async () => {
+  it("replays each commit for rebase", async () => {
     const rebase = await setup({ config: { mergeMethod: "rebase" } });
     const a = await finishedTask(rebase, "rebase");
     const base = pushElsewhere(rebase);
@@ -134,9 +155,9 @@ describe("landing directly on the base branch", () => {
       `Elsewhere: elsewhere.txt|Other`,
     ]);
     expect(originLog(rebase, 2)[1]!.split("|")[2]).toBe(base);
-    await h!.cleanup();
-    h = null;
+  });
 
+  it("makes a merge commit for merge", async () => {
     const merge = await setup({ config: { repos: {}, mergeMethod: "squash" } });
     await declareRepos(merge.h, {
       app: { path: merge.repo, profile: "fake", mergeMethod: "merge" },
