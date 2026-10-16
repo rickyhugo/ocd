@@ -31,7 +31,6 @@ import {
   usageLines,
   type Attention,
   type AttentionResponse,
-  type LandPlan,
   type MemoryScope,
   type Task,
 } from "@ocd/core";
@@ -1131,7 +1130,7 @@ async function run(
             if (!item.taskId)
               fail(`${id} is a land request without a task; refusing to approve it`);
             const plan = await client.landPlan(item.taskId);
-            const asked = item.operation as LandPlan;
+            const asked = item.operation;
             if (plan.blocker) fail(`${plan.blocker.message} (${plan.blocker.code})`);
             if (plan.head !== asked.head)
               fail("the task branch moved since the manager asked; deny this and ask again");

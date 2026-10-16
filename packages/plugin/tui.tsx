@@ -244,7 +244,7 @@ export default Plugin.define({
         title: row.title,
         message: [
           item ? `${item.kind}: ${item.reason}` : "",
-          item?.kind === "land" ? formatLandPlan(item.operation as LandPlan) : "",
+          item?.kind === "land" ? formatLandPlan(item.operation) : "",
           item?.kind === "permission" || item?.kind === "land"
             ? `Approve or deny from a terminal:\n  ocd attention resolve ${item.id} --approve\n  ocd attention resolve ${item.id} --deny`
             : "",
