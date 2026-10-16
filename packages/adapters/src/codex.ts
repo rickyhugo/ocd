@@ -277,7 +277,7 @@ export class CodexAdapter implements HarnessAdapter {
     channel.proc = proc;
     void proc.exited.then(() => {
       for (const call of channel.calls.values()) {
-        this.scheduler.clearTimeout(call.timer);
+        systemScheduler.clearTimeout(call.timer);
         call.reject(new Error("codex app-server exited"));
       }
       channel.calls.clear();
@@ -370,7 +370,7 @@ export class CodexAdapter implements HarnessAdapter {
   ): Promise<unknown> {
     const id = session.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = this.scheduler.setTimeout(() => {
+      const timer = systemScheduler.setTimeout(() => {
         session.calls.delete(id);
         reject(new Error(`codex ${method} timed out`));
       }, timeoutMs);
@@ -378,7 +378,7 @@ export class CodexAdapter implements HarnessAdapter {
       try {
         session.proc.send({ method, id, params });
       } catch (error) {
-        this.scheduler.clearTimeout(timer);
+        systemScheduler.clearTimeout(timer);
         session.calls.delete(id);
         reject(error as Error);
       }
@@ -391,7 +391,7 @@ export class CodexAdapter implements HarnessAdapter {
     const call = channel.calls.get(message.id);
     if (!call) return true;
     channel.calls.delete(message.id);
-    this.scheduler.clearTimeout(call.timer);
+    systemScheduler.clearTimeout(call.timer);
     if (message.error) call.reject(new Error(message.error.message));
     else call.resolve(message.result);
     return true;
@@ -604,7 +604,7 @@ export class CodexAdapter implements HarnessAdapter {
     exit: { code: number | null; signal: NodeJS.Signals | null },
   ): void {
     for (const call of session.calls.values()) {
-      this.scheduler.clearTimeout(call.timer);
+      systemScheduler.clearTimeout(call.timer);
       call.reject(new Error("codex app-server exited"));
     }
     session.calls.clear();
@@ -871,13 +871,13 @@ export class CodexAdapter implements HarnessAdapter {
     // Codex acknowledges before the turn reports completion; wait (bounded) for
     // it, so a prompt sent right after starts a new turn instead of steering a
     // turn that is already over.
-    const deadline = this.scheduler.now() + 10_000;
+    const deadline = systemScheduler.now() + 10_000;
     while (
       session.activeTurnId === turnId &&
       session.proc.running &&
-      this.scheduler.now() < deadline
+      systemScheduler.now() < deadline
     )
-      await new Promise<void>((resolve) => this.scheduler.setTimeout(resolve, 20));
+      await new Promise<void>((resolve) => systemScheduler.setTimeout(resolve, 20));
   }
 
   async reply(ref: SessionRef, interactionId: string, reply: InteractionReply): Promise<void> {

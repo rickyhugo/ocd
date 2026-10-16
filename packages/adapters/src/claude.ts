@@ -530,7 +530,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     // Fail fast on a missing binary or bad flags instead of at the first prompt.
     const early = await Promise.race([
       session.proc.exited,
-      new Promise<null>((r) => this.scheduler.setTimeout(() => r(null), 300)),
+      new Promise<null>((r) => systemScheduler.setTimeout(() => r(null), 300)),
     ]);
     if (early) {
       this.sessions.delete(id);
