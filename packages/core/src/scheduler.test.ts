@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import { FakeScheduler } from "./scheduler.ts";
@@ -37,5 +40,66 @@ describe("FakeScheduler", () => {
     s.setTimeout(() => void order.push("second fired"), 10);
     await s.advance(10);
     expect(order).toEqual(["first settled", "second fired"]);
+  });
+});
+
+// The scheduler seam: supervisor and adapter code reads the time and sets
+// timers only through a `Scheduler`, so tests can drive time instead of
+// sleeping. `systemScheduler` in this file is the one place that may use the
+// globals; `setImmediate` stays allowed, as it does not depend on time.
+const packages = join(import.meta.dirname, "..", "..");
+const GUARDED = ["supervisor", "adapters"].map((name) => join(packages, name, "src"));
+const RAW_TIME =
+  /(?<![.\w])(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(|\bDate\.now\b|\bnew Date\(\s*\)|\bperformance\.now\s*\(|node:timers/;
+
+function sources(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return sources(path);
+    return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) ? [path] : [];
+  });
+}
+
+/** Source without comments (prose may name the globals; code may not), lines kept in place. */
+function code(path: string): string {
+  return readFileSync(path, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ""))
+    .replace(/(^|\s)\/\/.*$/gm, "$1");
+}
+
+describe("scheduler seam", () => {
+  it("recognizes raw time and leaves scheduler calls alone", () => {
+    for (const raw of [
+      "const t = setTimeout(fn, 5);",
+      "clearInterval(timer);",
+      "const at = Date.now();",
+      "const now = clock ?? Date.now;",
+      "stamp(new Date().toISOString());",
+      'import { setTimeout as delay } from "node:timers/promises";',
+    ])
+      expect(RAW_TIME.test(raw), raw).toBe(true);
+    for (const allowed of [
+      "this.scheduler.setTimeout(fn, 5);",
+      "scheduler.clearInterval(timer);",
+      "new Date(scheduler.now()).toISOString();",
+      "new Date(ms)",
+      "setImmediate(() => void stop());",
+    ])
+      expect(RAW_TIME.test(allowed), allowed).toBe(false);
+  });
+
+  it("keeps raw timers and clock reads out of supervisor and adapter code", () => {
+    const files = GUARDED.flatMap(sources);
+    expect(files.length).toBeGreaterThan(30);
+    const leaks = files.flatMap((file) =>
+      code(file)
+        .split("\n")
+        .flatMap((line, i) =>
+          RAW_TIME.test(line)
+            ? [`${relative(packages, file).split(sep).join("/")}:${i + 1}: ${line.trim()}`]
+            : [],
+        ),
+    );
+    expect(leaks).toEqual([]);
   });
 });
