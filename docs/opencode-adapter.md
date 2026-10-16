@@ -55,5 +55,5 @@ untested, but are not refused.
 
 - The service-level `permission.reply` with `reject` rejects all of that
   session's pending requests (documented OpenCode behaviour).
-- Token/cost usage is not reported yet (`usage` capability is false).
+- Token/cost usage is not reported yet.
 - `retry` session status (provider back-off) is treated as activity, not a stall.

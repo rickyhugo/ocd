@@ -201,9 +201,10 @@ claims from independently run verification. Successful execution becomes
 
 ## Harness adapters
 
-Define capabilities for start, inspect, steer, interrupt, resume, pending
-permissions/questions, structured results, and usage reporting. Unsupported
-features must fail clearly. Each profile selects a real harness, its supported
+Every adapter implements start, inspect, steer, interrupt, resume, pending
+permissions/questions, and structured results. What varies is an optional
+method (transcript, revive, usage limits) or the `todos` capability flag; the
+supervisor checks for it and degrades clearly when it is missing. Each profile selects a real harness, its supported
 model, instructions/agent preset where supported, and a permission policy.
 
 | Harness     | First integration path                                                 | Important boundary                                                                       |
