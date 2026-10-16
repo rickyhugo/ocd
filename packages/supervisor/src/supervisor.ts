@@ -9,7 +9,9 @@ import {
   PeekTaskInput,
   REPORT_INSTRUCTIONS,
   RESUME_REFUSALS,
+  STEERABLE_STATES,
   TAKEOVER_STATES,
+  TERMINAL_STATES,
   workerOcdEnv,
   parseWorkerReport,
   redact,
@@ -1588,8 +1590,7 @@ export class Supervisor {
   async cancel(taskId: string, reason: string | undefined): Promise<Task> {
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
-      if (task.state === "completed" || task.state === "cancelled")
-        throw conflict("task_finished", `Task is ${task.state}`);
+      if (TERMINAL_STATES.has(task.state)) throw conflict("task_finished", `Task is ${task.state}`);
       const adapter = this.adapters.get(task.harness);
       if (task.sessionId && adapter && LIVE_STATES.has(task.state)) {
         requireCapability(adapter, "interrupt");
@@ -1627,7 +1628,7 @@ export class Supervisor {
   ): Promise<Task> {
     {
       const task = this.store.requireTask(taskId);
-      if (!["running", "blocked", "ready_for_review"].includes(task.state)) {
+      if (!STEERABLE_STATES.has(task.state)) {
         const why = RESUME_REFUSALS[task.state];
         if (why)
           throw conflict(

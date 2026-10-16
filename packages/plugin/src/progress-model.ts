@@ -1,4 +1,12 @@
-import type { Attention, Task, TaskEvent, TaskEventType, TaskProgress, TodoItem } from "@ocd/core";
+import {
+  LIVE_STATES,
+  type Attention,
+  type Task,
+  type TaskEvent,
+  type TaskEventType,
+  type TaskProgress,
+  type TodoItem,
+} from "@ocd/core";
 
 import { age, type Row, type Tone } from "./sidebar-model.ts";
 
@@ -23,12 +31,9 @@ export const MILESTONES_MAX = 6;
 /** Fetched progress, or "unavailable" when the supervisor could not provide it. */
 export type ProgressState = TaskProgress | "unavailable";
 
-/** States whose row can expand: a worker is (or is about to be) working. */
-const EXPANDABLE = new Set<Task["state"]>(["running", "starting", "blocked"]);
-
 /** Running-task rows expand; rows about attention items keep their single click action. */
 export function canExpand(row: Row): boolean {
-  return !!row.task && !row.attention && EXPANDABLE.has(row.task.state);
+  return !!row.task && !row.attention && LIVE_STATES.has(row.task.state);
 }
 
 export function toggleExpanded(expanded: ReadonlySet<string>, id: string): ReadonlySet<string> {

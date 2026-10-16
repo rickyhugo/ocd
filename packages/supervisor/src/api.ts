@@ -7,7 +7,7 @@ import {
   HEADER_AUTHORIZATION,
   HEADER_DIRECTORY,
   HEADER_SESSION,
-  TaskStateSchema,
+  OPEN_STATES,
   redact,
   routes,
   usageLines,
@@ -265,11 +265,7 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     return reply.status(result.created ? 201 : 200).send(result);
   });
   register(routes.listTasks, ({ query }) => {
-    const states =
-      query.state ??
-      (query.open
-        ? TaskStateSchema.options.filter((s) => s !== "completed" && s !== "cancelled")
-        : undefined);
+    const states = query.state ?? (query.open ? [...OPEN_STATES] : undefined);
     return store.listTasks({
       ...(states ? { state: states } : {}),
       ...(query.repo ? { repo: query.repo } : {}),

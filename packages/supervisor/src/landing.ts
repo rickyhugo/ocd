@@ -1,4 +1,5 @@
 import {
+  TERMINAL_STATES,
   redact,
   truncate,
   type Actor,
@@ -107,7 +108,7 @@ export class LandingService {
     if (!settings.enabled || this.o.stopped()) return [];
     const cutoff = this.o.clock() - settings.afterHours * 3_600_000;
     const due = this.o.store
-      .listTasks({ state: ["completed", "cancelled"], limit: 500 })
+      .listTasks({ state: [...TERMINAL_STATES], limit: 500 })
       .filter(
         (t) =>
           t.workspacePath &&
@@ -148,7 +149,7 @@ export class LandingService {
       throw forbidden("human_only", "Only a human can force a cleanup that discards work");
     return this.o.withTaskLock(taskId, async () => {
       const task = this.o.store.requireTask(taskId);
-      if (task.state !== "completed" && task.state !== "cancelled") {
+      if (!TERMINAL_STATES.has(task.state)) {
         throw conflict(
           "not_finished",
           `Only completed or cancelled tasks can be cleaned up (task is ${task.state})`,
@@ -771,8 +772,7 @@ export class LandingService {
   async discard(taskId: string, reason: string | undefined, actor: Actor): Promise<Task> {
     if (actor !== "human") throw forbidden("human_only", "Only a human can discard a task's work");
     const task = this.o.store.requireTask(taskId);
-    if (task.state !== "completed" && task.state !== "cancelled")
-      await this.o.cancel(taskId, reason ?? "discarded");
+    if (!TERMINAL_STATES.has(task.state)) await this.o.cancel(taskId, reason ?? "discarded");
     return this.cleanup(taskId, true, actor);
   }
 
