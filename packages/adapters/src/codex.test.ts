@@ -283,6 +283,23 @@ describe("Codex worker lifecycle", () => {
     });
   });
 
+  it("waits on the app-server in real time, whatever the injected scheduler reads", async () => {
+    const { spec } = setup();
+    await adapter!.close();
+    const time = new FakeScheduler();
+    adapter = new CodexAdapter({ command: [process.execPath, FAKE], scheduler: time });
+    const creating = adapter.createSession(spec);
+    await time.advance(60_000);
+    const ref = await creating;
+    await adapter.prompt(ref, "[hang]");
+    await until(
+      () => adapter!.inspect(ref),
+      (s) => s.status === "busy",
+    );
+    await adapter.interrupt(ref);
+    expect((await adapter.inspect(ref)).status).toBe("idle");
+  });
+
   it("releases a finished session's worker", async () => {
     const { adapter, spec } = setup();
     const ref = await adapter.createSession(spec);

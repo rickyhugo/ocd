@@ -283,10 +283,7 @@ describe("Claude Code worker lifecycle", () => {
       idleStopMs: 60_000,
       scheduler: time,
     });
-    const creating = adapter.createSession(spec);
-    // createSession waits 300 ms for the process to fail fast.
-    await time.advance(300);
-    const ref = await creating;
+    const ref = await adapter.createSession(spec);
     await adapter.prompt(ref, "first");
     await until(
       () => adapter!.inspect(ref),
