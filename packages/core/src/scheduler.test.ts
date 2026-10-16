@@ -55,9 +55,10 @@ describe("FakeScheduler", () => {
 
 // The scheduler seam: supervisor and adapter code reads the time and sets
 // timers only through an injected `Scheduler`, so tests can drive time
-// instead of sleeping. Raw clocks and timers are refused outright. Real time
-// on purpose (`systemScheduler`, `AbortSignal.timeout`) is counted per file
-// and must match `REAL_TIME_USES`, so each new use is a reviewed edit there.
+// instead of sleeping. Raw clocks and timers, and the global object they
+// hang off, are refused outright. Real time on purpose (`systemScheduler`,
+// `AbortSignal.timeout`) is counted per file and must match
+// `REAL_TIME_USES`, so each new use is a reviewed edit there.
 // `setImmediate` stays allowed, as it does not depend on time. Timeouts a
 // platform API takes as an option (`execFile`'s `timeout`) are not seen.
 const packages = join(import.meta.dirname, "..", "..");
@@ -66,7 +67,7 @@ const TIMER = "(?:setTimeout|setInterval|clearTimeout|clearInterval)";
 const RAW_TIME = new RegExp(
   [
     `(?<![.\\w$])${TIMER}\\b`,
-    `\\bglobalThis\\s*(?:\\.\\s*${TIMER}|\\[)`,
+    String.raw`\bglobalThis\b|\bglobal\s*[.[]`,
     `["'\`]${TIMER}["'\`]`,
     String.raw`\bDate\.now\b`,
     String.raw`\bnew\s+Date\b(?!\s*\(\s*[^\s)])`,
@@ -137,6 +138,8 @@ describe("scheduler seam", () => {
       "globalThis.setTimeout(fn, 5);",
       'globalThis["setTimeout"](fn, 5);',
       'const set = globalThis["set" + "Timeout"];',
+      "const g = globalThis;",
+      "global.setTimeout(fn, 5);",
       'import { systemScheduler as clock } from "@ocd/core";',
     ])
       expect(RAW_TIME.test(raw), raw).toBe(true);

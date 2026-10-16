@@ -102,9 +102,7 @@ describe("ocd.jsonc", () => {
     const configWith = (field: string, value: number) =>
       writeConfig(
         JSON.stringify(
-          field
-            .split(".")
-            .reduceRight<unknown>((inner, key) => ({ [key]: inner }), value) as object,
+          field.split(".").reduceRight<unknown>((inner, key) => ({ [key]: inner }), value),
         ),
       );
     for (const [field, max] of fields) {
