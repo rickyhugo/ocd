@@ -28,6 +28,15 @@ describe("FakeScheduler", () => {
     expect(s.pending).toBe(0);
   });
 
+  it("runs a delay longer than 2^31 - 1 ms after 1 ms, as Node does", async () => {
+    const s = new FakeScheduler();
+    let runs = 0;
+    s.setInterval(() => void runs++, 2 ** 31);
+    s.setTimeout(() => void runs++, 2 ** 31 - 1);
+    await s.advance(3);
+    expect(runs).toBe(3);
+  });
+
   it("lets a timer's async work settle before the next timer fires", async () => {
     const s = new FakeScheduler();
     const order: string[] = [];
