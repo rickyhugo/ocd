@@ -64,7 +64,13 @@ export interface SessionRef {
   sessionId: string;
 }
 
-export type SessionStatus = "idle" | "busy" | "waiting" | "error" | "missing";
+/**
+ * - `idle`: the turn ended and nothing continues the work until a prompt.
+ * - `yielded`: the turn ended, but the harness will start the next one itself
+ *   (a background subagent or a scheduled wakeup re-invokes the worker), so
+ *   the final message is an interim one.
+ */
+export type SessionStatus = "idle" | "yielded" | "busy" | "waiting" | "error" | "missing";
 
 export interface Interaction {
   /** Harness-native request id; approvals bind to it. */
@@ -80,7 +86,7 @@ export interface SessionSnapshot {
   /** Whether the session has received any user prompt. */
   prompted: boolean;
   pending: Interaction[];
-  /** Final assistant text of the last completed turn, if any. */
+  /** Final assistant text of the last completed turn (interim when `yielded`), if any. */
   lastAssistantText: string | null;
   error: string | null;
   /** The harness reports a usage/quota limit, which is a wait, not a failure. */

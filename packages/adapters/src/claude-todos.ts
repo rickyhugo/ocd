@@ -14,7 +14,7 @@ export interface ClaudeStreamMessage {
   tool_use_result?: unknown;
 }
 
-type Block = {
+export type Block = {
   type?: string;
   id?: string;
   name?: string;
@@ -28,10 +28,10 @@ const TOOLS = new Set(["TaskCreate", "TaskUpdate", "TodoWrite"]);
 const MAX_CALLS = 50;
 const MAX_ITEMS = 200;
 
-const record = (value: unknown): Record<string, unknown> =>
+export const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
-const blocks = (message: ClaudeStreamMessage): Block[] => {
+export const blocks = (message: ClaudeStreamMessage): Block[] => {
   const content = record(message.message)["content"];
   // Untrusted stream data: skip null and non-object blocks rather than throw.
   return Array.isArray(content)

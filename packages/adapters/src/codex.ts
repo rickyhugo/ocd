@@ -481,6 +481,13 @@ export class CodexAdapter implements HarnessAdapter {
     }
     const sessionId = session.threadId;
     if (!sessionId) return;
+    // A spawned subagent's thread streams over the same connection. Its work is
+    // the worker's activity, but its turns and messages are not the worker's.
+    const thread = params["threadId"];
+    if (typeof thread === "string" && thread !== sessionId && method !== "serverRequest/resolved") {
+      this.emit({ type: "activity", sessionId });
+      return;
+    }
     switch (method) {
       case "turn/started": {
         const turn = params["turn"] as { id?: unknown } | undefined;

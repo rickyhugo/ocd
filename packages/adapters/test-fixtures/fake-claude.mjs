@@ -1,7 +1,8 @@
 // Minimal stand-in for `claude -p --input-format stream-json ...` (2.1.296
 // protocol subset) used by adapter tests. Directives in the prompt pick
 // behaviour: [perm], [limit], [hang], [todos], [usage], [subagent-wakeup],
-// [mapping], [queued], [bg-perm], [no-report]. Never calls a model.
+// [mapping], [queued], [bg-perm], [report-early], [no-report]. Never calls a
+// model.
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -223,6 +224,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         result(done);
       });
     }, 250);
+  }
+  if (text.includes("[report-early]")) {
+    // The worker reports while a background shell it started still runs.
+    launchSubagent("dev-server");
+    return result(`Done; the dev server is still up.\n${report}`);
   }
   if (text.includes("[queued]")) {
     // The subagent finishes while the turn is still running: its notice is

@@ -60,6 +60,18 @@ recorded per request; there is no sandbox.
   --session-id <uuid> --model <m> [--effort <e>] --permission-mode default
   --permission-prompt-tool stdio`. The process stays alive between turns; each
   turn ends with one `result` message.
+- A turn can end while work it started goes on: a subagent or shell started
+  with `run_in_background` (`system` `task_started`, until its
+  `task_notification`; `background_tasks_changed` lists the ones still
+  running), a `ScheduleWakeup` that has not fired (its `tool_use_result`
+  `scheduledFor`), or a turn already queued (`result.queued_turn_count`).
+  Claude Code then starts the next turn itself, so that turn's `result`
+  yields: OCD keeps the task running, keeps the process up, and does not ask
+  for a report yet. A yielded turn that does carry a valid report still ends
+  the run. A background subagent's permission requests stay answerable after
+  the worker's own turn has ended. (The turn shapes come from live 2.1.300
+  sessions; the stream fields were read from the 2.1.296 to 2.1.301 builds,
+  not yet recorded on the wire.)
 - OCD chooses the session id up front; reattach uses `--resume <id>`.
 - Permission prompts arrive as `can_use_tool` control requests and are
   answered per the profile policy (`allow` approves with the original input,
@@ -84,6 +96,10 @@ recorded per request; there is no sandbox.
   waits on OCD.
 - `turn/completed` with `failed` and `usageLimitExceeded`/`rateLimitExceeded`
   becomes a blocked task. Follow-ups during a turn use `turn/steer`.
+- A subagent the worker spawns (`spawn_agent`) runs on its own thread over the
+  same connection. Notifications for another `threadId` count as the worker's
+  activity only: the subagent's `turn/completed` and messages are not the
+  worker's, and its approval requests are answered like the worker's own.
 - `ocd doctor` checks `codex --version`; login is checked when a session
   starts.
 

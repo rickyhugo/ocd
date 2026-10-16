@@ -157,6 +157,14 @@ describe("workers waiting on their own background work (#57)", () => {
     expect(failed.attention.find((a) => a.kind === "failure")?.status).toBe("open");
   });
 
+  it("ends the run on a valid report even while background work goes on", async () => {
+    h = await start(claude);
+    await setupRepo(h, "app", "w");
+    const { task } = await dispatch("serve it [report-early]");
+    const done = await waitForState(h, task.id, "ready_for_review");
+    expect(done.task.result?.reported?.summary).toBe("claude did it");
+  });
+
   it("does not take a codex subagent's finished turn for the worker's", async () => {
     h = await start(codex);
     await setupRepo(h, "app", "w");
