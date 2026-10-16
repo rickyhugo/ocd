@@ -77,7 +77,7 @@ function attention(over: Partial<Attention> & Pick<Attention, "kind">): Attentio
     createdAt: at(5),
     resolvedAt: null,
     ...over,
-  };
+  } as Attention;
 }
 
 function event(
@@ -116,7 +116,7 @@ describe("/spill snapshot", () => {
       attention: [attention({ kind: "land", taskId: "t_l", reason: "Push to main" })],
       events: { t_l: [event("t_l", "land.requested", 3)] },
     });
-    expect(out).toMatch(/confirm landing/);
+    expect(out).toMatch(/confirm push/);
     expect(out).toMatch(/Blocked \/ waiting/);
     const again = spill({
       tasks: [task({ id: "t_r2", title: "Reworked" })],

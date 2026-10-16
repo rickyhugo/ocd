@@ -1,4 +1,5 @@
 import {
+  ATTENTION_KINDS,
   assertTransition,
   redact,
   truncate,
@@ -9,6 +10,7 @@ import {
   type BranchSync,
   type Decision,
   type HarnessName,
+  LandPlan,
   type Manager,
   type Memory,
   type OutboxEntry,
@@ -69,12 +71,10 @@ export interface WakePayload {
   taskId?: string;
 }
 
-export interface AttentionInput {
+interface AttentionInputFields {
   taskId: string | null;
-  kind: AttentionKind;
   dedupeKey: string;
   reason: string;
-  operation?: unknown;
   harness?: HarnessName | null;
   sessionId?: string | null;
   runId?: string | null;
@@ -82,16 +82,11 @@ export interface AttentionInput {
   resolvableBy: Actor;
   expiresAt?: string | null;
   status?: AttentionStatus;
-  /** "any": never raise this key again; "open": raise again once the previous one is settled. */
-  dedupe?: "any" | "open";
 }
 
-const FOREVER_DEDUPE_KINDS: ReadonlySet<AttentionKind> = new Set([
-  "permission",
-  "question",
-  "stall",
-  "ambiguous_launch",
-]);
+export type AttentionInput =
+  | (AttentionInputFields & { kind: "land"; operation: LandPlan })
+  | (AttentionInputFields & { kind: Exclude<AttentionKind, "land">; operation?: unknown });
 
 export interface TransitionOptions {
   /** Compare-and-set: the transition only applies from one of these states. */
@@ -521,10 +516,7 @@ export class Store {
     delivery: { notify: boolean; wake: boolean; notice?: Notice },
   ): { attention: Attention; created: boolean } {
     return this.tx(() => {
-      // Requests tied to one harness request or window dedupe for good; per-turn
-      // outcomes (review, failure, quota...) dedupe only while still open, so a
-      // later occurrence of the same situation is raised again.
-      const mode = input.dedupe ?? (FOREVER_DEDUPE_KINDS.has(input.kind) ? "any" : "open");
+      const mode = ATTENTION_KINDS[input.kind].dedupe;
       const escaped = input.dedupeKey.replaceAll(/[\\%_]/g, (c) => `\\${c}`);
       const family = this.db
         .select()
@@ -1061,14 +1053,12 @@ export class Store {
 
   private toAttention(row: AttentionRow): Attention {
     const task = row.taskId ? this.taskRow(row.taskId) : null;
-    return {
+    const fields = {
       id: row.id,
       taskId: row.taskId,
       repo: task ? this.repoNameById(task.repoId) : null,
-      kind: row.kind,
       status: row.status,
       reason: row.reason,
-      operation: row.operation ?? null,
       harness: row.harness,
       sessionId: row.sessionId,
       requestRef: row.requestRef,
@@ -1079,6 +1069,9 @@ export class Store {
       createdAt: row.createdAt,
       resolvedAt: row.resolvedAt,
     };
+    return row.kind === "land"
+      ? { ...fields, kind: row.kind, operation: LandPlan.safeParse(row.operation).data ?? null }
+      : { ...fields, kind: row.kind, operation: row.operation ?? null };
   }
 
   attentionRunId(id: string): string | null {

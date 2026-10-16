@@ -31,8 +31,9 @@ import {
   usageLines,
   type Attention,
   type AttentionResponse,
-  type LandPlan,
   type MemoryScope,
+  type MemoryStatus,
+  type OutboxStatus,
   type Task,
 } from "@ocd/core";
 import {
@@ -1131,7 +1132,8 @@ async function run(
             if (!item.taskId)
               fail(`${id} is a land request without a task; refusing to approve it`);
             const plan = await client.landPlan(item.taskId);
-            const asked = item.operation as LandPlan;
+            const asked = item.operation;
+            if (!asked) fail("the request has no plan; deny it and ask again");
             if (plan.blocker) fail(`${plan.blocker.message} (${plan.blocker.code})`);
             if (plan.head !== asked.head)
               fail("the task branch moved since the manager asked; deny this and ask again");
@@ -1195,7 +1197,7 @@ async function run(
         );
       } else if (sub === "list") {
         const items = await client.listMemories({
-          ...(flags.status ? { status: flags.status } : {}),
+          ...(flags.status ? { status: flags.status as MemoryStatus } : {}),
           ...(flags.repo ? { repo: flags.repo } : {}),
         });
         print(
@@ -1234,7 +1236,9 @@ async function run(
       return;
     }
     case "outbox": {
-      const entries = await client.listOutbox(flags.status ? { status: flags.status } : {});
+      const entries = await client.listOutbox(
+        flags.status ? { status: flags.status as OutboxStatus } : {},
+      );
       print(
         entries,
         json,

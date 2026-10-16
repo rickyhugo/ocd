@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ATTENTION_KIND_NAMES } from "./attention.ts";
 import {
   ATTENTION_STATUSES,
   MEMORY_STATUSES,
@@ -341,25 +342,26 @@ export const LandTaskInput = z.object({
 export type LandTaskInput = z.input<typeof LandTaskInput>;
 
 /** What a direct landing would push; shown for confirmation before anything happens. */
-export interface LandPlan {
-  taskId: string;
-  title: string;
-  repo: string;
-  remote: string;
+export const LandPlan = z.object({
+  taskId: z.string(),
+  title: z.string(),
+  repo: z.string(),
+  remote: z.string(),
   /** Branch on the remote that receives the work, e.g. main. */
-  base: string;
-  method: MergeMethod;
+  base: z.string(),
+  method: MergeMethod,
   /** The task branch's head commit; a confirmation is bound to it. */
-  head: string;
+  head: z.string(),
   /** Commits on the task branch that the base does not have, oldest first. */
-  commits: { sha: string; subject: string }[];
-  files: string[];
+  commits: z.array(z.object({ sha: z.string(), subject: z.string() })),
+  files: z.array(z.string()),
   /** Uncommitted changes in the worktree; a direct landing refuses them. */
-  dirty: boolean;
-  pullRequestUrl: string | null;
+  dirty: z.boolean(),
+  pullRequestUrl: z.string().nullable(),
   /** Why a direct landing would be refused right now; null when it can go ahead. */
-  blocker: { code: string; message: string } | null;
-}
+  blocker: z.object({ code: z.string(), message: z.string() }).nullable(),
+});
+export type LandPlan = z.infer<typeof LandPlan>;
 
 export interface LandResult {
   task: Task;
@@ -429,30 +431,18 @@ export const ResumeTaskInput = z.object({
 // ---------------------------------------------------------------------------
 // Attention
 
-export const AttentionKind = z.enum([
-  "decision",
-  "permission",
-  "question",
-  "failure",
-  "stall",
-  "review",
-  "ambiguous_launch",
-  "land",
-]);
+export const AttentionKind = z.enum(ATTENTION_KIND_NAMES);
 export type AttentionKind = z.infer<typeof AttentionKind>;
 
 export const AttentionStatus = z.enum(ATTENTION_STATUSES);
 export type AttentionStatus = z.infer<typeof AttentionStatus>;
 
-export interface Attention {
+interface AttentionFields {
   id: string;
   taskId: string | null;
   repo: string | null;
-  kind: AttentionKind;
   status: AttentionStatus;
   reason: string;
-  /** The exact pending operation, e.g. the permission being requested. */
-  operation: unknown;
   harness: HarnessName | null;
   sessionId: string | null;
   requestRef: string | null;
@@ -463,6 +453,15 @@ export interface Attention {
   createdAt: string;
   resolvedAt: string | null;
 }
+
+/**
+ * `operation` is the exact pending operation: the push plan a land item
+ * confirms, or e.g. the permission being requested. A land item's plan is null
+ * when its stored row does not parse; such an item can be denied, not approved.
+ */
+export type Attention =
+  | (AttentionFields & { kind: "land"; operation: LandPlan | null })
+  | (AttentionFields & { kind: Exclude<AttentionKind, "land">; operation: unknown });
 
 export const AttentionResponse = z.discriminatedUnion("type", [
   z.object({ type: z.literal("approve") }),

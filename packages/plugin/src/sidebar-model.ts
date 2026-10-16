@@ -1,4 +1,10 @@
-import type { Attention, Task, UpdateStatus } from "@ocd/core";
+import {
+  ATTENTION_KINDS,
+  LIVE_STATES,
+  type Attention,
+  type Task,
+  type UpdateStatus,
+} from "@ocd/core";
 
 // The sidebar's view model: what to show, in which order, with which emphasis.
 // Pure, so it is tested without a terminal.
@@ -55,26 +61,6 @@ export function age(iso: string | null, now: number): string {
   return `${Math.floor(ms / 86_400_000)}d`;
 }
 
-const ATTENTION_LABEL: Record<Attention["kind"], string> = {
-  permission: "permission",
-  question: "question",
-  decision: "decision",
-  failure: "failed",
-  stall: "stalled",
-  review: "review",
-  ambiguous_launch: "unclear",
-  land: "confirm push",
-};
-
-/** Attention kinds that stop work until the human answers. */
-const BLOCKING = new Set<Attention["kind"]>([
-  "permission",
-  "question",
-  "decision",
-  "ambiguous_launch",
-  "land",
-]);
-
 /**
  * @param tasks open tasks (anything not completed or cancelled)
  * @param finished recently completed or cancelled tasks, newest first
@@ -89,7 +75,9 @@ export function buildSidebar(
   const human = attention.filter((a) => a.status === "open" && a.resolvableBy === "human");
   // Blocking items go to "Needs you". Review, failure and stall items belong to
   // their task's own section (Review, Stuck), so a task is listed once.
-  const blocking = human.filter((a) => BLOCKING.has(a.kind) || !a.taskId || !byId.has(a.taskId));
+  const blocking = human.filter(
+    (a) => ATTENTION_KINDS[a.kind].blocking || !a.taskId || !byId.has(a.taskId),
+  );
   const waitingOnHuman = new Set(blocking.flatMap((a) => (a.taskId ? [a.taskId] : [])));
 
   const needs: Row[] = blocking
@@ -101,7 +89,7 @@ export function buildSidebar(
         glyph: "!",
         tone: "warning",
         title: task?.title ?? a.reason,
-        meta: ATTENTION_LABEL[a.kind],
+        meta: ATTENTION_KINDS[a.kind].label,
         task,
         attention: a,
       };
@@ -125,7 +113,7 @@ export function buildSidebar(
     (t) => ({ glyph: "✓", tone: "success", meta: age(t.finishedAt ?? t.updatedAt, now) }),
   );
   const running = rows(
-    (t) => t.state === "running" || t.state === "starting" || t.state === "blocked",
+    (t) => LIVE_STATES.has(t.state),
     (t) => {
       const quiet = t.lastActivityAt !== null && now - Date.parse(t.lastActivityAt) > QUIET_MS;
       return {
