@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -50,13 +51,26 @@ export function testPaths(home: string): OcdPaths {
   };
 }
 
+/**
+ * Repository config for test repos, written as a file rather than with
+ * `git config` calls. Auto-maintenance is off: otherwise every commit, fetch
+ * and received push spawns `git maintenance run --auto`, which costs hundreds
+ * of milliseconds per call on a loaded machine.
+ */
+const TEST_GIT_CONFIG = `[user]
+\temail = test@example.com
+\tname = OCD Test
+[commit]
+\tgpgsign = false
+[maintenance]
+\tauto = false
+`;
+
 export function makeRepo(root: string, name: string): string {
   const path = join(root, name);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: path, stdio: "pipe" });
   execFileSync("git", ["init", "-q", "-b", "main", path]);
-  git("config", "user.email", "test@example.com");
-  git("config", "user.name", "OCD Test");
-  git("config", "commit.gpgsign", "false");
+  appendFileSync(join(path, ".git", "config"), TEST_GIT_CONFIG);
   writeFileSync(join(path, "README.md"), `# ${name}\n`);
   git("add", ".");
   git("commit", "-q", "-m", "init");
