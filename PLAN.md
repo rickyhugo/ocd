@@ -400,7 +400,10 @@ Possible later work, not committed to:
 Design debt, deferred until a feature needs it. The seams are in place:
 harnesses (`docs/adding-a-harness.md`), platform (`packages/cli/src/platform`,
 guarded by a test), git (`GitRunner`), the API contract (one route table in
-core), event and status names, and landing and peek as their own services.
+core), event and status names, landing and peek as their own services, and
+CLI commands (one table in `ocd.ts` for dispatch and `--help`). `setup.ts`
+already has one method per phase; a step-list refactor was tried and dropped
+because it added lines without reducing coupling.
 
 - `store.ts` holds every aggregate; split it into repositories (tasks,
   attention, outbox, memory) over a shared transaction.
@@ -409,8 +412,6 @@ core), event and status names, and landing and peek as their own services.
   `PullRequestHost`.
 - `tui.tsx` mixes views with workflows (accept and clean up, land, approve);
   move those into testable actions shared with the CLI.
-- `ocd.ts` is one command switch and `setup.ts` one long function; a command
-  registry and setup steps with `check()` / `apply()`.
 - Timers are only partly injectable (raw `setInterval`s, `Date.now()` in a few
   places); one scheduler interface would make timing tests deterministic.
 - Domain errors extend the HTTP `ApiError`; give them codes from a shared union
