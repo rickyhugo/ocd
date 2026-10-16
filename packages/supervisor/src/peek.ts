@@ -92,7 +92,7 @@ export class PeekService {
       before = cursor.b;
     }
     const adapter = this.o.adapterFor(task.harness);
-    if (!adapter?.transcript || !adapter.capabilities.transcript)
+    if (!adapter?.transcript)
       return unavailable(`The ${task.harness} adapter cannot read worker transcripts.`);
     if (task.state === "manual")
       result.notes.push(

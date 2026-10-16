@@ -32,18 +32,7 @@ import {
 
 export const CLAUDE_TESTED_VERSIONS = ["2.1.296", "2.1.299"] as const;
 
-const CAPABILITIES: Capabilities = {
-  start: true,
-  inspect: true,
-  steer: true,
-  interrupt: true,
-  resume: true,
-  pendingInteractions: true,
-  structuredResults: true,
-  usage: false,
-  todos: true,
-  transcript: true,
-};
+const CAPABILITIES: Capabilities = { todos: true };
 
 const LIMIT_PATTERN = /usage limit|rate.?limit|hit your .*limit|limit resets/i;
 

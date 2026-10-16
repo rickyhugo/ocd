@@ -36,7 +36,6 @@ import {
   HarnessUnavailableError,
   findHarness,
   harnessSettings,
-  requireCapability,
   type AdapterEvent,
   type HarnessAdapter,
   type SessionSnapshot,
@@ -471,7 +470,6 @@ export class Supervisor {
         `Harness ${harness} is not supported in this version`,
       );
     }
-    requireCapability(adapter, "start");
     const status = this.versions.get(harness);
     if (status && !status.available) {
       throw new ApiError(
@@ -1534,7 +1532,6 @@ export class Supervisor {
         throw conflict("task_finished", `Task is ${task.state}`);
       const adapter = this.adapters.get(task.harness);
       if (task.sessionId && adapter && LIVE_STATES.has(task.state)) {
-        requireCapability(adapter, "interrupt");
         await adapter.interrupt({ sessionId: task.sessionId });
       }
       this.endRun(taskId, "cancelled");
@@ -1570,7 +1567,6 @@ export class Supervisor {
         throw conflict("not_steerable", `Cannot send instructions to a ${task.state} task`);
       }
       const adapter = this.adapterFor(task.harness);
-      requireCapability(adapter, "steer");
       // A follow-up re-opens the review (the worker re-reports and OCD re-verifies),
       // so it is the boundary where a stale reviewed branch may be refreshed.
       const syncNote =
@@ -1785,7 +1781,6 @@ export class Supervisor {
           ],
         });
       }
-      requireCapability(adapter, "resume");
       let snap = await adapter.inspect(ref);
       if (snap.status === "missing" && adapter.revive) {
         const run = this.store.latestRun(taskId);
@@ -1873,7 +1868,6 @@ export class Supervisor {
         });
         return this.queueAndTick(taskId);
       }
-      requireCapability(adapter, "resume");
       if (!task.sessionId)
         throw conflict("no_session", "No recorded session to reattach; use relaunch");
       let snap = await adapter.inspect({ sessionId: task.sessionId });

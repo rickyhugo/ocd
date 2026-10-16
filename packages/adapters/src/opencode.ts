@@ -92,17 +92,8 @@ export async function discoverOpenCode(
 }
 
 const CAPABILITIES: Capabilities = {
-  start: true,
-  inspect: true,
-  steer: true,
-  interrupt: true,
-  resume: true,
-  pendingInteractions: true,
-  structuredResults: true,
-  usage: false,
   // The V2 client (2.0.27) has no checklist events or typed todo tool to follow.
   todos: false,
-  transcript: true,
 };
 
 const PERMISSION_PREFIX = "perm:";

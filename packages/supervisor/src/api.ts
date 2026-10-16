@@ -165,9 +165,6 @@ export function buildApi(deps: ApiDeps): FastifyInstance {
     ) {
       status = (error as { statusCode: number }).statusCode;
       body = { error: { code: "bad_request", message: (error as Error).message } };
-    } else if ((error as { name?: string }).name === "UnsupportedCapabilityError") {
-      status = 422;
-      body = { error: { code: "unsupported_capability", message: (error as Error).message } };
     } else {
       req.log.error({ err: error }, "request failed");
       body = {

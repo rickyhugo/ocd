@@ -146,18 +146,7 @@ export interface FakeAdapterOptions {
   available?: boolean;
 }
 
-const CAPABILITIES: Capabilities = {
-  start: true,
-  inspect: true,
-  steer: true,
-  interrupt: true,
-  resume: true,
-  pendingInteractions: true,
-  structuredResults: true,
-  usage: false,
-  todos: true,
-  transcript: true,
-};
+const CAPABILITIES: Capabilities = { todos: true };
 
 export class FakeAdapter implements HarnessAdapter {
   readonly harness = "fake" as const;
