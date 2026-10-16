@@ -76,7 +76,7 @@ describe("task lifecycle", () => {
       "review@1",
       "done@1",
     ]);
-    expect(lc).toMatchObject({ stage: "done", since: at(900), attempt: 1, lastEventAt: at(900) });
+    expect(lc).toMatchObject({ stage: "done", since: at(900), attempt: 1 });
     expect(lc.spans.at(-1)).toMatchObject({ from: at(900), to: at(900) });
     expect(lc.lastMilestone).toEqual({ label: "Accepted", at: at(900) });
     expect(stageTimings(lc, T0 + 5_000_000)).toEqual({
@@ -163,7 +163,77 @@ describe("task lifecycle", () => {
     const lc = taskLifecycle(task("ready_for_review", { updatedAt: at(50) }), []);
     expect(stages(lc)).toEqual(["queued@0", "review@0"]);
     expect(lc).toMatchObject({ stage: "review", since: at(50), lastMilestone: null });
-    expect(lc.lastEventAt).toBeNull();
+  });
+});
+
+describe("landing", () => {
+  const reviewed = [
+    ...launch(0),
+    ev("worker.responded", 25),
+    move("running", "ready_for_review", 60),
+  ];
+  const accept = (s: number) => move("ready_for_review", "completed", s, "task.accepted");
+
+  it("lands through a pull request: accepted, PR opened, merge requested, merged", () => {
+    const lc = taskLifecycle(task("completed"), [
+      ...reviewed,
+      accept(100),
+      ev("pull_request.opened", 101),
+      ev("pull_request.merge_requested", 110),
+      ev("pull_request.merged", 400),
+    ]);
+    expect(stages(lc).slice(4)).toEqual(["review@1", "done@1", "landing@1", "done@1"]);
+    expect(lc).toMatchObject({ stage: "done", since: at(400) });
+    expect(stageTimings(lc, T0 + 1_000_000).landing).toBe(299_000);
+  });
+
+  it("stays landing while the pull request waits on checks, and is never stale", () => {
+    const t = view(task("completed"), [...reviewed, accept(100), ev("pull_request.opened", 101)]);
+    expect(t.lifecycle).toMatchObject({ stage: "landing", since: at(101) });
+    expect(t.lifecycle.spans.at(-1)?.to).toBeNull();
+    const later = T0 + 101_000 + 10 * STALE_AFTER_MS;
+    expect(liveness(t, later)).toEqual({ kind: "not_live" });
+    expect(lifecycleLines(t, later)[0]).toBe("stage: Landing 1h 40m");
+  });
+
+  it("lands a confirmed direct push: requested, accepted mid-landing, landed", () => {
+    const lc = taskLifecycle(task("completed"), [
+      ...reviewed,
+      ev("land.requested", 100, { attention: "a1" }),
+      accept(300),
+      ev("task.landed", 301),
+    ]);
+    expect(stages(lc).slice(4)).toEqual(["review@1", "landing@1", "done@1"]);
+    expect(stageTimings(lc, T0 + 1_000_000).landing).toBe(201_000);
+  });
+
+  it("returns to review when the push fails or the human declines it", () => {
+    const failed = taskLifecycle(task("ready_for_review"), [
+      ...reviewed,
+      ev("land.requested", 100, { attention: "a1" }),
+      ev("land.failed", 120),
+    ]);
+    expect(stages(failed).slice(4)).toEqual(["review@1", "landing@1", "review@1"]);
+
+    const declined = [
+      ...reviewed,
+      ev("land.requested", 100, { attention: "a1" }),
+      ev("attention.resolved", 110, { id: "a0", response: "answer" }),
+    ];
+    expect(taskLifecycle(task("ready_for_review"), declined).stage).toBe("landing");
+    declined.push(ev("attention.resolved", 120, { id: "a1", response: "deny" }));
+    expect(taskLifecycle(task("ready_for_review"), declined)).toMatchObject({
+      stage: "review",
+      since: at(120),
+    });
+  });
+
+  it("keeps a pull request opened during review as a review aid", () => {
+    const lc = taskLifecycle(task("ready_for_review"), [
+      ...reviewed,
+      ev("pull_request.opened", 100),
+    ]);
+    expect(lc).toMatchObject({ stage: "review", since: at(60) });
   });
 });
 

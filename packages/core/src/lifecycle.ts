@@ -13,6 +13,7 @@ export const STAGES = [
   "working",
   "blocked",
   "review",
+  "landing",
   "manual",
   "stopped",
   "done",
@@ -41,7 +42,8 @@ export const STAGE_LABEL: Record<Stage, string> = {
   starting_worker: "Starting worker",
   working: "Working",
   blocked: "Blocked",
-  review: "Review / landing",
+  review: "Review",
+  landing: "Landing",
   manual: "Manual",
   stopped: "Stopped",
   done: "Done",
@@ -71,7 +73,6 @@ export interface TaskLifecycle {
   /** Oldest first; the last one is open (to: null) unless the stage is done. */
   spans: StageSpan[];
   lastMilestone: { label: string; at: string } | null;
-  lastEventAt: string | null;
 }
 
 /** A task as list and inspect return it. */
@@ -88,10 +89,24 @@ const field = (data: unknown, key: string): unknown =>
 const STATES: ReadonlySet<unknown> = new Set(TASK_STATES);
 
 /** The state a transition event moved to; null for other events. Any event type can record a transition. */
-export function transitionTo(event: TaskEvent): TaskState | null {
+function transitionTo(event: TaskEvent): TaskState | null {
   const to = field(event.data, "to");
   return STATES.has(to) ? (to as TaskState) : null;
 }
+
+/** Landing ends with the work on the base branch, or with a failed push or PR step. */
+const LANDING_ENDS: ReadonlySet<TaskEventType> = new Set([
+  "task.landed",
+  "pull_request.merged",
+  "land.failed",
+  "pull_request.failed",
+]);
+
+/** The human declined, or let expire, the push they were asked to confirm. */
+const landRequestSettled = (event: TaskEvent, attentionId: string | null): boolean =>
+  attentionId !== null &&
+  (event.type === "attention.resolved" || event.type === "attention.expired") &&
+  field(event.data, "id") === attentionId;
 
 export function taskLifecycle(task: Task, events: readonly TaskEvent[]): TaskLifecycle {
   const spans: StageSpan[] = [];
@@ -99,6 +114,7 @@ export function taskLifecycle(task: Task, events: readonly TaskEvent[]): TaskLif
   let responded = false;
   let target: TaskState = "queued";
   let lastMilestone: TaskLifecycle["lastMilestone"] = null;
+  let landAttention: string | null = null;
   const enter = (stage: Stage, at: string) => {
     const open = spans.at(-1);
     if (open?.stage === stage) return;
@@ -120,9 +136,25 @@ export function taskLifecycle(task: Task, events: readonly TaskEvent[]): TaskLif
         enter("preparing_workspace", e.createdAt);
       } else if (to === "running") {
         enter(responded ? "working" : "starting_worker", e.createdAt);
-      } else {
+      } else if (!(to === "completed" && current() === "landing")) {
+        // A direct push accepts the task mid-landing; it is landed only once pushed.
         enter(STATE_STAGE[to], e.createdAt);
       }
+    } else if (e.type === "land.requested") {
+      const id = field(e.data, "attention");
+      landAttention = typeof id === "string" ? id : null;
+      enter("landing", e.createdAt);
+    } else if (
+      (e.type === "pull_request.opened" || e.type === "pull_request.merge_requested") &&
+      target === "completed"
+    ) {
+      // A PR opened during review without accepting is a review aid, not landing.
+      enter("landing", e.createdAt);
+    } else if (
+      current() === "landing" &&
+      (LANDING_ENDS.has(e.type) || landRequestSettled(e, landAttention))
+    ) {
+      enter(STATE_STAGE[target], e.createdAt);
     } else if (e.type === "workspace.ready" && current() === "preparing_workspace") {
       enter("starting_worker", e.createdAt);
     } else if (e.type === "worker.responded") {
@@ -140,7 +172,6 @@ export function taskLifecycle(task: Task, events: readonly TaskEvent[]): TaskLif
     attempt,
     spans,
     lastMilestone,
-    lastEventAt: events.at(-1)?.createdAt ?? null,
   };
 }
 
