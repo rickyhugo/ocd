@@ -600,7 +600,9 @@ says why (`available: false` with notes) instead of guessing.
    so nothing is asked or recorded.
 4. When the worker goes idle, OCD collects its `ocd-report` and independently
    checks the worktree with git (changed files, commits, uncommitted changes).
-   A valid report makes the task `ready_for_review`.
+   A valid report makes the task `ready_for_review`. A turn that ends while
+   the worker's own background subagents or a scheduled wakeup will continue
+   it is not the end: the task stays `running` until the worker reports.
 5. Workers commit to `ocd/<task>` (never push). Nothing is merged
    automatically. You decide what happens next:
 

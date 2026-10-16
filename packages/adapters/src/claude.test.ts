@@ -9,6 +9,12 @@ import { ClaudeAdapter, parseClaudeModel } from "./claude.ts";
 import type { AdapterEvent, SessionSpec } from "./types.ts";
 
 const FAKE = join(import.meta.dirname, "..", "test-fixtures", "fake-claude.mjs");
+const FAKE_NO_SESSION_STATE = join(
+  import.meta.dirname,
+  "..",
+  "test-fixtures",
+  "fake-claude-no-session-state.mjs",
+);
 let adapter: ClaudeAdapter | null = null;
 let dir: string | null = null;
 afterEach(async () => {
@@ -17,9 +23,9 @@ afterEach(async () => {
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
-function setup(env: Record<string, string> = {}) {
+function setup(fake = FAKE) {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "ocd-claude-")));
-  adapter = new ClaudeAdapter({ command: [process.execPath, FAKE] });
+  adapter = new ClaudeAdapter({ command: [process.execPath, fake] });
   const events: AdapterEvent[] = [];
   adapter.subscribe((e) => events.push(e));
   const spec: SessionSpec = {
@@ -32,7 +38,7 @@ function setup(env: Record<string, string> = {}) {
     agent: null,
     permissionPolicy: "ask",
     isolationEnv: { OCD_HOME: "/sandbox/t_1" },
-    env: { PATH: process.env["PATH"]!, HOME: process.env["HOME"]!, ...env },
+    env: { PATH: process.env["PATH"]!, HOME: process.env["HOME"]! },
   };
   return { adapter, events, spec };
 }
@@ -112,6 +118,99 @@ describe("Claude Code adapter", () => {
       () => adapter.inspect(ref),
       (s) => s.status === "idle",
     );
+  });
+
+  describe("a turn that ends while background work will continue it (#57)", () => {
+    /** The final message each time the adapter reports idle: what the supervisor would review. */
+    const idleMessages = (adapter: ClaudeAdapter, ref: { sessionId: string }) => {
+      const texts: Promise<string | null>[] = [];
+      adapter.subscribe((e) => {
+        if (e.type === "status" && e.status === "idle")
+          texts.push(adapter.inspect(ref).then((s) => s.lastAssistantText));
+      });
+      return () => Promise.all(texts);
+    };
+
+    it("yields while mapping subagents run, and goes idle only after the last turn", async () => {
+      const { adapter, spec } = setup();
+      const ref = await adapter.createSession(spec);
+      const idle = idleMessages(adapter, ref);
+      await adapter.prompt(ref, "plan [mapping]");
+      await until(
+        () => adapter.inspect(ref),
+        (s) => s.status === "idle",
+      );
+      expect(await idle()).toEqual([expect.stringContaining("Both maps are in")]);
+    });
+
+    it("yields when a subagent finishes during the turn and its notice is not delivered yet", async () => {
+      const { adapter, spec } = setup();
+      const ref = await adapter.createSession(spec);
+      const idle = idleMessages(adapter, ref);
+      await adapter.prompt(ref, "check [finish-mid-turn]");
+      await until(
+        () => adapter.inspect(ref),
+        (s) => s.status === "idle",
+      );
+      expect(await idle()).toEqual([expect.stringContaining("The check passed")]);
+    });
+
+    it("stays yielded while a scheduled wakeup has not fired", async () => {
+      const { adapter, spec } = setup();
+      const ref = await adapter.createSession(spec);
+      await adapter.prompt(ref, "later [wakeup]");
+      await until(
+        () => adapter.inspect(ref),
+        (s) => s.lastAssistantText === "Checking back in 20 minutes.",
+      );
+      await delay(200);
+      expect((await adapter.inspect(ref)).status).toBe("yielded");
+    });
+
+    it("keeps a background subagent's permission request answerable after the turn ends", async () => {
+      const { adapter, spec } = setup();
+      const ref = await adapter.createSession(spec);
+      await adapter.prompt(ref, "test [bg-perm]");
+      const waiting = await until(
+        () => adapter.inspect(ref),
+        (s) => s.lastAssistantText === "Waiting on the test subagent.",
+      );
+      expect(waiting.status).toBe("waiting");
+      expect(waiting.pending.map((p) => p.summary)).toEqual(["Bash: npm test"]);
+      await adapter.reply(ref, waiting.pending[0]!.id, { type: "approve" });
+      const done = await until(
+        () => adapter.inspect(ref),
+        (s) => s.status === "idle",
+      );
+      expect(done.lastAssistantText).toContain("Tests ran (allow)");
+    });
+
+    describe("from a build that never reports session state", () => {
+      it("goes idle when the turn ends with no wakeup armed", async () => {
+        const { adapter, spec } = setup(FAKE_NO_SESSION_STATE);
+        const ref = await adapter.createSession(spec);
+        const statuses: string[] = [];
+        adapter.subscribe((e) => void (e.type === "status" && statuses.push(e.status)));
+        await adapter.prompt(ref, "x [no-report]");
+        await until(
+          () => adapter.inspect(ref),
+          (s) => s.lastAssistantText !== null,
+        );
+        expect(statuses).toEqual(["idle"]);
+      });
+
+      it("yields while a scheduled wakeup has not fired", async () => {
+        const { adapter, spec } = setup(FAKE_NO_SESSION_STATE);
+        const ref = await adapter.createSession(spec);
+        await adapter.prompt(ref, "later [wakeup]");
+        await until(
+          () => adapter.inspect(ref),
+          (s) => s.lastAssistantText === "Checking back in 20 minutes.",
+        );
+        await delay(200);
+        expect((await adapter.inspect(ref)).status).toBe("yielded");
+      });
+    });
   });
 
   it("reports the worker's task list from the stream as todos", async () => {
@@ -214,7 +313,7 @@ describe("Claude Code adapter", () => {
       (s) => s.status === "idle",
     );
     expect((await adapter.inspect(ref)).lastAssistantText).toContain("claude did it");
-    expect(statuses).toEqual(["idle"]);
+    expect(statuses).toEqual(["yielded", "idle"]);
   });
 
   it("goes idle after one result when a message sent mid-turn was folded into it", async () => {

@@ -98,6 +98,42 @@ describe("Codex adapter", () => {
     expect(snap.lastAssistantText).toContain("ocd-report");
   });
 
+  it("does not end the worker's turn when a spawned subagent's turn ends (#57)", async () => {
+    const { adapter, events, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "review [subagent]");
+    const snap = await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+    expect(snap.lastAssistantText).toMatch(/^Reviewed with a second opinion/);
+    expect(events.flatMap((e) => (e.type === "status" ? [e.status] : []))).toEqual([
+      "busy",
+      "idle",
+    ]);
+  });
+
+  it("forwards a subagent's edit approval with its paths and settles it on the subagent's answer (#57)", async () => {
+    const { adapter, spec } = setup();
+    const ref = await adapter.createSession(spec);
+    await adapter.prompt(ref, "edit [subagent-edit]");
+    const waiting = await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "waiting",
+    );
+    expect(waiting.pending.map((p) => p.summary)).toEqual(["edit: src/child.ts (outside)"]);
+    await adapter.reply(ref, waiting.pending[0]!.id, { type: "approve" });
+    await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "busy" && s.pending.length === 0,
+    );
+    const done = await until(
+      () => adapter.inspect(ref),
+      (s) => s.status === "idle",
+    );
+    expect(done.lastAssistantText).toContain("Approved and done");
+  });
+
   it("reports plan updates as the checklist, without the explanation", async () => {
     const { adapter, events, spec } = setup();
     const ref = await adapter.createSession(spec);

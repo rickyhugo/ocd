@@ -481,6 +481,28 @@ export class CodexAdapter implements HarnessAdapter {
     }
     const sessionId = session.threadId;
     if (!sessionId) return;
+    if (method === "item/started") {
+      // Any thread's edit may come back as an approval request that names it.
+      const item = (params["item"] ?? {}) as {
+        type?: string;
+        id?: string;
+        changes?: ({ path?: unknown } | null)[];
+      };
+      if (item.type === "fileChange" && item.id)
+        session.fileChanges.set(
+          item.id,
+          (Array.isArray(item.changes) ? item.changes : []).flatMap((c) =>
+            typeof c?.path === "string" ? [c.path] : [],
+          ),
+        );
+    }
+    // A spawned subagent's thread streams over the same connection. Its work is
+    // the worker's activity, but its turns and messages are not the worker's.
+    const thread = params["threadId"];
+    if (typeof thread === "string" && thread !== sessionId && method !== "serverRequest/resolved") {
+      this.emit({ type: "activity", sessionId });
+      return;
+    }
     switch (method) {
       case "turn/started": {
         const turn = params["turn"] as { id?: unknown } | undefined;
@@ -491,18 +513,6 @@ export class CodexAdapter implements HarnessAdapter {
         return;
       }
       case "item/started": {
-        const item = (params["item"] ?? {}) as {
-          type?: string;
-          id?: string;
-          changes?: ({ path?: unknown } | null)[];
-        };
-        if (item.type === "fileChange" && item.id)
-          session.fileChanges.set(
-            item.id,
-            (Array.isArray(item.changes) ? item.changes : []).flatMap((c) =>
-              typeof c?.path === "string" ? [c.path] : [],
-            ),
-          );
         this.record(session, params["item"], params["startedAtMs"]);
         this.emit({ type: "activity", sessionId });
         return;

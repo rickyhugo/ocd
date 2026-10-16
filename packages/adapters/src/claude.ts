@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 
 import { textEntry, toolEntry, type AdapterStatus } from "@ocd/core";
 
-import { ClaudeTodoTracker, type ClaudeStreamMessage } from "./claude-todos.ts";
+import {
+  ClaudeBackgroundWork,
+  SESSION_STATE_ENV,
+  type ClaudeBackgroundMessage,
+} from "./claude-background.ts";
+import { ClaudeTodoTracker } from "./claude-todos.ts";
 import { processMentioning } from "./processes.ts";
 import { JsonLineProcess } from "./jsonl-process.ts";
 import { TranscriptStore, type TranscriptBufferLimits } from "./transcript-buffer.ts";
@@ -25,10 +30,12 @@ import {
 
 // Claude Code worker adapter over print mode with stream-json on stdin and
 // stdout. One process per session, kept alive between turns; each turn ends
-// with exactly one `result` message. Permission prompts come back over stdio
-// (`--permission-prompt-tool stdio`) as `can_use_tool` control requests and
-// are answered according to the profile's policy by the supervisor. Workers
-// die with the supervisor; `--resume <session id>` continues them later.
+// with exactly one `result` message, and yields rather than goes idle while
+// Claude Code will start the next turn itself (claude-background.ts).
+// Permission prompts come back over stdio (`--permission-prompt-tool stdio`)
+// as `can_use_tool` control requests and are answered according to the
+// profile's policy by the supervisor. Workers die with the supervisor;
+// `--resume <session id>` continues them later.
 
 export const CLAUDE_TESTED_VERSIONS = ["2.1.296", "2.1.299"] as const;
 
@@ -53,7 +60,7 @@ export function parseClaudeModel(model: string): { model: string; effort: string
   return { model: name!, effort: effort ?? null };
 }
 
-type ClaudeMessage = ClaudeStreamMessage & {
+type ClaudeMessage = ClaudeBackgroundMessage & {
   type?: string;
   subtype?: string;
   request_id?: string;
@@ -120,6 +127,8 @@ interface ClaudeSession {
   stopping: Promise<void> | null;
   idleTimer: NodeJS.Timeout | null;
   todos: ClaudeTodoTracker;
+  /** The current process's work that outlives a turn. */
+  background: ClaudeBackgroundWork;
   /** Fallback transcript keys for messages without uuid or id. */
   observed: number;
   /**
@@ -262,7 +271,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     ];
     const proc = new JsonLineProcess(cmd, args, {
       cwd: spec.directory,
-      env: spec.env,
+      env: { ...spec.env, ...SESSION_STATE_ENV },
       onMessage: (m) => this.onMessage(state, m as ClaudeMessage),
       onError: (error) => this.options.onError?.(error, "claude message"),
       onInvalidLine: (line) =>
@@ -273,6 +282,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     // A new process has nothing in flight.
     state.unconsumed = 0;
     state.interrupts = 0;
+    state.background = new ClaudeBackgroundWork();
     // Ignore exits of a process that has since been replaced.
     void proc.exited.then((exit) => {
       if (state.proc === proc) this.onExit(state, exit);
@@ -313,6 +323,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     } catch (error) {
       this.options.onError?.(error, "claude todos");
     }
+    session.background.observe(message);
     switch (message.type) {
       case "control_request": {
         if (message.request?.subtype !== "can_use_tool" || !message.request_id) return;
@@ -336,7 +347,8 @@ export class ClaudeAdapter implements HarnessAdapter {
           input,
           toolUseId: message.request.tool_use_id ?? null,
         });
-        session.status = "waiting";
+        // A background subagent can ask after the worker's own turn has ended.
+        if (session.status !== "yielded") session.status = "waiting";
         this.emit({ type: "interaction", sessionId, interaction });
         return;
       }
@@ -367,11 +379,13 @@ export class ClaudeAdapter implements HarnessAdapter {
         return;
       }
       case "result": {
-        session.pending.clear();
         const text = typeof message.result === "string" ? message.result : null;
         const failed =
           message.is_error === true ||
           (message.subtype !== undefined && message.subtype !== "success");
+        const yielded = !failed && session.background.continues(Date.now());
+        // Once the worker's own turn is over, only its background work can still be asking.
+        if (!yielded) session.pending.clear();
         // The next result after an interrupt belongs to the aborted turn, even
         // when a new prompt was sent before it arrived.
         const interrupted = session.interrupts > 0 && message.subtype === "error_during_execution";
@@ -404,13 +418,19 @@ export class ClaudeAdapter implements HarnessAdapter {
           });
         } else {
           if (text && !interrupted) session.lastAssistantText = text;
-          session.status = "idle";
-          this.emit({ type: "status", sessionId, status: "idle" });
+          session.status = yielded ? "yielded" : "idle";
+          this.emit({ type: "status", sessionId, status: session.status });
         }
         session.limitSeen = false;
-        this.scheduleIdleStop(session);
+        // Stopping the process would end the background work that continues the session.
+        if (!yielded) this.scheduleIdleStop(session);
         return;
       }
+      case "system":
+        if (message.subtype === "session_state_changed" && session.status === "yielded")
+          this.settleYield(session, message.state);
+        this.emit({ type: "activity", sessionId });
+        return;
       default:
         if (message.type === "user" && message.isReplay) {
           // OCD's own prompt, now being worked on; not part of the transcript.
@@ -419,9 +439,21 @@ export class ClaudeAdapter implements HarnessAdapter {
           return;
         }
         if (message.type === "user") this.record(session, message);
-        if (message.type === "user" || message.type === "stream_event" || message.type === "system")
+        if (message.type === "user" || message.type === "stream_event")
           this.emit({ type: "activity", sessionId });
     }
+  }
+
+  /** A yielded session either runs a turn Claude Code started itself, or its work is over. */
+  private settleYield(session: ClaudeSession, state: unknown): void {
+    if (state === "running") {
+      session.status = "busy";
+    } else if (state === "idle" && !session.background.continues(Date.now())) {
+      session.status = "idle";
+      session.pending.clear();
+      this.scheduleIdleStop(session);
+    } else return;
+    this.emit({ type: "status", sessionId: session.sessionId, status: session.status });
   }
 
   /**
@@ -499,7 +531,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     // Whatever the dead process was waiting on will never be answered.
     session.pending.clear();
     if (this.sessions.get(session.sessionId) !== session || session.parked) return;
-    if (session.status === "busy" || session.status === "waiting") {
+    if (session.status === "busy" || session.status === "waiting" || session.status === "yielded") {
       session.error = `claude exited (${exit.signal ?? exit.code}): ${session.proc.stderr().slice(-500)}`;
       session.status = "error";
       this.emit({
@@ -622,6 +654,7 @@ export class ClaudeAdapter implements HarnessAdapter {
         quotaLimited: false,
       };
     }
+    const wakeup = session.background.wakeupDue();
     return {
       sessionId: ref.sessionId,
       status: session.pending.size > 0 ? "waiting" : session.status,
@@ -632,12 +665,14 @@ export class ClaudeAdapter implements HarnessAdapter {
       lastAssistantText: session.lastAssistantText,
       error: session.error,
       quotaLimited: session.quotaLimited,
+      ...(session.status === "yielded" && wakeup !== null ? { resumesAt: wakeup } : {}),
     };
   }
 
   async interrupt(ref: SessionRef): Promise<void> {
     const session = this.sessions.get(ref.sessionId);
-    if (!session?.proc.running || session.status === "idle") return;
+    // A yielded session has no turn to abort; releasing it stops its background work.
+    if (!session?.proc.running || session.status === "idle" || session.status === "yielded") return;
     // The turn's result arrives as an interrupted execution; it is not a failure.
     session.interrupts += 1;
     session.status = "idle";

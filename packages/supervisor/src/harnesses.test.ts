@@ -1,9 +1,18 @@
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { ClaudeAdapter, CodexAdapter, type HarnessAdapter } from "@ocd/adapters";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { setupRepo, startHarness, waitFor, waitForState, type Harness } from "./testkit.ts";
+import {
+  setupRepo,
+  startHarness,
+  waitFor,
+  waitForState,
+  type Harness,
+  type HarnessOptions,
+} from "./testkit.ts";
 
 // End-to-end through the supervisor with the real adapters driving fake
 // Claude Code / Codex binaries (test fixtures). No model is called.
@@ -90,6 +99,148 @@ for (const harness of harnesses) {
     });
   });
 }
+
+describe("workers waiting on their own background work (#57)", () => {
+  const claude = harnesses.find((x) => x.name === "claude")!;
+  const codex = harnesses.find((x) => x.name === "codex")!;
+  const claudeWithoutSessionState: typeof claude = {
+    ...claude,
+    adapter: () =>
+      new ClaudeAdapter({
+        command: [process.execPath, join(fixtures, "fake-claude-no-session-state.mjs")],
+      }),
+  };
+  let adapter!: HarnessAdapter & { activeWorkers(): number };
+  const start = (
+    harness: typeof claude,
+    { config, ...options }: Omit<Partial<HarnessOptions>, "adapters"> = {},
+  ) =>
+    startHarness({
+      ...options,
+      adapters: () => [(adapter = harness.adapter())],
+      config: {
+        ...config,
+        profiles: { w: { harness: harness.name, model: harness.model, permissionPolicy: "ask" } },
+      },
+    });
+  const dispatch = (instructions: string) =>
+    h!.manager("mgr").dispatch({
+      repo: "app",
+      title: "t",
+      instructions,
+      idempotencyKey: `wait-${Math.random()}`,
+    });
+  const types = (detail: { events: { type: string }[] }) => detail.events.map((e) => e.type);
+
+  it("keeps a worker that yields to a subagent and a wakeup running, and continues the same worker", async () => {
+    h = await start(claude);
+    await setupRepo(h, "app", "w");
+    const { task } = await dispatch("port it [subagent-wakeup]");
+    const { sessionId } = (await waitForState(h, task.id, "running")).task;
+    await waitFor(
+      () => adapter.inspect({ sessionId: sessionId! }),
+      (s) => s.status === "yielded" && (s.lastAssistantText?.includes("still working") ?? false),
+    );
+    // The supervisor handles the same status event; look once it has had a moment.
+    await delay(300);
+    const waiting = await h.manager("mgr").inspectTask(task.id);
+    expect(waiting.task.state).toBe("running");
+    expect(waiting.attention.filter((a) => a.kind === "failure")).toEqual([]);
+
+    writeFileSync(join(waiting.task.workspacePath!, ".ocd-release"), "");
+    const done = await waitForState(h, task.id, "ready_for_review");
+    expect(done.task.result?.reported?.summary).toBe("claude did it");
+    expect(done.task.result?.verification?.changedFiles.toSorted()).toEqual([
+      "scripts.txt",
+      "server.txt",
+    ]);
+    expect(done.task.sessionId).toBe(waiting.task.sessionId);
+    expect(adapter.activeWorkers()).toBe(1);
+    expect(types(done)).not.toContain("state.needs_attention");
+    expect(types(done).filter((t) => t === "session.created")).toHaveLength(1);
+    expect(types(done).filter((t) => t === "prompt.intent")).toHaveLength(1);
+  });
+
+  it("does not fail interim turns waiting on mapping agents, and still fails a last turn without a report", async () => {
+    h = await start(claude);
+    await setupRepo(h, "app", "w");
+    const planned = await dispatch("plan it [mapping]");
+    const done = await waitForState(h, planned.task.id, "ready_for_review");
+    expect(done.task.result?.reported?.summary).toBe("claude did it");
+    expect(types(done)).not.toContain("state.needs_attention");
+
+    const unreported = await dispatch("plan it [mapping] [no-report]");
+    const failed = await waitForState(h, unreported.task.id, "needs_attention");
+    expect(failed.task.result?.reported).toBeNull();
+    expect(failed.task.result?.reportError).toMatch(/No ocd-report/);
+    expect(failed.task.result?.finalMessageExcerpt).toBe("Both maps are in. Here is the plan.");
+    expect(failed.attention.find((a) => a.kind === "failure")?.status).toBe("open");
+  });
+
+  it("ends the run on a valid report even while background work goes on", async () => {
+    h = await start(claude);
+    await setupRepo(h, "app", "w");
+    const { task } = await dispatch("serve it [report-early]");
+    const done = await waitForState(h, task.id, "ready_for_review");
+    expect(done.task.result?.reported?.summary).toBe("claude did it");
+  });
+
+  it("without Claude Code's session state, fails a report-less turn at once and still waits on a wakeup", async () => {
+    h = await start(claudeWithoutSessionState);
+    await setupRepo(h, "app", "w");
+    const unreported = await dispatch("plan it [no-report]");
+    const failed = await waitForState(h, unreported.task.id, "needs_attention");
+    expect(failed.task.result?.reportError).toMatch(/No ocd-report/);
+    expect(failed.attention.map((a) => a.kind)).toEqual(["failure"]);
+
+    const { task } = await dispatch("check later [wakeup]");
+    const { sessionId } = (await waitForState(h, task.id, "running")).task;
+    await waitFor(
+      () => adapter.inspect({ sessionId: sessionId! }),
+      (s) => s.status === "yielded",
+    );
+    await delay(300);
+    const waiting = await h.manager("mgr").inspectTask(task.id);
+    expect(waiting.task.state).toBe("running");
+    expect(waiting.attention).toEqual([]);
+  });
+
+  it("expects silence until a long wakeup is due, and raises a stall once it is overdue", async () => {
+    const started = Date.now();
+    let now = started;
+    h = await start(claude, {
+      clock: () => now,
+      config: { stallAfterMinutes: 30, reconcileIntervalMs: 60_000 },
+    });
+    await setupRepo(h, "app", "w");
+    const { task } = await dispatch("check in 50 minutes [long-wakeup]");
+    const { sessionId } = (await waitForState(h, task.id, "running")).task;
+    await waitFor(
+      () => adapter.inspect({ sessionId: sessionId! }),
+      (s) => s.status === "yielded",
+    );
+    const stalls = async () =>
+      (await h!.human.inspectTask(task.id)).attention.filter((a) => a.kind === "stall");
+
+    now = started + 31 * 60_000;
+    await h.daemon.supervisor.reconcile("periodic");
+    expect(await stalls()).toEqual([]);
+
+    now = started + (50 + 31) * 60_000;
+    await h.daemon.supervisor.reconcile("periodic");
+    expect(await stalls()).toHaveLength(1);
+    expect((await h.human.inspectTask(task.id)).task.state).toBe("running");
+  });
+
+  it("does not take a codex subagent's finished turn for the worker's", async () => {
+    h = await start(codex);
+    await setupRepo(h, "app", "w");
+    const { task } = await dispatch("review it [subagent]");
+    const done = await waitForState(h, task.id, "ready_for_review");
+    expect(done.task.result?.finalMessageExcerpt).toMatch(/^Reviewed with a second opinion/);
+    expect(types(done)).not.toContain("state.needs_attention");
+  });
+});
 
 for (const harness of harnesses) {
   describe(`${harness.name} worker processes`, () => {

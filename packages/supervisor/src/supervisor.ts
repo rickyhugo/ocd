@@ -1137,6 +1137,7 @@ export class Supervisor {
         this.expireStaleInteractions(task, snap);
         return;
       case "idle":
+      case "yielded":
         this.expireStaleInteractions(task, snap);
         await this.finishRun(task, snap);
         return;
@@ -1225,6 +1226,7 @@ export class Supervisor {
   /**
    * An idle worker is not proof of completion. Collect the structured report and
    * independent verification; a valid report makes the task ready for review.
+   * A worker that yielded without one is still working: the harness continues it.
    */
   private async finishRun(task: Task, snap: SessionSnapshot): Promise<void> {
     if (
@@ -1236,6 +1238,10 @@ export class Supervisor {
     }
     const text = snap.lastAssistantText ?? "";
     const parsed = parseWorkerReport(text);
+    if (!parsed.ok && snap.status === "yielded") {
+      this.unblockIfClear(task.id);
+      return;
+    }
     let verification: TaskResult["verification"] = null;
     let verifyError: string | null = null;
     if (task.workspacePath && task.baseRef) {
@@ -1377,7 +1383,8 @@ export class Supervisor {
       return;
     }
     await this.applySnapshot(adapter, taskId, snap);
-    if (snap.status === "busy") this.checkStall(this.store.requireTask(taskId));
+    if (snap.status === "busy" || snap.status === "yielded")
+      this.checkStall(this.store.requireTask(taskId), snap);
   }
 
   /** A task left in `starting` by a crash: decide from evidence, never by guessing. */
@@ -1446,11 +1453,13 @@ export class Supervisor {
     });
   }
 
-  private checkStall(task: Task): void {
+  private checkStall(task: Task, snap: SessionSnapshot): void {
     if (task.state !== "running") return;
+    // A worker waiting on its own scheduled wakeup is expected to be silent until it is due.
     const last = Math.max(
       task.lastActivityAt ? Date.parse(task.lastActivityAt) : 0,
       this.activityBaseline,
+      snap.resumesAt ?? 0,
     );
     const idleMs = this.o.clock() - last;
     if (idleMs < this.o.config.stallAfterMinutes * 60_000) return;
@@ -1461,7 +1470,7 @@ export class Supervisor {
         taskId: task.id,
         kind: "stall",
         dedupeKey: `stall:${task.id}:${window}`,
-        reason: `No worker activity for ${Math.round(idleMs / 60_000)} minutes while busy. Inspect it; OCD does not kill inactive workers.`,
+        reason: `No worker activity for ${Math.round(idleMs / 60_000)} minutes. Inspect it; OCD does not kill inactive workers.`,
         harness: task.harness,
         sessionId: task.sessionId,
         resolvableBy: "manager",
