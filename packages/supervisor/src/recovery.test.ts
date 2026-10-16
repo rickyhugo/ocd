@@ -1,9 +1,9 @@
-import { readFileSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { backupDb, openDb, restoreDb } from "./db/index.ts";
+import { backupDb, openDb } from "./db/index.ts";
 import { SimulatedCrash } from "./errors.ts";
 import type { CrashPoint } from "./supervisor.ts";
 import { setupRepo, startHarness, waitFor, waitForState, type Harness } from "./testkit.ts";
@@ -188,8 +188,9 @@ describe("database durability (AT13)", () => {
     });
     await h.daemon.stop();
 
-    const { previous } = restoreDb(h.paths.db, backup);
-    expect(previous).not.toBeNull();
+    // The manual restore the README documents.
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(h.paths.db + suffix, { force: true });
+    copyFileSync(backup, h.paths.db);
     const db = openDb(h.paths.db, { readonly: true });
     const titles = db.$client.prepare("SELECT title, state FROM tasks ORDER BY created_at").all();
     const decisions = db.$client.prepare("SELECT id FROM decisions").all();
