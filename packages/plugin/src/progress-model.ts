@@ -1,4 +1,4 @@
-import type { Attention, Task, TaskEvent, TaskEventType, TaskProgress, TodoItem } from "@ocd/core";
+import { milestone, type Task, type TaskEvent, type TaskProgress, type TodoItem } from "@ocd/core";
 
 import { age, type Row, type Tone } from "./sidebar-model.ts";
 
@@ -62,96 +62,6 @@ export function panelHeight(lines: ProgressLine[]): number {
 /** Only an overflowing panel takes the mouse wheel; otherwise the sidebar scrolls as before. */
 export function panelScrolls(lines: ProgressLine[]): boolean {
   return lines.length > PANEL_MAX_HEIGHT;
-}
-
-const ATTENTION: Record<Attention["kind"], string> = {
-  permission: "Asked for permission",
-  question: "Asked a question",
-  decision: "Decision needed",
-  failure: "Failure reported",
-  stall: "Looks stalled",
-  review: "Ready for review",
-  ambiguous_launch: "Launch unclear",
-  land: "Push waiting for your confirmation",
-};
-
-// null: deliberately no line (bookkeeping, or labelled in milestone() because it depends on data).
-const MILESTONE: Record<TaskEventType, string | null> = {
-  "task.created": "Queued",
-  "task.accepted": "Accepted",
-  "task.cancelled": "Cancelled",
-  "task.landed": "Landed",
-  "task.taken_over": "Taken over by you",
-  "task.given_back": "Handed back",
-  "task.resumed": "Resumed",
-  "workspace.ready": null,
-  "workspace.cleaned": null,
-  "session.created": null,
-  "session.missing": "Session missing",
-  "launch.intent": null,
-  "launch.deferred": "Launch deferred",
-  "launch.not_admitted": "Launch not admitted",
-  "launch.ambiguous": "Launch unclear",
-  "prompt.intent": "Instructions sent",
-  "worker.steered": "Follow-up sent",
-  "worker.lost": "Worker lost",
-  "shutdown.interrupted": "Stopped by shutdown",
-  "dependency.cancelled": "Dependency cancelled",
-  "quota.limited": "Usage limit reached",
-  "interaction.pending": "Waiting for an answer",
-  "permission.yolo_approved": null,
-  "permission.auto_approve_failed": null,
-  "attention.raised": null,
-  "attention.resolved": "Request answered",
-  "attention.expired": "Request expired",
-  "decision.recorded": "Decision recorded",
-  "pull_request.opened": "PR opened",
-  "pull_request.merge_requested": "PR merge requested",
-  "pull_request.merged": "PR merged",
-  "pull_request.failed": "PR failed",
-  "review.changes_requested": "Changes requested",
-  "land.requested": "Push awaiting confirmation",
-  "land.failed": "Push failed",
-  "branch_sync.intent": null,
-  "branch_sync.intent_dropped": null,
-  "branch_sync.conflict": null,
-  "branch_sync.failed": null,
-  "branch_sync.refreshed": null,
-  "branch_sync.follow_up_not_sent": null,
-  "state.queued": null,
-  "state.starting": "Starting",
-  "state.running": null,
-  "state.blocked": "Blocked",
-  "state.ready_for_review": "Ready for review",
-  "state.completed": "Completed",
-  "state.failed": "Failed",
-  "state.interrupted": "Interrupted",
-  "state.cancelled": "Cancelled",
-  "state.needs_attention": "Needs attention",
-  "state.manual": null,
-};
-
-const field = (data: unknown, key: string): unknown =>
-  data && typeof data === "object" ? (data as Record<string, unknown>)[key] : undefined;
-
-/** A short label for a lifecycle event; null for events not worth a line. */
-export function milestone(event: TaskEvent): string | null {
-  switch (event.type) {
-    case "launch.intent": {
-      const attempt = field(event.data, "attempt");
-      return typeof attempt === "number" && attempt > 1
-        ? `Worker launching (attempt ${attempt})`
-        : "Worker launching";
-    }
-    case "state.running":
-      return field(event.data, "from") === "blocked" ? "Unblocked" : "Running";
-    case "attention.raised": {
-      const kind = field(event.data, "kind") as Attention["kind"] | undefined;
-      return (kind && ATTENTION[kind]) ?? "Attention raised";
-    }
-    default:
-      return MILESTONE[event.type] ?? null;
-  }
 }
 
 /** "github.com/o/r/pull/12" -> "o/r#12"; other hosts lose only the scheme. */

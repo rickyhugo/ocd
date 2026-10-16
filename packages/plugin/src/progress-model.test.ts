@@ -5,7 +5,6 @@ import {
   MILESTONES_MAX,
   PANEL_MAX_HEIGHT,
   canExpand,
-  milestone,
   panelHeight,
   panelScrolls,
   progressLines,
@@ -191,20 +190,6 @@ describe("progress panel model", () => {
     expect(text(progressLines(task("a", "running"), "unavailable", NOW))).toEqual([
       "○ Progress unavailable",
     ]);
-  });
-
-  it("labels lifecycle events and skips unknown ones", () => {
-    expect(milestone(event("launch.intent", 1, { attempt: 2 }))).toBe(
-      "Worker launching (attempt 2)",
-    );
-    expect(milestone(event("state.running", 1, { from: "blocked" }))).toBe("Unblocked");
-    expect(milestone(event("attention.raised", 1, { kind: "permission" }))).toBe(
-      "Asked for permission",
-    );
-    expect(milestone(event("pull_request.opened", 1))).toBe("PR opened");
-    expect(milestone(event("task.cancelled", 1))).toBe("Cancelled");
-    expect(milestone(event("task.accepted", 1))).toBe("Accepted");
-    expect(milestone(event("something.new" as TaskEventType, 1))).toBeNull();
   });
 
   it("bounds milestones and panel height; only overflowing panels scroll", () => {
