@@ -654,6 +654,7 @@ export class ClaudeAdapter implements HarnessAdapter {
         quotaLimited: false,
       };
     }
+    const wakeup = session.background.wakeupDue();
     return {
       sessionId: ref.sessionId,
       status: session.pending.size > 0 ? "waiting" : session.status,
@@ -664,6 +665,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       lastAssistantText: session.lastAssistantText,
       error: session.error,
       quotaLimited: session.quotaLimited,
+      ...(session.status === "yielded" && wakeup !== null ? { resumesAt: wakeup } : {}),
     };
   }
 

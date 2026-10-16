@@ -49,6 +49,11 @@ export class ClaudeBackgroundWork {
     }
   }
 
+  /** When the armed wakeup fires (epoch ms), or null. */
+  wakeupDue(): number | null {
+    return this.wakeupAt;
+  }
+
   /** Whether Claude Code will start another turn by itself. */
   continues(now: number): boolean {
     return (

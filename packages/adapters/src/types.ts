@@ -91,6 +91,8 @@ export interface SessionSnapshot {
   error: string | null;
   /** The harness reports a usage/quota limit, which is a wait, not a failure. */
   quotaLimited: boolean;
+  /** When a `yielded` session's harness starts its next turn by itself (epoch ms), if scheduled. */
+  resumesAt?: number;
 }
 
 export type InteractionReply =

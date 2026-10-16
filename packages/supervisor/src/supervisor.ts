@@ -1384,7 +1384,7 @@ export class Supervisor {
     }
     await this.applySnapshot(adapter, taskId, snap);
     if (snap.status === "busy" || snap.status === "yielded")
-      this.checkStall(this.store.requireTask(taskId));
+      this.checkStall(this.store.requireTask(taskId), snap);
   }
 
   /** A task left in `starting` by a crash: decide from evidence, never by guessing. */
@@ -1453,11 +1453,13 @@ export class Supervisor {
     });
   }
 
-  private checkStall(task: Task): void {
+  private checkStall(task: Task, snap: SessionSnapshot): void {
     if (task.state !== "running") return;
+    // A worker waiting on its own scheduled wakeup is expected to be silent until it is due.
     const last = Math.max(
       task.lastActivityAt ? Date.parse(task.lastActivityAt) : 0,
       this.activityBaseline,
+      snap.resumesAt ?? 0,
     );
     const idleMs = this.o.clock() - last;
     if (idleMs < this.o.config.stallAfterMinutes * 60_000) return;
