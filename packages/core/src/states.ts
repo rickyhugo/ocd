@@ -21,7 +21,7 @@ export type TaskState = (typeof TASK_STATES)[number];
 // these lists (zod enums and types live in schemas.ts).
 
 /** A worker run: launching until the harness session is confirmed, then until it ends. */
-export const RUN_STATES = ["launching", "acknowledged", "prompted", "ended", "lost"] as const;
+export const RUN_STATES = ["launching", "acknowledged", "prompted", "ended"] as const;
 
 export const ATTENTION_STATUSES = ["open", "resolved", "expired", "rejected"] as const;
 
