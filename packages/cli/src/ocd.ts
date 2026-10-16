@@ -74,104 +74,6 @@ import { followInterval, followTranscript } from "./peek.ts";
 import { addRepo, removeRepo } from "./repo-config.ts";
 import { SetupStop, runSetup, systemSetupDeps, terminalPrompter } from "./setup.ts";
 
-const HELP = `ocd — local agent control plane
-
-Setup
-  ocd setup [--yes]                 Set up (or check and repair) everything on this machine: prerequisites,
-                                    ocd.jsonc, self-update, the manager directory and its plugin, \`ocd\` on
-                                    PATH, the background service and notifications. Asks before each change
-                                    outside ~/.ocd; --yes takes the defaults
-
-Supervisor
-  ocd daemon                        Run the supervisor in the foreground
-  ocd service install [--force]|status|uninstall
-                                    Run the supervisor in the background and at login
-                                    (a login service of the operating system). install and uninstall
-                                    (like restart) work only from the service's own home, never a worker sandbox;
-                                    reinstalling a running service refuses while workers a restart would interrupt run unless --force
-  ocd stop                          Stop the supervisor and report worker outcomes
-  ocd restart [--force]             Restart the background service (picks up a new build); refuses while
-                                    workers a restart would interrupt are running unless --force
-  ocd status                        Show supervisor status
-  ocd pause | ocd resume            Stop / restart new dispatch (running workers continue)
-  ocd update [status|check|apply [--force]|rollback]
-                                    OCD updating itself (selfUpdate in ocd.jsonc): show the state, look for and
-                                    build a new version now, switch to the built one (--force interrupts workers
-                                    a restart would interrupt; asks first), or go back to the previous version
-  ocd usage [--refresh]             Subscription usage limits the harnesses reported (usageLimits in
-                                    ocd.jsonc); --refresh reads those readable without a model call now
-  ocd doctor [--notify]             Check harnesses (and profile model names), the manager host service, notifications, the service manager and
-                                    the tools (git; gh and tmux when enabled) on the supervisor's PATH (your login shell's);
-                                    --notify sends a test notification (click it to try \`ocd focus\`)
-  ocd focus                         Switch to the manager session (tmux pane when tmux.enabled + terminal window); what a notification click runs
-
-Configuration (human only)
-  ocd repo list                     Repositories declared in ocd.jsonc
-  ocd repo add <name> <path> [--profile P]
-                                    Declare a repository in ocd.jsonc (comments are kept; applies live)
-  ocd repo remove <name>            Remove it from ocd.jsonc (its tasks and worktrees are kept)
-  ocd profile list                  Profiles declared in ocd.jsonc
-  ocd manager                       Configured manager directory and active session
-
-Tasks
-  ocd spill                         Read-only summary of all open work: running, blocked, manual, stuck,
-                                    queued and ready for review (/spill in the manager's TUI)
-  ocd dispatch <repo> <title> --instructions TEXT [--profile P] [--criteria TEXT]... [--key KEY]
-                                    (quote a multi-word title; extra words are rejected)
-  ocd task list [--all] [--repo R]
-  ocd task show <id>
-  ocd task peek <id> [--limit N] [--before CURSOR] [--reasoning-summaries] [--follow [--interval SECONDS]]
-                                    Read-only: the worker's recent assistant messages and tool calls/results
-                                    (never prompts, resumes or changes it; untrusted output, secrets redacted).
-                                    Some harnesses: session history. Others: what this supervisor saw,
-                                    in memory only. --follow polls until the task leaves the running states
-                                    (at most 30 min); --reasoning-summaries adds reasoning summaries where provided
-  ocd task send <id> <instructions>
-  ocd task cancel <id> [--reason TEXT]
-  ocd task accept <id>
-  ocd task resume <id> --mode reattach|relaunch
-  ocd task takeover <id>            Manual mode: stop OCD driving the worker and print the command
-                                    that opens its session in the harness
-  ocd task giveback <id> --mode continue|review [--message NOTE]
-                                    End manual mode: the worker continues headless, or the task goes to review
-  ocd task pr <id> [--draft] [--base BRANCH] [--commit]
-                                    Push the task branch and open a pull request (optional; never merges)
-  ocd task merge <id> [--method squash|merge|rebase]
-                                    Merge an accepted task's PR once checks pass (never overrides protection)
-  ocd task land <id> [--commit] [--wait]
-                                    Get the work into its base branch: accept, open or reuse the PR, merge it once
-                                    checks pass, clean up. Run again to continue; --wait polls while checks run
-  ocd task land <id> --direct       Escape hatch: push straight to the base branch (mergeMethod from ocd.jsonc,
-                                    squash by default) after you confirm the exact commits; never forces
-  ocd task diff <id> [--stat]       The task's changes against where its branch started (uncommitted ones too)
-  ocd task request-changes <id> <feedback>
-                                    Review feedback: the worker gets it as a follow-up and the task comes back
-                                    for review; recorded as a numbered review round
-  ocd task cleanup <id> [--force]   Remove a finished task's worktree and branch (refuses to lose work; work that
-                                    is already in the base branch, e.g. squash-merged, counts as landed);
-                                    --force loses work and asks first, like discard
-  ocd task discard <id> [--reason TEXT]
-                                    Cancel if needed and delete the worktree and branch, losing their work (asks first)
-
-Attention
-  ocd attention list [--all]
-  ocd attention resolve <id> --approve | --deny [--message TEXT] | --answer TEXT | --ack
-
-Memory
-  ocd memory add <global|repo|task> <content> [--repo R] [--task T] [--proposed] [--supersedes ID]
-  ocd memory search <query> [--repo R] [--task T] [--proposed]
-  ocd memory list [--status proposed|confirmed|retired] [--repo R]
-  ocd memory confirm <id> | ocd memory forget <id>
-  ocd decision add <summary> [--repo R] [--task T] [--rationale TEXT]
-  ocd briefing
-
-Maintenance
-  ocd outbox [--status pending|delivered|dead]
-
-Global flags: --json  (machine-readable output)
-Environment: OCD_HOME (default ~/.ocd), OCD_SOCKET, OCD_CONFIG (default $OCD_HOME/ocd.jsonc)
-`;
-
 /** How long `task land --wait` polls before giving up. */
 const LAND_WAIT_LIMIT_MS = 60 * 60_000;
 /** Exit status that tells the service manager to start the service again (EX_TEMPFAIL). */
@@ -365,10 +267,28 @@ function parseCli(argv: string[]) {
   });
 }
 
-async function run(
-  flags: ReturnType<typeof parseCli>["values"],
-  positionals: string[],
-): Promise<void> {
+/** One `ocd` command: the names that run it, its lines in `ocd --help`, and what it does. */
+interface Command {
+  names: readonly string[];
+  section: string;
+  help: readonly Usage[];
+  run(input: CommandInput): Promise<void>;
+}
+
+/** A usage line and the lines that explain it. */
+type Usage = readonly [usage: string, ...about: string[]];
+
+interface CommandInput {
+  command: string;
+  sub: string | undefined;
+  rest: string[];
+  flags: Flags;
+  json: boolean;
+}
+
+type Flags = ReturnType<typeof parseCli>["values"];
+
+async function run(flags: Flags, positionals: string[]): Promise<void> {
   const json = flags.json ?? false;
   const [command, sub, ...rest] = positionals;
   if (!command || flags.help) {
@@ -387,8 +307,25 @@ async function run(
     );
   }
 
-  switch (command) {
-    case "setup": {
+  const found = COMMANDS.find((c) => c.names.includes(command));
+  if (!found) fail(`unknown command ${command}\n\n${HELP}`);
+  await found.run({ command, sub, rest, flags, json });
+}
+
+const COMMANDS: readonly Command[] = [
+  {
+    names: ["setup"],
+    section: "Setup",
+    help: [
+      [
+        "ocd setup [--yes]",
+        "Set up (or check and repair) everything on this machine: prerequisites,",
+        "ocd.jsonc, self-update, the manager directory and its plugin, `ocd` on",
+        "PATH, the background service and notifications. Asks before each change",
+        "outside ~/.ocd; --yes takes the defaults",
+      ],
+    ],
+    async run({ flags }) {
       const yes = flags.yes ?? false;
       if (!yes && !(process.stdin.isTTY && process.stdout.isTTY))
         fail("setup asks questions; run it in a terminal, or pass --yes to take the defaults");
@@ -419,8 +356,13 @@ async function run(
         rl?.close();
       }
       return;
-    }
-    case "daemon": {
+    },
+  },
+  {
+    names: ["daemon"],
+    section: "Supervisor",
+    help: [["ocd daemon", "Run the supervisor in the foreground"]],
+    async run({ flags }) {
       const background = flags.background ?? false;
       // Before anything is spawned: workers, gh and notifications inherit it.
       const tools = await supervisorPath(process.env["PATH"]);
@@ -487,8 +429,21 @@ async function run(
       if (daemon.restartRequested) console.error("ocd: restarting for an update");
       process.exit(daemon.restartRequested ? EXIT_RESTART : 0);
       return;
-    }
-    case "service": {
+    },
+  },
+  {
+    names: ["service"],
+    section: "Supervisor",
+    help: [
+      [
+        "ocd service install [--force]|status|uninstall",
+        "Run the supervisor in the background and at login",
+        "(a login service of the operating system). install and uninstall",
+        "(like restart) work only from the service's own home, never a worker sandbox;",
+        "reinstalling a running service refuses while workers a restart would interrupt run unless --force",
+      ],
+    ],
+    async run({ sub, flags, json }) {
       const service = platform.service;
       if (!service)
         fail(`no background service manager for ${platform.name}; run \`ocd daemon\` instead`);
@@ -537,30 +492,34 @@ async function run(
         );
       } else fail("usage: ocd service install|status|uninstall");
       return;
-    }
-    case "focus": {
-      let directory: string | null = null;
-      let focusApp: string | undefined;
-      let tmux = false;
-      try {
-        const config = loadConfig(paths.config);
-        directory = config.manager ? normalizeDirectory(config.manager.directory) : null;
-        focusApp = config.notifications.focusApp;
-        tmux = config.tmux.enabled;
-      } catch {
-        // An invalid config focuses nothing; the click must not fail loudly.
-      }
-      const steps = await focusManager({
-        directory,
-        tmux: tmux ? locateBinary("tmux") : null,
-        focusApp,
-        exec: execCommand,
-        activate: (app) => platform.activate(app),
-      });
-      print({ steps }, json, () => steps.join("\n"));
+    },
+  },
+  {
+    names: ["stop"],
+    section: "Supervisor",
+    help: [["ocd stop", "Stop the supervisor and report worker outcomes"]],
+    async run({ json }) {
+      const report = await client.shutdown();
+      print(report, json, () =>
+        [
+          report.workerPolicy,
+          ...report.workers.map((w) => `  ${w.taskId} (${w.harness}): ${w.outcome}`),
+        ].join("\n"),
+      );
       return;
-    }
-    case "restart": {
+    },
+  },
+  {
+    names: ["restart"],
+    section: "Supervisor",
+    help: [
+      [
+        "ocd restart [--force]",
+        "Restart the background service (picks up a new build); refuses while",
+        "workers a restart would interrupt are running unless --force",
+      ],
+    ],
+    async run({ flags, json }) {
       const service = platform.service;
       if (service) guardServiceHome((await service.status()).definition);
       const before = await client.status().catch(() => null);
@@ -602,18 +561,13 @@ async function run(
           ].join("\n"),
       );
       return;
-    }
-    case "stop": {
-      const report = await client.shutdown();
-      print(report, json, () =>
-        [
-          report.workerPolicy,
-          ...report.workers.map((w) => `  ${w.taskId} (${w.harness}): ${w.outcome}`),
-        ].join("\n"),
-      );
-      return;
-    }
-    case "status": {
+    },
+  },
+  {
+    names: ["status"],
+    section: "Supervisor",
+    help: [["ocd status", "Show supervisor status"]],
+    async run({ json }) {
       const s = await client.status();
       print(s, json, () =>
         [
@@ -636,27 +590,30 @@ async function run(
         ].join("\n"),
       );
       return;
-    }
-    case "usage": {
-      const u = flags.refresh ? await client.refreshUsage() : await client.usage();
-      print(u, json, () =>
-        u.harnesses.length
-          ? [
-              ...usageLines(u.harnesses, Date.now()),
-              u.notifyAt.length
-                ? `Notifies at ${u.notifyAt.map((n) => `${n}%`).join(" and ")} of a window, and when a limit is reached.`
-                : "Notifies only when a limit is reached (usageLimits.notifyAt is empty).",
-            ].join("\n")
-          : (u.emptyHint ?? "No usage limits reported yet."),
-      );
+    },
+  },
+  {
+    names: ["pause", "resume"],
+    section: "Supervisor",
+    help: [["ocd pause | ocd resume", "Stop / restart new dispatch (running workers continue)"]],
+    async run({ command, json }) {
+      const r = command === "pause" ? await client.pause() : await client.resume();
+      print(r, json, () => `dispatch ${r.paused ? "paused" : "resumed"}`);
       return;
-    }
-    case "spill": {
-      const snapshot = buildSpill(await collectSpill(client));
-      print(snapshot, json, () => formatSpill(snapshot));
-      return;
-    }
-    case "update": {
+    },
+  },
+  {
+    names: ["update"],
+    section: "Supervisor",
+    help: [
+      [
+        "ocd update [status|check|apply [--force]|rollback]",
+        "OCD updating itself (selfUpdate in ocd.jsonc): show the state, look for and",
+        "build a new version now, switch to the built one (--force interrupts workers",
+        "a restart would interrupt; asks first), or go back to the previous version",
+      ],
+    ],
+    async run({ sub, flags, json }) {
       if (sub === "status" || sub === undefined) {
         const u = await client.updateStatus();
         print(u, json, () =>
@@ -688,14 +645,45 @@ async function run(
         print(u, json, () => `going back to ${u.current?.slice(0, 7)}; the supervisor restarts`);
       } else fail("usage: ocd update [status|check|apply [--force]|rollback]");
       return;
-    }
-    case "pause":
-    case "resume": {
-      const r = command === "pause" ? await client.pause() : await client.resume();
-      print(r, json, () => `dispatch ${r.paused ? "paused" : "resumed"}`);
+    },
+  },
+  {
+    names: ["usage"],
+    section: "Supervisor",
+    help: [
+      [
+        "ocd usage [--refresh]",
+        "Subscription usage limits the harnesses reported (usageLimits in",
+        "ocd.jsonc); --refresh reads those readable without a model call now",
+      ],
+    ],
+    async run({ flags, json }) {
+      const u = flags.refresh ? await client.refreshUsage() : await client.usage();
+      print(u, json, () =>
+        u.harnesses.length
+          ? [
+              ...usageLines(u.harnesses, Date.now()),
+              u.notifyAt.length
+                ? `Notifies at ${u.notifyAt.map((n) => `${n}%`).join(" and ")} of a window, and when a limit is reached.`
+                : "Notifies only when a limit is reached (usageLimits.notifyAt is empty).",
+            ].join("\n")
+          : (u.emptyHint ?? "No usage limits reported yet."),
+      );
       return;
-    }
-    case "doctor": {
+    },
+  },
+  {
+    names: ["doctor"],
+    section: "Supervisor",
+    help: [
+      [
+        "ocd doctor [--notify]",
+        "Check harnesses (and profile model names), the manager host service, notifications, the service manager and",
+        "the tools (git; gh and tmux when enabled) on the supervisor's PATH (your login shell's);",
+        "--notify sends a test notification (click it to try `ocd focus`)",
+      ],
+    ],
+    async run({ flags, json }) {
       // Check with the PATH the supervisor would have, not this shell's.
       const tools = await supervisorPath(
         platform.service ? servicePath(process.execPath) : process.env["PATH"],
@@ -789,8 +777,52 @@ async function run(
         process.exitCode = 1;
       }
       return;
-    }
-    case "repo": {
+    },
+  },
+  {
+    names: ["focus"],
+    section: "Supervisor",
+    help: [
+      [
+        "ocd focus",
+        "Switch to the manager session (tmux pane when tmux.enabled + terminal window); what a notification click runs",
+      ],
+    ],
+    async run({ json }) {
+      let directory: string | null = null;
+      let focusApp: string | undefined;
+      let tmux = false;
+      try {
+        const config = loadConfig(paths.config);
+        directory = config.manager ? normalizeDirectory(config.manager.directory) : null;
+        focusApp = config.notifications.focusApp;
+        tmux = config.tmux.enabled;
+      } catch {
+        // An invalid config focuses nothing; the click must not fail loudly.
+      }
+      const steps = await focusManager({
+        directory,
+        tmux: tmux ? locateBinary("tmux") : null,
+        focusApp,
+        exec: execCommand,
+        activate: (app) => platform.activate(app),
+      });
+      print({ steps }, json, () => steps.join("\n"));
+      return;
+    },
+  },
+  {
+    names: ["repo"],
+    section: "Configuration (human only)",
+    help: [
+      ["ocd repo list", "Repositories declared in ocd.jsonc"],
+      [
+        "ocd repo add <name> <path> [--profile P]",
+        "Declare a repository in ocd.jsonc (comments are kept; applies live)",
+      ],
+      ["ocd repo remove <name>", "Remove it from ocd.jsonc (its tasks and worktrees are kept)"],
+    ],
+    async run({ sub, rest, flags, json }) {
       if (sub === "add" || sub === "remove") {
         const [name, path] = rest;
         if (!name || (sub === "add" && !path))
@@ -833,8 +865,13 @@ async function run(
             .join("\n") || `no repositories; declare them under repos in ${paths.config}`,
       );
       return;
-    }
-    case "profile": {
+    },
+  },
+  {
+    names: ["profile"],
+    section: "Configuration (human only)",
+    help: [["ocd profile list", "Profiles declared in ocd.jsonc"]],
+    async run({ sub, json }) {
       if (sub !== "list" && sub !== undefined)
         fail(`profiles are declared in ${paths.config}; saved changes apply automatically`);
       const profiles = await client.listProfiles();
@@ -850,8 +887,13 @@ async function run(
             .join("\n") || `no profiles; declare them in ${paths.config}`,
       );
       return;
-    }
-    case "manager": {
+    },
+  },
+  {
+    names: ["manager"],
+    section: "Configuration (human only)",
+    help: [["ocd manager", "Configured manager directory and active session"]],
+    async run({ json }) {
       const m = await client.getManager();
       print(m, json, () =>
         [
@@ -860,8 +902,34 @@ async function run(
         ].join("\n"),
       );
       return;
-    }
-    case "dispatch": {
+    },
+  },
+  {
+    names: ["spill"],
+    section: "Tasks",
+    help: [
+      [
+        "ocd spill",
+        "Read-only summary of all open work: running, blocked, manual, stuck,",
+        "queued and ready for review (/spill in the manager's TUI)",
+      ],
+    ],
+    async run({ json }) {
+      const snapshot = buildSpill(await collectSpill(client));
+      print(snapshot, json, () => formatSpill(snapshot));
+      return;
+    },
+  },
+  {
+    names: ["dispatch"],
+    section: "Tasks",
+    help: [
+      [
+        "ocd dispatch <repo> <title> --instructions TEXT [--profile P] [--criteria TEXT]... [--key KEY]",
+        "(quote a multi-word title; extra words are rejected)",
+      ],
+    ],
+    async run({ sub, rest, flags, json }) {
       const [repo, title] = [sub, rest[0]];
       if (!repo || !title || !flags.instructions)
         fail("usage: ocd dispatch <repo> <title> --instructions TEXT");
@@ -879,8 +947,74 @@ async function run(
       });
       print(r, json, () => `${r.created ? "queued" : "already exists"}: ${taskLine(r.task)}`);
       return;
-    }
-    case "task": {
+    },
+  },
+  {
+    names: ["task"],
+    section: "Tasks",
+    help: [
+      ["ocd task list [--all] [--repo R]"],
+      ["ocd task show <id>"],
+      [
+        "ocd task peek <id> [--limit N] [--before CURSOR] [--reasoning-summaries] [--follow [--interval SECONDS]]",
+        "Read-only: the worker's recent assistant messages and tool calls/results",
+        "(never prompts, resumes or changes it; untrusted output, secrets redacted).",
+        "Some harnesses: session history. Others: what this supervisor saw,",
+        "in memory only. --follow polls until the task leaves the running states",
+        "(at most 30 min); --reasoning-summaries adds reasoning summaries where provided",
+      ],
+      ["ocd task send <id> <instructions>"],
+      ["ocd task cancel <id> [--reason TEXT]"],
+      ["ocd task accept <id>"],
+      ["ocd task resume <id> --mode reattach|relaunch"],
+      [
+        "ocd task takeover <id>",
+        "Manual mode: stop OCD driving the worker and print the command",
+        "that opens its session in the harness",
+      ],
+      [
+        "ocd task giveback <id> --mode continue|review [--message NOTE]",
+        "End manual mode: the worker continues headless, or the task goes to review",
+      ],
+      [
+        "ocd task pr <id> [--draft] [--base BRANCH] [--commit]",
+        "Push the task branch and open a pull request (optional; never merges)",
+      ],
+      [
+        "ocd task merge <id> [--method squash|merge|rebase]",
+        "Merge an accepted task's PR once checks pass (never overrides protection)",
+      ],
+      [
+        "ocd task land <id> [--commit] [--wait]",
+        "Get the work into its base branch: accept, open or reuse the PR, merge it once",
+        "checks pass, clean up. Run again to continue; --wait polls while checks run",
+      ],
+      [
+        "ocd task land <id> --direct",
+        "Escape hatch: push straight to the base branch (mergeMethod from ocd.jsonc,",
+        "squash by default) after you confirm the exact commits; never forces",
+      ],
+      [
+        "ocd task diff <id> [--stat]",
+        "The task's changes against where its branch started (uncommitted ones too)",
+      ],
+      [
+        "ocd task request-changes <id> <feedback>",
+        "Review feedback: the worker gets it as a follow-up and the task comes back",
+        "for review; recorded as a numbered review round",
+      ],
+      [
+        "ocd task cleanup <id> [--force]",
+        "Remove a finished task's worktree and branch (refuses to lose work; work that",
+        "is already in the base branch, e.g. squash-merged, counts as landed);",
+        "--force loses work and asks first, like discard",
+      ],
+      [
+        "ocd task discard <id> [--reason TEXT]",
+        "Cancel if needed and delete the worktree and branch, losing their work (asks first)",
+      ],
+    ],
+    async run({ sub, rest, flags, json }) {
       const id = rest[0];
       if (sub === "list") {
         const tasks = await client.listTasks({
@@ -1097,8 +1231,16 @@ async function run(
           "usage: ocd task list|show|peek|diff|send|request-changes|cancel|accept|land|pr|merge|cleanup|discard|resume|takeover|giveback",
         );
       return;
-    }
-    case "attention": {
+    },
+  },
+  {
+    names: ["attention"],
+    section: "Attention",
+    help: [
+      ["ocd attention list [--all]"],
+      ["ocd attention resolve <id> --approve | --deny [--message TEXT] | --answer TEXT | --ack"],
+    ],
+    async run({ sub, rest, flags, json }) {
       if (sub === "list" || !sub) {
         const items = await client.listAttention(flags.all ? {} : { status: "open" });
         print(items, json, () => items.map(attentionLine).join("\n") || "nothing needs attention");
@@ -1158,8 +1300,21 @@ async function run(
       }
       fail("usage: ocd attention list|resolve");
       return;
-    }
-    case "memory": {
+    },
+  },
+  {
+    names: ["memory"],
+    section: "Memory",
+    help: [
+      [
+        "ocd memory add <global|repo|task>",
+        "<content> [--repo R] [--task T] [--proposed] [--supersedes ID]",
+      ],
+      ["ocd memory search <query> [--repo", "R] [--task T] [--proposed]"],
+      ["ocd memory list [--status proposed|confirmed|retired] [--repo R]"],
+      ["ocd memory confirm <id> | ocd memory forget <id>"],
+    ],
+    async run({ sub, rest, flags, json }) {
       if (sub === "add") {
         const [scope, ...words] = rest;
         if (!scope || words.length === 0)
@@ -1215,8 +1370,13 @@ async function run(
         print(await client.forget(rest[0]), json, () => `forgot ${rest[0]}`);
       } else fail("usage: ocd memory add|search|list|confirm|forget");
       return;
-    }
-    case "decision": {
+    },
+  },
+  {
+    names: ["decision"],
+    section: "Memory",
+    help: [["ocd decision add <summary> [--repo R] [--task T] [--rationale TEXT]"]],
+    async run({ sub, rest, flags, json }) {
       const summary = rest.join(" ");
       if (sub !== "add" || !summary) fail("usage: ocd decision add <summary>");
       const d = await client.recordDecision({
@@ -1227,13 +1387,23 @@ async function run(
       });
       print(d, json, () => `recorded ${d.id}`);
       return;
-    }
-    case "briefing": {
+    },
+  },
+  {
+    names: ["briefing"],
+    section: "Memory",
+    help: [["ocd briefing"]],
+    async run({ json }) {
       const b = await client.briefing();
       print(b, json, () => b.text);
       return;
-    }
-    case "outbox": {
+    },
+  },
+  {
+    names: ["outbox"],
+    section: "Maintenance",
+    help: [["ocd outbox [--status pending|delivered|dead]"]],
+    async run({ flags, json }) {
       const entries = await client.listOutbox(flags.status ? { status: flags.status } : {});
       print(
         entries,
@@ -1247,11 +1417,39 @@ async function run(
             .join("\n") || "outbox empty",
       );
       return;
-    }
-    default:
-      fail(`unknown command ${command}\n\n${HELP}`);
-  }
+    },
+  },
+];
+
+/** Where explanations start in `ocd --help`; a longer usage puts its explanation below it. */
+const HELP_COLUMN = 36;
+
+function helpLines([usage, ...about]: Usage): string[] {
+  const head = `  ${usage}`;
+  const indent = " ".repeat(HELP_COLUMN);
+  if (about.length === 0) return [head];
+  if (head.length < HELP_COLUMN)
+    return [head.padEnd(HELP_COLUMN) + about[0], ...about.slice(1).map((l) => indent + l)];
+  return [head, ...about.map((l) => indent + l)];
 }
+
+function helpText(): string {
+  const lines = ["ocd — local agent control plane"];
+  let section: string | undefined;
+  for (const command of COMMANDS) {
+    if (command.section !== section) lines.push("", command.section);
+    section = command.section;
+    lines.push(...command.help.flatMap(helpLines));
+  }
+  lines.push(
+    "",
+    "Global flags: --json  (machine-readable output)",
+    "Environment: OCD_HOME (default ~/.ocd), OCD_SOCKET, OCD_CONFIG (default $OCD_HOME/ocd.jsonc)",
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+const HELP = helpText();
 
 main(process.argv.slice(2)).catch((error: unknown) => {
   if (

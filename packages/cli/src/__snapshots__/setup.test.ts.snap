@@ -1,0 +1,316 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ocd setup > changes nothing outside OCD's home when every question is declined 1`] = `
+"
+Prerequisites
+  ✓ Node 24.21.0
+  ✓ git /bin/git
+  ✓ OpenCode /bin/opencode
+  ✓ OpenCode service running
+  – Claude Code: not installed (optional)
+  – Codex: not installed (optional)
+  – GitHub CLI (pull requests): not installed (optional)
+  – tmux: not installed (optional)
+
+Configuration
+  → wrote ~/.ocd/ocd.jsonc
+  ✓ ~/.ocd/ocd.jsonc: manager ~/ocd-manager, 0 repos, 1 profile
+
+Install
+  – OCD runs from <root>/ocd; after pulling, \`pnpm run build\` and \`ocd restart\`
+
+Manager
+  ! ~/ocd-manager does not exist; the manager has nowhere to run
+
+Command
+
+Background service
+  – no background service; run \`ocd daemon\` in a terminal while you use OCD
+
+Notifications
+  ✓ test notification sent
+
+Check (ocd doctor)
+
+Almost done
+  ! ~/ocd-manager does not exist; the manager has nowhere to run
+  Open OpenCode in the manager directory and ask it for work:
+    cd ~/ocd-manager && opencode
+    "In <repo>, fix …"
+  More repositories: \`ocd repo add <name> <path>\`. Profiles and settings: ocd.jsonc.
+  Run \`ocd setup\` again any time to check or repair this setup.
+
+asked:
+No config at ~/.ocd/ocd.jsonc. Create one, or link an existing file (for example in a config repo)?
+Manager directory (OpenCode sessions started there act as the OCD manager)
+Model for OpenCode workers (provider/model)
+Let the manager dispatch work to ~/code/my-app (as "my-app")?
+Another repository the manager may work in (path, empty to finish)
+Keep OCD up to date from <root>/ocd? New commits on its default branch are built into ~/.ocd/install, smoke-tested and switched to (selfUpdate)
+Create the manager directory ~/ocd-manager?
+Put \`ocd\` on your PATH: link ~/.local/bin/ocd → <root>/ocd/packages/cli/dist/ocd.mjs?
+Install the background service? The supervisor then runs in the background and starts at login
+
+ran:
+/bin/opencode service status
+/bin/opencode models
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs doctor --notify
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs doctor"
+`;
+
+exports[`ocd setup > from a checkout, turns on self-update and points everything at the install 1`] = `
+"
+Prerequisites
+  ✓ Node 24.21.0
+  ✓ git /bin/git
+  ✓ OpenCode /bin/opencode
+  ✓ OpenCode service running
+  – Claude Code: not installed (optional)
+  – Codex: not installed (optional)
+  – GitHub CLI (pull requests): not installed (optional)
+  – tmux: not installed (optional)
+
+Configuration
+  → wrote ~/.ocd/ocd.jsonc
+  ✓ ~/.ocd/ocd.jsonc: manager ~/ocd-manager, 1 repo, 1 profile
+
+Install
+  → turned on selfUpdate (following <root>/ocd)
+  → building OCD into ~/.ocd/install (a few minutes)…
+  ✓ installed abc1234; OCD runs from the install from now on
+
+Manager
+  → created ~/ocd-manager
+  → ~/ocd-manager/.opencode/opencode.jsonc loads ~/.ocd/install/current/packages/plugin
+  → wrote ~/ocd-manager/AGENTS.md
+
+Command
+  → ~/.local/bin/ocd → ~/.ocd/install/current/packages/cli/dist/ocd.mjs
+
+Background service
+  → background service installed
+
+OpenCode
+  → reloaded OpenCode, so the manager picks up the plugin
+
+Notifications
+  ✓ test notification sent
+
+Check (ocd doctor)
+
+Done
+  Open OpenCode in the manager directory and ask it for work:
+    cd ~/ocd-manager && opencode
+    "In my-app, fix …"
+  More repositories: \`ocd repo add <name> <path>\`. Profiles and settings: ocd.jsonc.
+  Run \`ocd setup\` again any time to check or repair this setup.
+
+asked:
+No config at ~/.ocd/ocd.jsonc. Create one, or link an existing file (for example in a config repo)?
+Manager directory (OpenCode sessions started there act as the OCD manager)
+Model for OpenCode workers (provider/model)
+Let the manager dispatch work to ~/code/my-app (as "my-app")?
+Another repository the manager may work in (path, empty to finish)
+Keep OCD up to date from <root>/ocd? New commits on its default branch are built into ~/.ocd/install, smoke-tested and switched to (selfUpdate)
+Create the manager directory ~/ocd-manager?
+Set up ~/ocd-manager/.opencode/opencode.jsonc to load the OCD plugin from ~/.ocd/install/current/packages/plugin?
+Write starter instructions for the manager (AGENTS.md)?
+Put \`ocd\` on your PATH: link ~/.local/bin/ocd → ~/.ocd/install/current/packages/cli/dist/ocd.mjs?
+Install the background service? The supervisor then runs in the background and starts at login
+
+ran:
+/bin/opencode service status
+/bin/opencode models
+/usr/local/bin/node <root>/home/.ocd/install/current/packages/cli/dist/ocd.mjs service install
+/bin/opencode reload
+/usr/local/bin/node <root>/home/.ocd/install/current/packages/cli/dist/ocd.mjs doctor --notify
+/usr/local/bin/node <root>/home/.ocd/install/current/packages/cli/dist/ocd.mjs doctor"
+`;
+
+exports[`ocd setup > reports a failed service install, reload and test notification 1`] = `
+"
+Prerequisites
+  ✓ Node 24.21.0
+  ✓ git /bin/git
+  ✓ OpenCode /bin/opencode
+  ✓ OpenCode service running
+  – Claude Code: not installed (optional)
+  – Codex: not installed (optional)
+  – GitHub CLI (pull requests): not installed (optional)
+  – tmux: not installed (optional)
+
+Configuration
+  → wrote ~/.ocd/ocd.jsonc
+  ✓ ~/.ocd/ocd.jsonc: manager ~/ocd-manager, 1 repo, 1 profile
+
+Install
+  – self-update needs a git checkout of OCD; using <root>/ocd/packages/cli/dist/ocd.mjs
+
+Manager
+  → created ~/ocd-manager
+  → ~/ocd-manager/.opencode/opencode.jsonc loads <root>/ocd/packages/plugin
+  → wrote ~/ocd-manager/AGENTS.md
+
+Command
+  → ~/.local/bin/ocd → <root>/ocd/packages/cli/dist/ocd.mjs
+
+Background service
+  ! \`ocd service install\` failed (see above)
+
+OpenCode
+  ! opencode reload failed: boom; run it yourself
+
+Notifications
+  ! no test notification: no bus
+
+Check (ocd doctor)
+
+Almost done
+  ! \`ocd service install\` failed (see above)
+  ! opencode reload failed: boom; run it yourself
+  ! no test notification: no bus
+  Open OpenCode in the manager directory and ask it for work:
+    cd ~/ocd-manager && opencode
+    "In my-app, fix …"
+  More repositories: \`ocd repo add <name> <path>\`. Profiles and settings: ocd.jsonc.
+  Run \`ocd setup\` again any time to check or repair this setup.
+
+asked:
+No config at ~/.ocd/ocd.jsonc. Create one, or link an existing file (for example in a config repo)?
+Manager directory (OpenCode sessions started there act as the OCD manager)
+Model for OpenCode workers (provider/model)
+Let the manager dispatch work to ~/code/my-app (as "my-app")?
+Another repository the manager may work in (path, empty to finish)
+Create the manager directory ~/ocd-manager?
+Set up ~/ocd-manager/.opencode/opencode.jsonc to load the OCD plugin from <root>/ocd/packages/plugin?
+Write starter instructions for the manager (AGENTS.md)?
+Put \`ocd\` on your PATH: link ~/.local/bin/ocd → <root>/ocd/packages/cli/dist/ocd.mjs?
+Install the background service? The supervisor then runs in the background and starts at login
+
+ran:
+/bin/opencode service status
+/bin/opencode models
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs service install
+/bin/opencode reload
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs doctor --notify
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs doctor"
+`;
+
+exports[`ocd setup > sets up a fresh machine with the defaults, and a second run changes nothing 1`] = `
+"
+Prerequisites
+  ✓ Node 24.21.0
+  ✓ git /bin/git
+  ✓ OpenCode /bin/opencode
+  ✓ OpenCode service running
+  ✓ Claude Code: /bin/claude, logged in
+  – Codex: not installed (optional)
+  – GitHub CLI (pull requests): not installed (optional)
+  – tmux: not installed (optional)
+
+Configuration
+  → wrote ~/.ocd/ocd.jsonc
+  ✓ ~/.ocd/ocd.jsonc: manager ~/ocd-manager, 1 repo, 2 profiles
+
+Install
+  – self-update needs a git checkout of OCD; using <root>/ocd/packages/cli/dist/ocd.mjs
+
+Manager
+  → created ~/ocd-manager
+  → ~/ocd-manager/.opencode/opencode.jsonc loads <root>/ocd/packages/plugin
+  → wrote ~/ocd-manager/AGENTS.md
+
+Command
+  → ~/.local/bin/ocd → <root>/ocd/packages/cli/dist/ocd.mjs
+
+Background service
+  → background service installed
+
+OpenCode
+  → reloaded OpenCode, so the manager picks up the plugin
+
+Notifications
+  ✓ test notification sent
+
+Check (ocd doctor)
+
+Done
+  Open OpenCode in the manager directory and ask it for work:
+    cd ~/ocd-manager && opencode
+    "In my-app, fix …"
+  More repositories: \`ocd repo add <name> <path>\`. Profiles and settings: ocd.jsonc.
+  Run \`ocd setup\` again any time to check or repair this setup.
+
+asked:
+No config at ~/.ocd/ocd.jsonc. Create one, or link an existing file (for example in a config repo)?
+Manager directory (OpenCode sessions started there act as the OCD manager)
+Use Claude Code?
+Model for OpenCode workers (provider/model)
+Model for Claude Code workers
+Let the manager dispatch work to ~/code/my-app (as "my-app")?
+Another repository the manager may work in (path, empty to finish)
+Create the manager directory ~/ocd-manager?
+Set up ~/ocd-manager/.opencode/opencode.jsonc to load the OCD plugin from <root>/ocd/packages/plugin?
+Write starter instructions for the manager (AGENTS.md)?
+Put \`ocd\` on your PATH: link ~/.local/bin/ocd → <root>/ocd/packages/cli/dist/ocd.mjs?
+Install the background service? The supervisor then runs in the background and starts at login
+
+ran:
+/bin/opencode service status
+/bin/claude auth status --json
+/bin/opencode models
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs service install
+/bin/opencode reload
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs doctor --notify
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs doctor"
+`;
+
+exports[`ocd setup > sets up a fresh machine with the defaults, and a second run changes nothing 2`] = `
+"
+Prerequisites
+  ✓ Node 24.21.0
+  ✓ git /bin/git
+  ✓ OpenCode /bin/opencode
+  ✓ OpenCode service running
+  ✓ Claude Code: /bin/claude, logged in
+  – Codex: not installed (optional)
+  – GitHub CLI (pull requests): not installed (optional)
+  – tmux: not installed (optional)
+
+Configuration
+  ✓ ~/.ocd/ocd.jsonc: manager ~/ocd-manager, 1 repo, 2 profiles
+
+Install
+  – self-update needs a git checkout of OCD; using <root>/ocd/packages/cli/dist/ocd.mjs
+
+Manager
+  ✓ manager directory ~/ocd-manager
+  ✓ OpenCode loads the OCD plugin from <root>/ocd/packages/plugin
+  ✓ AGENTS.md (kept as it is)
+
+Command
+  ✓ ~/.local/bin/ocd → <root>/ocd/packages/cli/dist/ocd.mjs
+
+Background service
+  ✓ the supervisor runs in the background and starts at login
+
+Notifications
+  ✓ test notification sent
+
+Check (ocd doctor)
+
+Done
+  Open OpenCode in the manager directory and ask it for work:
+    cd ~/ocd-manager && opencode
+    "In my-app, fix …"
+  More repositories: \`ocd repo add <name> <path>\`. Profiles and settings: ocd.jsonc.
+  Run \`ocd setup\` again any time to check or repair this setup.
+
+asked:
+
+ran:
+/bin/opencode service status
+/bin/claude auth status --json
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs doctor --notify
+/usr/local/bin/node <root>/ocd/packages/cli/dist/ocd.mjs doctor"
+`;

@@ -139,6 +139,13 @@ function machine(
   return { root, home, ocdHome, deps, calls, asked, out, app, cliPath, builds, ocdRoot };
 }
 
+/** What setup said, asked and ran, with the temp root made stable for snapshots. */
+function transcript(m: ReturnType<typeof machine>): string {
+  return [...m.out, "", "asked:", ...m.asked, "", "ran:", ...m.calls.map((c) => c.join(" "))]
+    .join("\n")
+    .replaceAll(m.root, "<root>");
+}
+
 function defaultService(): ServiceState {
   return { installed: false, loaded: false, definition: null };
 }
@@ -151,6 +158,7 @@ describe("ocd setup", () => {
     const m = machine({ tools: ["claude"] });
     const result = await runSetup(m.deps);
     expect(result.problems).toEqual([]);
+    expect(transcript(m)).toMatchSnapshot();
 
     const config = loadConfig(m.deps.configPath);
     expect(config.manager?.directory).toBe("~/ocd-manager");
@@ -181,7 +189,9 @@ describe("ocd setup", () => {
     const before = readFileSync(m.deps.configPath, "utf8");
     m.calls.length = 0;
     m.asked.length = 0;
+    m.out.length = 0;
     expect((await runSetup(m.deps)).problems).toEqual([]);
+    expect(transcript(m)).toMatchSnapshot();
     expect(readFileSync(m.deps.configPath, "utf8")).toBe(before);
     expect(m.asked).toEqual([]);
     expect(m.calls.some((c) => c.includes("install") || c.includes("reload"))).toBe(false);
@@ -215,6 +225,7 @@ describe("ocd setup", () => {
     expect(result.problems.join("\n")).toMatch(/concurrency/);
     expect(readFileSync(m.deps.configPath, "utf8")).toBe('{ "concurrency": "many" }');
     expect(existsSync(join(m.home, "ocd-manager"))).toBe(false);
+    expect(m.asked).toEqual([]);
   });
 
   it("links an existing config file instead of creating one", async () => {
@@ -253,6 +264,7 @@ describe("ocd setup", () => {
     const m = machine({ checkout: true, tools: ["pnpm"] });
     const result = await runSetup(m.deps);
     expect(result.problems).toEqual([]);
+    expect(transcript(m)).toMatchSnapshot();
     expect(m.builds).toEqual([expect.objectContaining({ enabled: true, path: m.ocdRoot })]);
     const config = loadConfig(m.deps.configPath);
     expect(config.selfUpdate).toMatchObject({ enabled: true, path: m.ocdRoot });
@@ -290,6 +302,7 @@ describe("ocd setup", () => {
       },
     });
     const result = await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     expect(existsSync(join(m.home, "ocd-manager"))).toBe(false);
     expect(existsSync(join(m.home, ".local"))).toBe(false);
     expect(m.calls.some((c) => c.includes("install"))).toBe(false);
@@ -310,6 +323,19 @@ describe("ocd setup", () => {
     const result = await runSetup(bare.deps);
     expect(result.problems).toEqual([expect.stringMatching(/OpenCode not found/)]);
     expect(existsSync(bare.deps.configPath)).toBe(false);
+    expect(bare.asked).toEqual([]);
+    expect(bare.calls).toEqual([]);
+  });
+
+  it("reports a declined OpenCode service start as a problem", async () => {
+    const m = machine({
+      answers: { "Start it (opencode service start)?": false },
+      run: (_cmd, args) =>
+        args.join(" ") === "service status" ? { code: 1, stdout: "", stderr: "down" } : undefined,
+    });
+    const result = await runSetup(m.deps);
+    expect(m.calls).not.toContainEqual(["/bin/opencode", "service", "start"]);
+    expect(result.problems).toEqual([expect.stringMatching(/opencode service start/)]);
   });
 
   it("warns when ~/.local/bin is not on the login PATH, and leaves a non-link ocd alone", async () => {
@@ -330,6 +356,103 @@ describe("ocd setup", () => {
     writeFileSync(join(nbin, "ocd"), "#!/bin/sh\n");
     await runSetup(n.deps);
     expect(lstatSync(join(nbin, "ocd")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(nbin, "ocd"), "utf8")).toBe("#!/bin/sh\n");
+    expect(n.asked.some((q) => q.includes("on your PATH"))).toBe(false);
+  });
+
+  it("does not warn about the login PATH when the link is declined", async () => {
+    const m = machine({ answers: { "Put `ocd` on your PATH": false } });
+    m.deps.loginPath = async () => "/usr/bin:/bin";
+    const result = await runSetup(m.deps);
+    expect(existsSync(join(m.home, ".local", "bin", "ocd"))).toBe(false);
+    expect(result.problems).toEqual([]);
+  });
+
+  it("stops on a config link that points nowhere", async () => {
+    const m = machine();
+    mkdirSync(m.ocdHome, { recursive: true });
+    symlinkSync(join(m.home, "gone.jsonc"), m.deps.configPath);
+    const result = await runSetup(m.deps);
+    expect(result.problems).toEqual([expect.stringMatching(/which does not exist/)]);
+    expect(readlinkSync(m.deps.configPath)).toBe(join(m.home, "gone.jsonc"));
+    expect(existsSync(join(m.home, "ocd-manager"))).toBe(false);
+    expect(m.asked).toEqual([]);
+  });
+
+  it("leaves an OpenCode config it cannot parse alone", async () => {
+    const m = machine();
+    const opencode = join(m.home, "ocd-manager", ".opencode");
+    mkdirSync(opencode, { recursive: true });
+    writeFileSync(join(opencode, "opencode.json"), "{ nope");
+    const result = await runSetup(m.deps);
+    expect(readFileSync(join(opencode, "opencode.json"), "utf8")).toBe("{ nope");
+    expect(result.problems.join("\n")).toMatch(/syntax errors/);
+  });
+
+  it("offers to reinstall a service that runs another CLI, and to replace an invalid model", async () => {
+    const m = machine({
+      service: { installed: true, loaded: true, definition: "/usr/local/bin/node /old/ocd.mjs" },
+      answers: { "Model for OpenCode": "not-a-model" },
+    });
+    const result = await runSetup(m.deps);
+    expect(result.problems).toEqual([
+      expect.stringMatching(/"not-a-model" is not valid/),
+      expect.stringMatching(/no profile yet/),
+    ]);
+    expect(loadConfig(m.deps.configPath).profiles).toEqual({});
+    expect(m.asked).toContainEqual(expect.stringMatching(/^Reinstall the background service/));
+    expect(m.calls).toContainEqual(["/usr/local/bin/node", m.cliPath, "service", "install"]);
+  });
+
+  it("builds when self-update is on but nothing is installed, and reports a failed build", async () => {
+    const m = machine({ checkout: true });
+    mkdirSync(m.ocdHome, { recursive: true });
+    writeFileSync(
+      m.deps.configPath,
+      JSON.stringify({
+        manager: { directory: "~/ocd-manager" },
+        selfUpdate: { enabled: true, path: m.ocdRoot },
+        profiles: { oc: { harness: "opencode", model: "a/b" } },
+        repos: { app: { path: m.app } },
+      }),
+    );
+    m.deps.firstBuild = async () => ({ sha: null, error: "lockfile out of date" });
+    const result = await runSetup(m.deps);
+    expect(result.problems).toEqual([expect.stringMatching(/first build failed/)]);
+    expect(readlinkSync(join(m.home, ".local", "bin", "ocd"))).toBe(m.cliPath);
+    expect(m.calls).toContainEqual(["/usr/local/bin/node", m.cliPath, "service", "install"]);
+  });
+
+  it("runs from the install it was built into", async () => {
+    const m = machine();
+    const build = join(m.ocdHome, "install", "builds", "abc", "packages", "cli", "dist");
+    mkdirSync(build, { recursive: true });
+    writeFileSync(join(build, "ocd.mjs"), "// built");
+    m.deps.cliPath = join(build, "ocd.mjs");
+    const result = await runSetup(m.deps);
+    expect(result.problems).toEqual([]);
+    const current = join(m.ocdHome, "install", "current");
+    const cli = join(current, "packages", "cli", "dist", "ocd.mjs");
+    expect(readlinkSync(join(m.home, ".local", "bin", "ocd"))).toBe(cli);
+    expect(m.calls).toContainEqual(["/usr/local/bin/node", cli, "service", "install"]);
+    const plugin = readFileSync(join(m.home, "ocd-manager", ".opencode", "opencode.jsonc"), "utf8");
+    expect(plugin).toContain(join(current, "packages", "plugin"));
+    expect(m.builds).toEqual([]);
+  });
+
+  it("reports a failed service install, reload and test notification", async () => {
+    const m = machine({
+      run: (_cmd, args) => {
+        const command = args.join(" ");
+        if (command.endsWith("service install") || command === "reload")
+          return { code: 1, stdout: "", stderr: "boom" };
+        if (command.endsWith("doctor --notify")) return { code: 1, stdout: "", stderr: "no bus" };
+        return undefined;
+      },
+    });
+    const result = await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
+    expect(result.problems).toHaveLength(3);
   });
 });
 
