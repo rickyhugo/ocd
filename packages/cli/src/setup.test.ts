@@ -139,6 +139,13 @@ function machine(
   return { root, home, ocdHome, deps, calls, asked, out, app, cliPath, builds, ocdRoot };
 }
 
+/** What setup said, asked and ran, with the temp root made stable for snapshots. */
+function transcript(m: ReturnType<typeof machine>): string {
+  return [...m.out, "", "asked:", ...m.asked, "", "ran:", ...m.calls.map((c) => c.join(" "))]
+    .join("\n")
+    .replaceAll(m.root, "<root>");
+}
+
 function defaultService(): ServiceState {
   return { installed: false, loaded: false, definition: null };
 }
@@ -151,6 +158,7 @@ describe("ocd setup", () => {
     const m = machine({ tools: ["claude"] });
     const result = await runSetup(m.deps);
     expect(result.problems).toEqual([]);
+    expect(transcript(m)).toMatchSnapshot();
 
     const config = loadConfig(m.deps.configPath);
     expect(config.manager?.directory).toBe("~/ocd-manager");
@@ -181,7 +189,9 @@ describe("ocd setup", () => {
     const before = readFileSync(m.deps.configPath, "utf8");
     m.calls.length = 0;
     m.asked.length = 0;
+    m.out.length = 0;
     expect((await runSetup(m.deps)).problems).toEqual([]);
+    expect(transcript(m)).toMatchSnapshot();
     expect(readFileSync(m.deps.configPath, "utf8")).toBe(before);
     expect(m.asked).toEqual([]);
     expect(m.calls.some((c) => c.includes("install") || c.includes("reload"))).toBe(false);
@@ -195,6 +205,7 @@ describe("ocd setup", () => {
       '{\n  // my settings\n  "concurrency": 3,\n  "profiles": { "mine": { "harness": "opencode", "model": "a/b" } },\n}\n',
     );
     await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     const text = readFileSync(m.deps.configPath, "utf8");
     expect(text).toContain("// my settings");
     const config = loadConfig(m.deps.configPath);
@@ -212,6 +223,7 @@ describe("ocd setup", () => {
     mkdirSync(m.ocdHome, { recursive: true });
     writeFileSync(m.deps.configPath, '{ "concurrency": "many" }');
     const result = await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     expect(result.problems.join("\n")).toMatch(/concurrency/);
     expect(readFileSync(m.deps.configPath, "utf8")).toBe('{ "concurrency": "many" }');
     expect(existsSync(join(m.home, "ocd-manager"))).toBe(false);
@@ -225,6 +237,7 @@ describe("ocd setup", () => {
     const file = join(m.home, "dotfiles", "ocd.jsonc");
     writeFileSync(file, '{ "manager": { "directory": "~/mgr" } }\n');
     await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     expect(lstatSync(m.deps.configPath).isSymbolicLink()).toBe(true);
     expect(readlinkSync(m.deps.configPath)).toBe(file);
     expect(existsSync(join(m.home, "mgr", "AGENTS.md"))).toBe(true);
@@ -240,6 +253,7 @@ describe("ocd setup", () => {
     );
     writeFileSync(join(m.home, "ocd-manager", "AGENTS.md"), "my own");
     await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     const text = readFileSync(join(opencode, "opencode.jsonc"), "utf8");
     expect(text).toContain("// mine");
     expect(text).toContain('"theme": "dark"');
@@ -253,6 +267,7 @@ describe("ocd setup", () => {
     const m = machine({ checkout: true, tools: ["pnpm"] });
     const result = await runSetup(m.deps);
     expect(result.problems).toEqual([]);
+    expect(transcript(m)).toMatchSnapshot();
     expect(m.builds).toEqual([expect.objectContaining({ enabled: true, path: m.ocdRoot })]);
     const config = loadConfig(m.deps.configPath);
     expect(config.selfUpdate).toMatchObject({ enabled: true, path: m.ocdRoot });
@@ -272,6 +287,7 @@ describe("ocd setup", () => {
       JSON.stringify({ devEngines: { packageManager: { name: "pnpm", version: "12.11.2" } } }),
     );
     await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     expect(loadConfig(m.deps.configPath).selfUpdate.build).toEqual([
       "npx --yes pnpm@12.11.2 install --frozen-lockfile",
       "npx --yes pnpm@12.11.2 run build",
@@ -290,6 +306,7 @@ describe("ocd setup", () => {
       },
     });
     const result = await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     expect(existsSync(join(m.home, "ocd-manager"))).toBe(false);
     expect(existsSync(join(m.home, ".local"))).toBe(false);
     expect(m.calls.some((c) => c.includes("install"))).toBe(false);
@@ -303,11 +320,13 @@ describe("ocd setup", () => {
         args.join(" ") === "service status" ? { code: 1, stdout: "", stderr: "down" } : undefined,
     });
     await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     expect(m.calls).toContainEqual(["/bin/opencode", "service", "start"]);
 
     const bare = machine();
     bare.deps.locate = (name) => (name === "git" ? "/bin/git" : null);
     const result = await runSetup(bare.deps);
+    expect(transcript(bare)).toMatchSnapshot();
     expect(result.problems).toEqual([expect.stringMatching(/OpenCode not found/)]);
     expect(existsSync(bare.deps.configPath)).toBe(false);
   });
@@ -321,6 +340,7 @@ describe("ocd setup", () => {
     writeFileSync(other, "");
     symlinkSync(other, join(bin, "ocd"));
     const result = await runSetup(m.deps);
+    expect(transcript(m)).toMatchSnapshot();
     expect(readlinkSync(join(bin, "ocd"))).toBe(m.cliPath);
     expect(result.problems.join("\n")).toMatch(/not on your login shell's PATH/);
 
@@ -329,6 +349,7 @@ describe("ocd setup", () => {
     mkdirSync(nbin, { recursive: true });
     writeFileSync(join(nbin, "ocd"), "#!/bin/sh\n");
     await runSetup(n.deps);
+    expect(transcript(n)).toMatchSnapshot();
     expect(lstatSync(join(nbin, "ocd")).isSymbolicLink()).toBe(false);
   });
 });
@@ -361,6 +382,7 @@ describe("setup helpers", () => {
     it("runs the platform's install command after consent, and reports it as given", async () => {
       const m = machine({ prerequisite: missing });
       await runSetup(m.deps);
+      expect(transcript(m)).toMatchSnapshot();
       expect(m.asked).toContain("Install the notifier?");
       expect(m.calls).toContainEqual(["/bin/fetch", "notifier"]);
       expect(m.out.join("\n")).toContain("notifier installed");
@@ -369,6 +391,7 @@ describe("setup helpers", () => {
     it("does not run it when declined", async () => {
       const m = machine({ prerequisite: missing, answers: { "Install the notifier?": false } });
       await runSetup(m.deps);
+      expect(transcript(m)).toMatchSnapshot();
       expect(m.calls).not.toContainEqual(["/bin/fetch", "notifier"]);
       expect(m.out.join("\n")).toContain("notifications are plain");
     });
@@ -376,9 +399,11 @@ describe("setup helpers", () => {
     it("reports what is found or missing without asking when there is nothing to install", async () => {
       const found = machine({ prerequisite: { ready: true, summary: "notifier /bin/n" } });
       await runSetup(found.deps);
+      expect(transcript(found)).toMatchSnapshot();
       expect(found.out.join("\n")).toContain("notifier /bin/n");
       const bare = machine({ prerequisite: { ready: false, summary: "no notifier here" } });
       await runSetup(bare.deps);
+      expect(transcript(bare)).toMatchSnapshot();
       expect(bare.asked.some((q) => q.includes("notifier"))).toBe(false);
       expect(bare.out.join("\n")).toContain("no notifier here");
     });
@@ -394,6 +419,7 @@ describe("setup helpers", () => {
         },
       });
       await runSetup(m.deps);
+      expect(transcript(m)).toMatchSnapshot();
       expect(opened).toBe(1);
       expect(m.out.join("\n")).toContain("approve it");
     });
