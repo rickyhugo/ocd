@@ -3,10 +3,13 @@ import { homedir } from "node:os";
 
 import {
   boundTodos,
+  systemScheduler,
   textEntry,
   toolEntry,
   type AdapterStatus,
   type HarnessUsage,
+  type Scheduler,
+  type Timer,
   type ToolStatus,
   type TranscriptEntry,
 } from "@ocd/core";
@@ -78,7 +81,7 @@ interface CodexSession {
   nextId: number;
   calls: Map<
     string | number,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+    { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: Timer }
   >;
   status: SessionSnapshot["status"];
   activeTurnId: string | null;
@@ -92,13 +95,13 @@ interface CodexSession {
   parked: boolean;
   /** The in-flight stop of an idle app-server; a prompt waits for it, then resumes. */
   stopping: Promise<void> | null;
-  idleTimer: NodeJS.Timeout | null;
+  idleTimer: Timer | null;
   /** An agent message completed during the current turn (the final answer so far). */
   turnTextSet: boolean;
   /** Turns that already completed; their turn/start reply may arrive late. */
   finishedTurns: Set<string>;
   /** A pending re-read of the account's limits after `account/rateLimits/updated`. */
-  limitsTimer?: NodeJS.Timeout | null;
+  limitsTimer?: Timer | null;
 }
 
 /** The part of a session that RPC calls need; also used for short-lived reads. */
@@ -111,6 +114,7 @@ export interface CodexAdapterOptions {
   /** Stop a worker process after this long idle; its thread resumes on demand. */
   idleStopMs?: number;
   transcriptLimits?: Partial<TranscriptBufferLimits>;
+  scheduler?: Scheduler;
 }
 
 export class CodexAdapter implements HarnessAdapter {
@@ -119,6 +123,7 @@ export class CodexAdapter implements HarnessAdapter {
   readonly sessionsSurviveSupervisor = false;
 
   private readonly command: [string, ...string[]];
+  private readonly scheduler: Scheduler;
   private readonly options: CodexAdapterOptions;
   private readonly sessions = new Map<string, CodexSession>();
   private readonly byMarker = new Map<string, string>();
@@ -128,6 +133,7 @@ export class CodexAdapter implements HarnessAdapter {
   constructor(options: CodexAdapterOptions = {}) {
     this.options = options;
     this.command = options.command ?? ["codex", "app-server"];
+    this.scheduler = options.scheduler ?? systemScheduler;
     this.transcripts = new TranscriptStore(options.transcriptLimits);
   }
 
@@ -245,7 +251,7 @@ export class CodexAdapter implements HarnessAdapter {
         15_000,
       )) as CodexRateLimitsResponse | null;
       if (!response) return null;
-      const usage = codexUsage(response, new Date().toISOString());
+      const usage = codexUsage(response, new Date(this.scheduler.now()).toISOString());
       this.emit({ type: "limits", usage });
       return usage;
     } catch (error) {
@@ -271,7 +277,7 @@ export class CodexAdapter implements HarnessAdapter {
     channel.proc = proc;
     void proc.exited.then(() => {
       for (const call of channel.calls.values()) {
-        clearTimeout(call.timer);
+        this.scheduler.clearTimeout(call.timer);
         call.reject(new Error("codex app-server exited"));
       }
       channel.calls.clear();
@@ -298,7 +304,7 @@ export class CodexAdapter implements HarnessAdapter {
 
   private scheduleIdleStop(session: CodexSession): void {
     this.clearIdleStop(session);
-    session.idleTimer = setTimeout(
+    session.idleTimer = this.scheduler.setTimeout(
       () => void this.park(session),
       this.options.idleStopMs ?? 10 * 60_000,
     );
@@ -306,7 +312,7 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   private clearIdleStop(session: CodexSession): void {
-    if (session.idleTimer) clearTimeout(session.idleTimer);
+    if (session.idleTimer) this.scheduler.clearTimeout(session.idleTimer);
     session.idleTimer = null;
   }
 
@@ -364,7 +370,7 @@ export class CodexAdapter implements HarnessAdapter {
   ): Promise<unknown> {
     const id = session.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = this.scheduler.setTimeout(() => {
         session.calls.delete(id);
         reject(new Error(`codex ${method} timed out`));
       }, timeoutMs);
@@ -372,7 +378,7 @@ export class CodexAdapter implements HarnessAdapter {
       try {
         session.proc.send({ method, id, params });
       } catch (error) {
-        clearTimeout(timer);
+        this.scheduler.clearTimeout(timer);
         session.calls.delete(id);
         reject(error as Error);
       }
@@ -385,7 +391,7 @@ export class CodexAdapter implements HarnessAdapter {
     const call = channel.calls.get(message.id);
     if (!call) return true;
     channel.calls.delete(message.id);
-    clearTimeout(call.timer);
+    this.scheduler.clearTimeout(call.timer);
     if (message.error) call.reject(new Error(message.error.message));
     else call.resolve(message.result);
     return true;
@@ -471,8 +477,8 @@ export class CodexAdapter implements HarnessAdapter {
   ): void {
     if (method === "account/rateLimits/updated") {
       // A sparse update: re-read the whole snapshot (debounced) rather than merge.
-      if (session.limitsTimer) clearTimeout(session.limitsTimer);
-      session.limitsTimer = setTimeout(() => {
+      if (session.limitsTimer) this.scheduler.clearTimeout(session.limitsTimer);
+      session.limitsTimer = this.scheduler.setTimeout(() => {
         session.limitsTimer = null;
         if (session.proc.running) void this.emitLimits(session);
       }, 1000);
@@ -598,7 +604,7 @@ export class CodexAdapter implements HarnessAdapter {
     exit: { code: number | null; signal: NodeJS.Signals | null },
   ): void {
     for (const call of session.calls.values()) {
-      clearTimeout(call.timer);
+      this.scheduler.clearTimeout(call.timer);
       call.reject(new Error("codex app-server exited"));
     }
     session.calls.clear();
@@ -736,7 +742,7 @@ export class CodexAdapter implements HarnessAdapter {
     try {
       const entry = codexEntry(
         raw as CodexItem,
-        typeof atMs === "number" ? new Date(atMs).toISOString() : new Date().toISOString(),
+        new Date(typeof atMs === "number" ? atMs : this.scheduler.now()).toISOString(),
       );
       if (!entry) return;
       const buffer = this.transcripts.live(session.threadId);
@@ -865,9 +871,13 @@ export class CodexAdapter implements HarnessAdapter {
     // Codex acknowledges before the turn reports completion; wait (bounded) for
     // it, so a prompt sent right after starts a new turn instead of steering a
     // turn that is already over.
-    const deadline = Date.now() + 10_000;
-    while (session.activeTurnId === turnId && session.proc.running && Date.now() < deadline)
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    const deadline = this.scheduler.now() + 10_000;
+    while (
+      session.activeTurnId === turnId &&
+      session.proc.running &&
+      this.scheduler.now() < deadline
+    )
+      await new Promise<void>((resolve) => this.scheduler.setTimeout(resolve, 20));
   }
 
   async reply(ref: SessionRef, interactionId: string, reply: InteractionReply): Promise<void> {

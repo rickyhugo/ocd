@@ -1,7 +1,14 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { textEntry, toolEntry, type AdapterStatus } from "@ocd/core";
+import {
+  systemScheduler,
+  textEntry,
+  toolEntry,
+  type AdapterStatus,
+  type Scheduler,
+  type Timer,
+} from "@ocd/core";
 
 import { ClaudeTodoTracker, type ClaudeStreamMessage } from "./claude-todos.ts";
 import { processMentioning } from "./processes.ts";
@@ -118,7 +125,7 @@ interface ClaudeSession {
   parked: boolean;
   /** The in-flight stop of an idle worker; a prompt waits for it, then restarts. */
   stopping: Promise<void> | null;
-  idleTimer: NodeJS.Timeout | null;
+  idleTimer: Timer | null;
   todos: ClaudeTodoTracker;
   /** Fallback transcript keys for messages without uuid or id. */
   observed: number;
@@ -147,6 +154,7 @@ export interface ClaudeAdapterOptions {
   /** Stop a worker process after this long idle; its session resumes on demand. */
   idleStopMs?: number;
   transcriptLimits?: Partial<TranscriptBufferLimits>;
+  scheduler?: Scheduler;
 }
 
 export class ClaudeAdapter implements HarnessAdapter {
@@ -160,10 +168,12 @@ export class ClaudeAdapter implements HarnessAdapter {
   private readonly byMarker = new Map<string, string>();
   private readonly listeners = new Set<AdapterListener>();
   private readonly transcripts: TranscriptStore;
+  private readonly scheduler: Scheduler;
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.options = options;
     this.command = options.command ?? ["claude"];
+    this.scheduler = options.scheduler ?? systemScheduler;
     this.transcripts = new TranscriptStore(options.transcriptLimits);
   }
 
@@ -282,12 +292,12 @@ export class ClaudeAdapter implements HarnessAdapter {
   private scheduleIdleStop(session: ClaudeSession): void {
     this.clearIdleStop(session);
     const ms = this.options.idleStopMs ?? 10 * 60_000;
-    session.idleTimer = setTimeout(() => void this.park(session), ms);
+    session.idleTimer = this.scheduler.setTimeout(() => void this.park(session), ms);
     session.idleTimer.unref();
   }
 
   private clearIdleStop(session: ClaudeSession): void {
-    if (session.idleTimer) clearTimeout(session.idleTimer);
+    if (session.idleTimer) this.scheduler.clearTimeout(session.idleTimer);
     session.idleTimer = null;
   }
 
@@ -360,7 +370,10 @@ export class ClaudeAdapter implements HarnessAdapter {
         if (info.status === "rejected") session.limitSeen = true;
         // The account's limits, not this task's: Claude Code sends them with every turn.
         try {
-          this.emit({ type: "limits", usage: claudeUsage(info, new Date().toISOString()) });
+          this.emit({
+            type: "limits",
+            usage: claudeUsage(info, new Date(this.scheduler.now()).toISOString()),
+          });
         } catch (error) {
           this.options.onError?.(error, "claude limits");
         }
@@ -437,7 +450,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     if (!Array.isArray(blocks)) return;
     try {
       const buffer = this.transcripts.live(session.sessionId);
-      const at = new Date().toISOString();
+      const at = new Date(this.scheduler.now()).toISOString();
       const messageKey = message.uuid ?? message.message?.id ?? `n${(session.observed += 1)}`;
       blocks.forEach((raw: ContentBlock, index) => {
         if (!raw || typeof raw !== "object") return;
@@ -517,7 +530,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     // Fail fast on a missing binary or bad flags instead of at the first prompt.
     const early = await Promise.race([
       session.proc.exited,
-      new Promise<null>((r) => setTimeout(() => r(null), 300)),
+      new Promise<null>((r) => this.scheduler.setTimeout(() => r(null), 300)),
     ]);
     if (early) {
       this.sessions.delete(id);

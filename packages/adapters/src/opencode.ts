@@ -1,6 +1,7 @@
 import {
   TRANSCRIPT_LIMITS,
   textEntry,
+  systemScheduler,
   toolEntry,
   type AdapterStatus,
   type ToolStatus,
@@ -339,7 +340,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
       if (connectedOnce) this.emit({ type: "stream", state: "disconnected" });
       // The service may have restarted with a new port or password.
       this.connection = null;
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await new Promise<void>((resolve) => systemScheduler.setTimeout(resolve, delay));
       delay = Math.min(delay * 2, max);
     }
   }
