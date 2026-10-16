@@ -75,6 +75,60 @@ describe("the manager's resume_task", () => {
     expect(done.events.find((e) => e.type === "task.resumed")?.data).toMatchObject({
       data: { mode: "reattach", actor: "manager" },
     });
+    expect(done.attention.find((a) => a.kind === "failure")).toMatchObject({
+      resolvableBy: "manager",
+      status: "resolved",
+      resolvedBy: "manager",
+    });
+  });
+
+  it.each([
+    { directive: "[fake:error]", state: "failed", kind: "failure", reason: "Fake harness error" },
+    {
+      directive: "[fake:quota]",
+      state: "blocked",
+      kind: "decision",
+      reason: "Usage limit reached",
+    },
+  ] as const)(
+    "leaves a $state task's $kind for the human to settle",
+    async ({ directive, state, kind, reason }) => {
+      h = await startHarness({ fake: { survive: true } });
+      await setupRepo(h, "app");
+      const run = managerTools(h);
+      const task = await dispatch(`work ${directive}`, `resume-${state}`);
+      const stopped = await waitForState(h, task.id, state);
+      const item = stopped.attention.find((a) => a.kind === kind && a.status === "open")!;
+      expect(item.resolvableBy).toBe("human");
+
+      const resumed = await run("resume_task", { id: task.id });
+      expect(resumed).toMatch(/^OCD error \(human_only\)/);
+      expect(resumed).toContain(reason);
+      expect(resumed).toContain("Ask the human");
+      let detail = await h.human.inspectTask(task.id);
+      expect(detail.task.state).toBe(state);
+      expect(detail.attention.find((a) => a.id === item.id)?.status).toBe("open");
+
+      await h.human.resumeTask(task.id, "reattach");
+      detail = await h.human.inspectTask(task.id);
+      expect(detail.attention.find((a) => a.id === item.id)).toMatchObject({
+        status: "resolved",
+        resolvedBy: "human",
+      });
+    },
+  );
+
+  it("points send_to_worker at the human while a failure waits on them", async () => {
+    h = await startHarness();
+    await setupRepo(h, "app");
+    const run = managerTools(h);
+    const task = await dispatch("work [fake:error]", "send-failed");
+    await waitForState(h, task.id, "failed");
+
+    const sent = await run("send_to_worker", { id: task.id, instructions: "carry on" });
+    expect(sent).toMatch(/^OCD error \(not_steerable\)/);
+    expect(sent).toContain("Ask the human");
+    expect(sent).not.toContain("ocd_resume_task");
   });
 
   it("refuses a manual task, and send_to_worker gives the same reason", async () => {
@@ -115,7 +169,7 @@ describe("the manager's resume_task", () => {
     const permission = blocked.attention.find((a) => a.kind === "permission")!;
     expect(permission.status).toBe("open");
 
-    expect(await run("resume_task", { id: task.id })).toMatch(/^Resumed\. /);
+    expect(await run("resume_task", { id: task.id })).toMatch(/^OCD error \(human_only\)/);
     const after = await waitForState(h, task.id, "blocked");
     expect(after.attention.find((a) => a.id === permission.id)?.status).toBe("open");
     expect(h.fakeState.sessions.get(after.task.sessionId!)?.pending.size).toBe(1);
