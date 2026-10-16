@@ -206,6 +206,10 @@ describe("landing directly on the base branch", () => {
     await expect(
       s.h.manager("mgr").resolveAttention(item!.id, { type: "approve" }),
     ).rejects.toMatchObject({ code: "human_only" });
+    await expect(
+      s.h.human.resolveAttention(item!.id, { type: "acknowledge" }),
+    ).rejects.toMatchObject({ code: "bad_response" });
+    expect(item!.operation).toMatchObject({ taskId: task.id, base: "main" });
 
     // The branch moved after the request: approving refuses, nothing is pushed.
     const origin = git(s.origin, "rev-parse", "main");

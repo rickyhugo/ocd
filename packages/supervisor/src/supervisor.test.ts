@@ -279,6 +279,31 @@ describe("permissions and interactions", () => {
     await waitForState(h, task.id, "ready_for_review");
   });
 
+  it("accepts only the responses each request kind takes", async () => {
+    h = await startHarness();
+    await setupRepo(h, "app");
+    const perm = await dispatch(h.human, "app", "go [fake:permission]");
+    const p = (await waitForState(h, perm.task.id, "blocked")).attention.find(
+      (a) => a.kind === "permission",
+    )!;
+    for (const response of [{ type: "answer", text: "yes" }, { type: "acknowledge" }] as const)
+      await expect(h.human.resolveAttention(p.id, response)).rejects.toMatchObject({
+        code: "bad_response",
+      });
+    expect((await h.human.inspectTask(perm.task.id)).attention[0]?.status).toBe("open");
+    await h.human.resolveAttention(p.id, { type: "deny" });
+    const ask = await dispatch(h.human, "app", "go [fake:question]");
+    const q = (await waitForState(h, ask.task.id, "blocked")).attention.find(
+      (a) => a.kind === "question",
+    )!;
+    for (const response of [{ type: "approve" }, { type: "acknowledge" }] as const)
+      await expect(h.human.resolveAttention(q.id, response)).rejects.toMatchObject({
+        code: "bad_response",
+      });
+    expect((await h.human.inspectTask(ask.task.id)).attention[0]?.status).toBe("open");
+    await h.human.resolveAttention(q.id, { type: "answer", text: "the simple one" });
+  });
+
   it("refuses stale approvals once the originating request is gone (AT8)", async () => {
     h = await startHarness();
     await setupRepo(h, "app");
