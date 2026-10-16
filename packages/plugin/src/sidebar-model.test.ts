@@ -203,6 +203,33 @@ describe("sidebar model", () => {
     ]);
   });
 
+  it("offers only review, result and message actions for a task without a workspace", () => {
+    const none = { workspaceMode: "none", sessionId: "s" } as const;
+    const [review] = buildSidebar([task("n", "ready_for_review", none)], [], NOW).sections[0]!.rows;
+    expect(actionsFor(review!, PR_ON)).toEqual([
+      { label: "Request changes…", kind: "request_changes" },
+      { label: "Accept", kind: "accept" },
+      {
+        label: "Summarize the result",
+        message: "Summarize the result and anything I should check before accepting.",
+      },
+      { label: "Message the manager about it…", kind: "message" },
+      { label: "Details", kind: "details" },
+    ]);
+    expect(landable(task("n", "ready_for_review", none))).toBe(false);
+    const gitActions = ["diff", "land", "land_direct", "takeover", "discard", "clean"];
+    for (const state of ["running", "failed", "completed"] as const) {
+      const t = task("n", state, { ...none, finishedAt: minutesAgo(5) });
+      const model = buildSidebar(state === "completed" ? [] : [t], [], NOW, [t]);
+      const row = [...model.sections.flatMap((s) => s.rows), ...model.recent][0]!;
+      const kinds = actionsFor(row, PR_ON).flatMap((a) => ("kind" in a ? [a.kind] : []));
+      expect(
+        kinds.filter((k) => gitActions.includes(k)),
+        state,
+      ).toEqual([]);
+    }
+  });
+
   it("lands only finished work that still has a worktree", () => {
     expect(landable(task("a", "ready_for_review"))).toBe(true);
     expect(landable(task("b", "completed", { workspacePath: "/ws/b" }))).toBe(true);

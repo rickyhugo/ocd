@@ -289,6 +289,7 @@ describe("tool input schemas", () => {
       "instructions",
       "acceptance_criteria",
       "depends_on",
+      "workspace_mode",
     ]);
     expect(properties("peek_task")).toEqual(["id", "limit", "before", "reasoning_summaries"]);
     expect(properties("remember")).toEqual([

@@ -1,4 +1,4 @@
-import type { Attention, Task, UpdateStatus } from "@ocd/core";
+import { capabilitiesOf, type Attention, type Task, type UpdateStatus } from "@ocd/core";
 
 // The sidebar's view model: what to show, in which order, with which emphasis.
 // Pure, so it is tested without a terminal.
@@ -262,7 +262,10 @@ export type QuickAction = { label: string; message: string } | { label: string; 
 
 /** A task whose work can still land: done, with its worktree. */
 export function landable(task: Task): boolean {
-  return task.state === "ready_for_review" || (task.state === "completed" && !!task.workspacePath);
+  return (
+    capabilitiesOf(task).land &&
+    (task.state === "ready_for_review" || (task.state === "completed" && !!task.workspacePath))
+  );
 }
 
 /** The landing routes on offer; the pull request route only when pull requests are on. */
@@ -303,12 +306,14 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
     ];
   }
   const landing = row.task && landable(row.task) ? landingActions(options) : [];
-  const discard = { label: "Discard the work…", kind: "discard" as const };
+  const can = row.task ? capabilitiesOf(row.task) : null;
+  const discard = can?.worktree ? [{ label: "Discard the work…", kind: "discard" as const }] : [];
   const diff = row.task?.workspacePath ? [{ label: "View the diff", kind: "diff" as const }] : [];
   // Manual mode needs a worker session to open.
-  const takeover = row.task?.sessionId
-    ? [{ label: "Take over (manual mode)", kind: "takeover" as const }]
-    : [];
+  const takeover =
+    can?.takeOver && row.task?.sessionId
+      ? [{ label: "Take over (manual mode)", kind: "takeover" as const }]
+      : [];
   switch (row.task?.state) {
     case "manual":
       return [
@@ -324,14 +329,14 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
         ...diff,
         ...landing,
         { label: "Request changes…", kind: "request_changes" },
-        { label: "Accept (keep the worktree)", kind: "accept" },
+        { label: can?.worktree ? "Accept (keep the worktree)" : "Accept", kind: "accept" },
         ...takeover,
         {
           label: "Summarize the result",
           message: "Summarize the result and anything I should check before accepting.",
         },
         message,
-        discard,
+        ...discard,
         details,
       ];
     case "running":
@@ -354,7 +359,7 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
         ...diff,
         ...takeover,
         message,
-        discard,
+        ...discard,
         details,
       ];
     case "completed":
@@ -365,7 +370,7 @@ export function actionsFor(row: Row, options: { pullRequests: boolean }): QuickA
               ...diff,
               ...landing,
               { label: "Clean up the worktree", kind: "clean" as const },
-              discard,
+              ...discard,
             ]
           : []),
         message,

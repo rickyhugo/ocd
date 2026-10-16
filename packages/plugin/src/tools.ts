@@ -98,7 +98,7 @@ export function buildTools(
     defineTool({
       name: "dispatch_task",
       description:
-        "Delegate a coding task to a worker in an isolated worktree of an allowlisted repository. Returns the task ID immediately; the supervisor owns the worker and will report back.",
+        "Delegate a task to a worker for an allowlisted repository, by default in an isolated worktree of it. Returns the task ID immediately; the supervisor owns the worker and will report back.",
       input: z.object({
         repo: DispatchTaskInput.shape.repo.describe("Registered repository name"),
         profile: DispatchTaskInput.shape.profile.describe(
@@ -115,6 +115,9 @@ export function buildTools(
         depends_on: DispatchTaskInput.shape.dependsOn.describe(
           "Task IDs that must be accepted first",
         ),
+        workspace_mode: DispatchTaskInput.shape.workspaceMode.describe(
+          "isolated (default): the worker gets its own branch and worktree, for any change to the repository. none: no repository checkout, only a scratch directory; pick it only for work that changes nothing in the repository, such as Slack research or creating a GitHub issue. A none task is reviewed and accepted, never diffed or landed.",
+        ),
       }),
       run: async (i, ctx) => {
         const { task, created } = await clientFor(ctx.sessionID, ctx.directory).dispatch({
@@ -124,6 +127,7 @@ export function buildTools(
           instructions: i.instructions,
           acceptanceCriteria: i.acceptance_criteria,
           dependsOn: i.depends_on,
+          workspaceMode: i.workspace_mode,
           idempotencyKey: `opencode:${ctx.sessionID}:${ctx.callID}`,
         });
         return `${created ? "Dispatched" : "Already dispatched"}: ${taskLine(task)}`;
