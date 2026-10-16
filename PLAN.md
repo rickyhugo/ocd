@@ -413,8 +413,6 @@ core), event and status names, and landing and peek as their own services.
   registry and setup steps with `check()` / `apply()`.
 - Timers are only partly injectable (raw `setInterval`s, `Date.now()` in a few
   places); one scheduler interface would make timing tests deterministic.
-- Domain errors extend the HTTP `ApiError`; give them codes from a shared union
-  and map them to HTTP status only in `api.ts`.
 
 ## Acceptance tests
 

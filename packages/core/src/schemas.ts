@@ -8,6 +8,7 @@ import {
   RUN_STATES,
   TASK_STATES,
 } from "./states.ts";
+import type { ErrorCode } from "./errors.ts";
 import type { TaskEventType } from "./events.ts";
 import type { HarnessUsage, UsageStatus } from "./usage.ts";
 
@@ -691,5 +692,5 @@ export interface ShutdownReport {
 }
 
 export interface ApiErrorBody {
-  error: { code: string; message: string; details?: unknown };
+  error: { code: ErrorCode; message: string; details?: unknown };
 }

@@ -3,14 +3,10 @@ import { join, relative, sep } from "node:path";
 
 import type { Repository, Verification } from "@ocd/core";
 
-import { ApiError } from "./errors.ts";
+import { DomainError } from "./errors.ts";
 import { type GitRunner, gitText, nulFields, parsePorcelainZ, systemGit } from "./git.ts";
 
-export class WorkspaceError extends ApiError {
-  constructor(code: string, message: string) {
-    super(409, code, message);
-  }
-}
+export class WorkspaceError extends DomainError {}
 
 export interface Workspace {
   path: string;
@@ -36,20 +32,19 @@ export class WorkspaceManager {
 
   /** Canonicalizes and validates a repository path before it joins the allowlist. */
   async canonicalRepoPath(path: string): Promise<string> {
-    if (!existsSync(path)) throw new ApiError(400, "repo_missing", `${path} does not exist`);
+    if (!existsSync(path)) throw new DomainError("repo_missing", `${path} does not exist`);
     const real = realpathSync(path);
     let top: string;
     try {
       top = realpathSync(await this.text(real, ["rev-parse", "--show-toplevel"]));
     } catch {
-      throw new ApiError(400, "not_a_repo", `${real} is not a git repository`);
+      throw new DomainError("not_a_repo", `${real} is not a git repository`);
     }
     if (top !== real)
-      throw new ApiError(400, "not_repo_root", `${real} is not the repository root (${top})`);
+      throw new DomainError("not_repo_root", `${real} is not the repository root (${top})`);
     const rootReal = existsSync(this.root) ? realpathSync(this.root) : this.root;
     if (real === rootReal || real.startsWith(rootReal + sep)) {
-      throw new ApiError(
-        400,
+      throw new DomainError(
         "repo_in_workspaces",
         "Managed workspaces cannot be registered as repositories",
       );

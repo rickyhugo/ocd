@@ -54,7 +54,7 @@ import type { LiveConfig, SupervisorConfig } from "./config.ts";
 import { LandingService } from "./landing.ts";
 import { PEEK_TIMEOUT_MS, PeekService } from "./peek.ts";
 import type { PullRequestHost } from "./pull-requests.ts";
-import { ApiError, SimulatedCrash, badRequest, conflict, forbidden, notFound } from "./errors.ts";
+import { DomainError, SimulatedCrash, notFound } from "./errors.ts";
 import { iso, type Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
 import type { MemoryService } from "./memory.ts";
@@ -372,7 +372,7 @@ export class Supervisor {
     const adapter = this.adapters.get(harness);
     if (!adapter) {
       this.assertHarnessEnabled(harness);
-      throw new ApiError(422, "harness_unavailable", `No ${harness} adapter is configured`);
+      throw new DomainError("harness_unavailable", `No ${harness} adapter is configured`);
     }
     return adapter;
   }
@@ -381,8 +381,7 @@ export class Supervisor {
   private assertHarnessEnabled(harness: HarnessName): void {
     const descriptor = findHarness(harness);
     if (descriptor?.config && !harnessSettings(this.o.config, descriptor).enabled)
-      throw new ApiError(
-        422,
+      throw new DomainError(
         "harness_disabled",
         `${descriptor.label} is off; set "${descriptor.name}": { "enabled": true } in ocd.jsonc and restart the supervisor`,
       );
@@ -427,7 +426,7 @@ export class Supervisor {
     const repo = this.store.requireRepo(input.repo);
     const profileName = input.profile ?? repo.defaultProfile;
     if (!profileName)
-      throw badRequest(
+      throw new DomainError(
         "profile_required",
         `Repository ${repo.name} has no default profile; choose one`,
       );
@@ -456,8 +455,7 @@ export class Supervisor {
   private assertHarnessUsable(harness: HarnessName): void {
     // Harnesses without an ocd.jsonc section are test harnesses.
     if (findHarness(harness)?.config === null && !this.o.config.allowFakeHarness) {
-      throw new ApiError(
-        422,
+      throw new DomainError(
         "harness_unsupported",
         `The ${harness} harness is disabled (allowFakeHarness)`,
       );
@@ -465,8 +463,7 @@ export class Supervisor {
     const adapter = this.adapters.get(harness);
     if (!adapter) {
       this.assertHarnessEnabled(harness);
-      throw new ApiError(
-        422,
+      throw new DomainError(
         "harness_unsupported",
         `Harness ${harness} is not supported in this version`,
       );
@@ -474,8 +471,7 @@ export class Supervisor {
     requireCapability(adapter, "start");
     const status = this.versions.get(harness);
     if (status && !status.available) {
-      throw new ApiError(
-        422,
+      throw new DomainError(
         "harness_unavailable",
         `Harness ${harness} is unavailable: ${status.problems.join("; ")}`,
       );
@@ -1531,7 +1527,7 @@ export class Supervisor {
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
       if (task.state === "completed" || task.state === "cancelled")
-        throw conflict("task_finished", `Task is ${task.state}`);
+        throw new DomainError("task_finished", `Task is ${task.state}`);
       const adapter = this.adapters.get(task.harness);
       if (task.sessionId && adapter && LIVE_STATES.has(task.state)) {
         requireCapability(adapter, "interrupt");
@@ -1565,9 +1561,9 @@ export class Supervisor {
   private async sendToWorkerLocked(taskId: string, instructions: string): Promise<Task> {
     {
       const task = this.store.requireTask(taskId);
-      if (!task.sessionId) throw conflict("no_session", "Task has no worker session yet");
+      if (!task.sessionId) throw new DomainError("no_session", "Task has no worker session yet");
       if (!["running", "blocked", "ready_for_review"].includes(task.state)) {
-        throw conflict("not_steerable", `Cannot send instructions to a ${task.state} task`);
+        throw new DomainError("not_steerable", `Cannot send instructions to a ${task.state} task`);
       }
       const adapter = this.adapterFor(task.harness);
       requireCapability(adapter, "steer");
@@ -1651,7 +1647,7 @@ export class Supervisor {
   private acceptLocked(taskId: string, actor: Actor): Task {
     const task = this.store.requireTask(taskId);
     if (task.state !== "ready_for_review")
-      throw conflict("not_reviewable", `Task is ${task.state}, not ready_for_review`);
+      throw new DomainError("not_reviewable", `Task is ${task.state}, not ready_for_review`);
     return this.store.tx(() => {
       for (const a of this.store.listAttention({ taskId, status: "open", kinds: ["review"] })) {
         this.store.settleAttention(a.id, {
@@ -1678,16 +1674,19 @@ export class Supervisor {
    */
   async takeOver(taskId: string, actor: Actor): Promise<TakeOverResult> {
     if (actor !== "human")
-      throw forbidden("human_only", "Only a human can take over a worker's session");
+      throw new DomainError("human_only", "Only a human can take over a worker's session");
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
       if (task.state !== "manual" && !TAKEOVER_STATES.has(task.state))
-        throw conflict("not_takeoverable", `A ${task.state} task cannot be taken over`);
+        throw new DomainError("not_takeoverable", `A ${task.state} task cannot be taken over`);
       if (!task.sessionId || !task.workspacePath)
-        throw conflict("no_session", "The task has no worker session to take over");
+        throw new DomainError("no_session", "The task has no worker session to take over");
       const adapter = this.adapterFor(task.harness);
       if (!adapter.interactiveCommand)
-        throw conflict("not_supported", `${task.harness} sessions cannot be opened interactively`);
+        throw new DomainError(
+          "not_supported",
+          `${task.harness} sessions cannot be opened interactively`,
+        );
       const ref = { sessionId: task.sessionId };
       // Already manual: just say again how to open the session.
       const env = workerOcdEnv(join(this.o.sandboxRoot, task.id));
@@ -1740,17 +1739,17 @@ export class Supervisor {
     note: string | undefined,
     actor: Actor,
   ): Promise<Task> {
-    if (actor !== "human") throw forbidden("human_only", "Only a human can hand a task back");
+    if (actor !== "human") throw new DomainError("human_only", "Only a human can hand a task back");
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
       if (task.state !== "manual")
-        throw conflict("not_manual", `Task is ${task.state}, not in manual mode`);
+        throw new DomainError("not_manual", `Task is ${task.state}, not in manual mode`);
       const adapter = this.adapterFor(task.harness);
-      if (!task.sessionId) throw conflict("no_session", "The task has no worker session");
+      if (!task.sessionId) throw new DomainError("no_session", "The task has no worker session");
       const ref = { sessionId: task.sessionId };
       const open = await adapter.sessionInUse?.(ref);
       if (open)
-        throw conflict(
+        throw new DomainError(
           "session_in_use",
           `The session is still open in another process (pid ${open.pid}: ${open.command}); quit it first`,
         );
@@ -1793,7 +1792,7 @@ export class Supervisor {
           try {
             await adapter.revive(ref, this.specFor(task, run));
           } catch (error) {
-            throw conflict(
+            throw new DomainError(
               "session_missing",
               `The session cannot be resumed (${(error as Error).message})`,
             );
@@ -1802,7 +1801,7 @@ export class Supervisor {
         snap = await adapter.inspect(ref);
       }
       if (snap.status === "missing")
-        throw conflict("session_missing", "The session no longer exists");
+        throw new DomainError("session_missing", "The session no longer exists");
       // A turn the human left running (in a service-owned session) carries on; otherwise prompt.
       const needsPrompt = snap.status === "idle" || snap.status === "error";
       if (needsPrompt) {
@@ -1838,11 +1837,11 @@ export class Supervisor {
   /** Explicit, human-initiated recovery for interrupted, failed, or ambiguous tasks. */
   async resume(taskId: string, mode: "reattach" | "relaunch", actor: Actor): Promise<Task> {
     if (actor !== "human")
-      throw forbidden("human_only", "Resuming an uncertain run requires a human");
+      throw new DomainError("human_only", "Resuming an uncertain run requires a human");
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
       if (!["interrupted", "failed", "needs_attention", "blocked"].includes(task.state)) {
-        throw conflict("not_resumable", `Task is ${task.state}`);
+        throw new DomainError("not_resumable", `Task is ${task.state}`);
       }
       const adapter = this.adapterFor(task.harness);
       // Open requests are settled only once the resume is known to go ahead.
@@ -1861,7 +1860,7 @@ export class Supervisor {
       };
       if (mode === "relaunch") {
         if (task.state === "blocked")
-          throw conflict(
+          throw new DomainError(
             "not_resumable",
             "Cancel or reattach a blocked task instead of relaunching it",
           );
@@ -1875,7 +1874,7 @@ export class Supervisor {
       }
       requireCapability(adapter, "resume");
       if (!task.sessionId)
-        throw conflict("no_session", "No recorded session to reattach; use relaunch");
+        throw new DomainError("no_session", "No recorded session to reattach; use relaunch");
       let snap = await adapter.inspect({ sessionId: task.sessionId });
       if (snap.status === "missing" && adapter.revive) {
         // A process-owned worker died with the supervisor; continue its session from disk.
@@ -1884,7 +1883,7 @@ export class Supervisor {
           try {
             await adapter.revive({ sessionId: task.sessionId }, this.specFor(task, run));
           } catch (error) {
-            throw conflict(
+            throw new DomainError(
               "session_missing",
               `The recorded session cannot be resumed (${(error as Error).message}); use relaunch`,
             );
@@ -1893,7 +1892,10 @@ export class Supervisor {
         snap = await adapter.inspect({ sessionId: task.sessionId });
       }
       if (snap.status === "missing")
-        throw conflict("session_missing", "The recorded session no longer exists; use relaunch");
+        throw new DomainError(
+          "session_missing",
+          "The recorded session no longer exists; use relaunch",
+        );
       const needsPrompt = snap.status === "idle" || snap.status === "error";
       if (needsPrompt) {
         await adapter.prompt(
@@ -1933,7 +1935,7 @@ export class Supervisor {
   async diff(taskId: string): Promise<TaskDiff> {
     const task = this.store.requireTask(taskId);
     if (!task.workspacePath || !task.baseRef)
-      throw conflict("no_workspace", "The task has no worktree to diff");
+      throw new DomainError("no_workspace", "The task has no worktree to diff");
     const d = await this.o.workspaces.diff(task.workspacePath, task.baseRef);
     return { taskId, branch: task.branch, baseRef: task.baseRef, ...d };
   }
@@ -1948,7 +1950,7 @@ export class Supervisor {
     return this.withTaskLock(taskId, async () => {
       const task = this.store.requireTask(taskId);
       if (task.state !== "ready_for_review")
-        throw conflict(
+        throw new DomainError(
           "not_reviewable",
           `Request changes on a task under review (task is ${task.state})`,
         );
@@ -2050,10 +2052,10 @@ export class Supervisor {
   ): Promise<Attention> {
     const attention = this.store.requireAttention(id);
     if (attention.status !== "open")
-      throw conflict("not_open", `Attention request is ${attention.status}`);
+      throw new DomainError("not_open", `Attention request is ${attention.status}`);
     // The manager cannot self-approve a request intended for the human.
     if (attention.resolvableBy === "human" && actor !== "human") {
-      throw forbidden(
+      throw new DomainError(
         "human_only",
         "This request must be resolved by a human (ocd attention resolve)",
       );
@@ -2062,16 +2064,16 @@ export class Supervisor {
       if (attention.kind === "permission" || attention.kind === "question")
         await this.expireInteraction(id);
       else this.store.settleAttention(id, { status: "expired" });
-      throw new ApiError(410, "expired", "The request expired; it will not be replayed");
+      throw new DomainError("expired", "The request expired; it will not be replayed");
     }
 
     if (attention.kind === "permission" || attention.kind === "question") {
       if (response.type === "acknowledge")
-        throw badRequest("bad_response", "Approve, deny, or answer this request");
+        throw new DomainError("bad_response", "Approve, deny, or answer this request");
       if (attention.kind === "permission" && response.type === "answer")
-        throw badRequest("bad_response", "Permissions take approve or deny");
+        throw new DomainError("bad_response", "Permissions take approve or deny");
       if (attention.kind === "question" && response.type === "approve")
-        throw badRequest("bad_response", "Questions take an answer or deny");
+        throw new DomainError("bad_response", "Questions take an answer or deny");
       const task = attention.taskId ? this.store.requireTask(attention.taskId) : null;
       const latestRun = task ? this.store.latestRun(task.id) : null;
       const adapter = task ? this.adapters.get(task.harness) : undefined;
@@ -2089,7 +2091,7 @@ export class Supervisor {
           : null;
       if (!bound || !snap || !snap.pending.some((p) => p.id === attention.requestRef)) {
         this.store.settleAttention(id, { status: "expired" });
-        throw conflict(
+        throw new DomainError(
           "stale_request",
           "The originating request is no longer live; it was not replayed",
         );
@@ -2111,12 +2113,13 @@ export class Supervisor {
 
     if (attention.kind === "land" && attention.taskId) {
       if (response.type !== "approve" && response.type !== "deny")
-        throw badRequest("bad_response", "Approve or deny this push");
+        throw new DomainError("bad_response", "Approve or deny this push");
       const task = this.store.requireTask(attention.taskId);
       if (response.type === "approve") {
         // Pushes exactly what was asked for, or refuses (the request stays open).
         const head = (attention.operation as { head?: unknown } | null)?.head;
-        if (typeof head !== "string") throw conflict("stale_request", "The request has no plan");
+        if (typeof head !== "string")
+          throw new DomainError("stale_request", "The request has no plan");
         await this.landing.pushLanding(task.id, head, actor, id);
       } else {
         this.landing.declineLanding(task, id, response.message);

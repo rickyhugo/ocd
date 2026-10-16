@@ -115,7 +115,7 @@ describe("resolving gh", () => {
       throw new Error("expected a throw");
     })();
     expect(error).toBeInstanceOf(GhError);
-    expect(error).toMatchObject({ problem: "not_found", code: "gh_not_found", status: 422 });
+    expect(error).toMatchObject({ problem: "not_found", code: "gh_not_found" });
     expect(error.message).toContain("login shell");
     expect(error.message).toContain("ocd restart");
     expect(error.details).toEqual({ searched: ["/nonexistent-a", "/nonexistent-b"] });
@@ -165,7 +165,7 @@ describe("running gh", () => {
     });
     setMode(gh, "network");
     const offline = await caught(runGh(at(gh), ["pr", "view", "x"], { cwd: root }));
-    expect(offline).toMatchObject({ code: "gh_unreachable", status: 503 });
+    expect(offline).toMatchObject({ code: "gh_unreachable" });
     expect(offline.message).toContain("login was not the problem");
     setMode(gh, "leak");
     const leak = await caught(runGh(at(gh), ["pr", "view", "x"], { cwd: root }));

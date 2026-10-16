@@ -1,24 +1,19 @@
-/** An error with an HTTP status and stable code, surfaced through the API. */
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string;
+import type { ErrorCode } from "@ocd/core";
+
+/** A failure reported to clients by its stable code; api.ts picks the HTTP status. */
+export class DomainError extends Error {
+  readonly code: ErrorCode;
   readonly details?: unknown;
 
-  constructor(status: number, code: string, message: string, details?: unknown) {
+  constructor(code: ErrorCode, message: string, details?: unknown) {
     super(message);
-    this.status = status;
     this.code = code;
     this.details = details;
-    this.name = "ApiError";
+    this.name = "DomainError";
   }
 }
 
-export const notFound = (what: string) => new ApiError(404, "not_found", `${what} not found`);
-export const conflict = (code: string, message: string, details?: unknown) =>
-  new ApiError(409, code, message, details);
-export const forbidden = (code: string, message: string) => new ApiError(403, code, message);
-export const badRequest = (code: string, message: string, details?: unknown) =>
-  new ApiError(400, code, message, details);
+export const notFound = (what: string) => new DomainError("not_found", `${what} not found`);
 
 /** Thrown by crash hooks in tests to stop a supervisor mid-operation without cleanup. */
 export class SimulatedCrash extends Error {
