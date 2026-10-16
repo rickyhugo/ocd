@@ -1,10 +1,20 @@
-import { milestone, type Task, type TaskEvent, type TaskProgress, type TodoItem } from "@ocd/core";
+import {
+  STAGE_LABEL,
+  liveness,
+  milestone,
+  type Task,
+  type TaskEvent,
+  type TaskProgress,
+  type TaskView,
+  type TodoItem,
+} from "@ocd/core";
 
 import { age, type Row, type Tone } from "./sidebar-model.ts";
 
 // The expandable progress panel under a running task's sidebar row: the
-// harness-reported checklist, recent lifecycle milestones and a recorded PR.
-// Only facts OCD already holds; nothing is summarized or inferred. Pure, so it
+// lifecycle stage and whether the worker is still heard from, a recorded PR,
+// the harness-reported checklist and recent lifecycle milestones. Only facts
+// OCD already holds; nothing is summarized, inferred or estimated. Pure, so it
 // is tested without a terminal.
 
 export interface ProgressLine {
@@ -88,7 +98,12 @@ function checklist(task: Task, progress: TaskProgress): ProgressLine[] {
   if (!todos.length) return [{ glyph: "○", tone: "muted", text: "Checklist is empty", meta: "" }];
   const done = todos.filter((t) => t.status === "completed").length;
   return [
-    { glyph: "☰", tone: "muted", text: `Checklist ${done}/${todos.length}`, meta: "" },
+    {
+      glyph: "☰",
+      tone: "muted",
+      text: `Checklist (worker-reported) ${done}/${todos.length}`,
+      meta: "",
+    },
     ...todos.map((t) => ({ ...TODO[t.status], text: t.text, meta: "" })),
   ];
 }
@@ -104,13 +119,52 @@ function milestones(events: TaskEvent[], now: number): ProgressLine[] {
   return lines.slice(-MILESTONES_MAX).reverse();
 }
 
-/** The panel's lines: PR, checklist, then recent milestones. */
+function stage(task: TaskView, now: number): ProgressLine[] {
+  const lc = task.lifecycle;
+  const lines: ProgressLine[] = [
+    {
+      glyph: lc.stage === "blocked" ? "‖" : "●",
+      tone: lc.stage === "blocked" ? "muted" : "accent",
+      text: STAGE_LABEL[lc.stage],
+      meta: age(lc.since, now),
+    },
+  ];
+  const live = liveness(task, now);
+  if (live.kind === "live")
+    lines.push({
+      glyph: "·",
+      tone: "muted",
+      text: "Last worker signal",
+      meta: age(live.lastSignalAt, now),
+    });
+  if (live.kind === "stale")
+    lines.push({
+      glyph: "○",
+      tone: "warning",
+      text: `No progress signal for ${age(live.quietSince, now)}`,
+      meta: "",
+    });
+  return lines;
+}
+
+/** Said instead of a blank panel; the stage lines above still come from the task itself. */
+function historyUnavailable(task: TaskView, now: number): ProgressLine[] {
+  const last = task.lifecycle.lastMilestone;
+  return [
+    { glyph: "○", tone: "muted", text: "Activity history unavailable", meta: "" },
+    ...(last
+      ? [{ glyph: "·", tone: "muted" as const, text: last.label, meta: age(last.at, now) }]
+      : []),
+  ];
+}
+
+/** The panel's lines: stage and liveness, PR, checklist, then recent milestones. */
 export function progressLines(
-  task: Task,
+  task: TaskView,
   progress: ProgressState | undefined,
   now: number,
 ): ProgressLine[] {
-  const lines: ProgressLine[] = [];
+  const lines = stage(task, now);
   if (task.pullRequestUrl)
     lines.push({
       glyph: "⇡",
@@ -121,9 +175,11 @@ export function progressLines(
   if (progress === undefined) {
     lines.push({ glyph: "…", tone: "muted", text: "Loading progress", meta: "" });
   } else if (progress === "unavailable") {
-    lines.push({ glyph: "○", tone: "muted", text: "Progress unavailable", meta: "" });
+    lines.push(...historyUnavailable(task, now));
   } else {
-    lines.push(...checklist(task, progress), ...milestones(progress.events, now));
+    const recent = milestones(progress.events, now);
+    lines.push(...checklist(task, progress), ...recent);
+    if (!progress.todos && !recent.length) lines.push(...historyUnavailable(task, now));
   }
   return lines;
 }

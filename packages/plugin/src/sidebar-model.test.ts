@@ -1,4 +1,11 @@
-import type { Attention, Task } from "@ocd/core";
+import {
+  taskLifecycle,
+  type Attention,
+  type Task,
+  type TaskEvent,
+  type TaskEventType,
+  type TaskView,
+} from "@ocd/core";
 import { describe, expect, it } from "vite-plus/test";
 
 import { actionsFor, age, buildSidebar, landable, updateBanner } from "./sidebar-model.ts";
@@ -8,8 +15,8 @@ const PR_ON = { pullRequests: true };
 const NOW = Date.parse("2026-10-13T12:00:00Z");
 const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
 
-function task(id: string, state: Task["state"], extra: Partial<Task> = {}): Task {
-  return {
+function task(id: string, state: Task["state"], extra: Partial<TaskView> = {}): TaskView {
+  const t = {
     id,
     title: `Task ${id}`,
     repo: "dotfiles",
@@ -21,6 +28,7 @@ function task(id: string, state: Task["state"], extra: Partial<Task> = {}): Task
     lastActivityAt: minutesAgo(1),
     ...extra,
   } as Task;
+  return { lifecycle: taskLifecycle(t, []), ...t };
 }
 
 function attention(
@@ -100,9 +108,53 @@ describe("sidebar model", () => {
     ]);
   });
 
-  it("marks running tasks without recent activity as quiet", () => {
-    const model = buildSidebar([task("a", "running", { lastActivityAt: minutesAgo(25) })], [], NOW);
-    expect(model.sections[0]?.rows[0]).toMatchObject({ meta: "quiet 25m", tone: "muted" });
+  it("marks live work with no worker signal as stale, apart from blocked work", () => {
+    const quiet = { lastActivityAt: minutesAgo(25), updatedAt: minutesAgo(30) };
+    const model = buildSidebar([task("a", "running", quiet), task("b", "blocked", quiet)], [], NOW);
+    expect(model.sections[0]?.rows.map((r) => [r.key, r.glyph, r.tone, r.meta])).toEqual([
+      ["a", "○", "muted", "no signal 25m"],
+      ["b", "‖", "muted", "30m"],
+    ]);
+  });
+
+  it("shows how far a launch got and the latest milestone under running work", () => {
+    let seq = 0;
+    const event = (type: TaskEventType, minutes: number, data: unknown = null): TaskEvent => ({
+      id: ++seq,
+      taskId: "x",
+      type,
+      data,
+      createdAt: minutesAgo(minutes),
+    });
+    const staged = (id: string, state: Task["state"], events: TaskEvent[]): TaskView => {
+      const t = task(id, state);
+      return { ...t, lifecycle: taskLifecycle(t, events) };
+    };
+    const starting = (minutes: number) =>
+      event("state.starting", minutes, { from: "queued", to: "starting" });
+    const model = buildSidebar(
+      [
+        staged("prep", "starting", [starting(3)]),
+        staged("boot", "starting", [starting(4), event("workspace.ready", 2)]),
+        staged("work", "running", [
+          starting(40),
+          event("workspace.ready", 39),
+          event("state.running", 38, { from: "starting", to: "running" }),
+          event("worker.responded", 37),
+          event("pull_request.opened", 10),
+        ]),
+        task("done", "ready_for_review"),
+      ],
+      [],
+      NOW,
+    );
+    const rows = model.sections.flatMap((s) => s.rows).map((r) => [r.key, r.meta, r.detail]);
+    expect(rows).toEqual([
+      ["done", "5m", null],
+      ["prep", "workspace 3m", "Starting · 3m"],
+      ["boot", "starting 2m", "Starting · 4m"],
+      ["work", "30m", "PR opened · 10m"],
+    ]);
   });
 
   it("collapses long background sections by default and says idle when empty", () => {
