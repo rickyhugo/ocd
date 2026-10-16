@@ -227,6 +227,10 @@ describe("progress panel model", () => {
       "○ No checklist reported yet",
       "○ Activity history unavailable",
     ]);
+    // History without a labelled milestone is still history.
+    expect(
+      afterStage(progressLines(bare, progress({ events: [event("workspace.ready", 3)] }), NOW)),
+    ).toEqual(["○ No checklist reported yet"]);
   });
 
   it("bounds milestones and panel height; only overflowing panels scroll", () => {

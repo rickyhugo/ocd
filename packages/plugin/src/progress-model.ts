@@ -177,9 +177,8 @@ export function progressLines(
   } else if (progress === "unavailable") {
     lines.push(...historyUnavailable(task, now));
   } else {
-    const recent = milestones(progress.events, now);
-    lines.push(...checklist(task, progress), ...recent);
-    if (!progress.todos && !recent.length) lines.push(...historyUnavailable(task, now));
+    lines.push(...checklist(task, progress), ...milestones(progress.events, now));
+    if (!progress.todos && !progress.events.length) lines.push(...historyUnavailable(task, now));
   }
   return lines;
 }
