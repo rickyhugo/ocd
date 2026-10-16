@@ -3,7 +3,14 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
-import { redact, truncate, type GitHubCliProblem, type GitHubCliStatus } from "@ocd/core";
+import {
+  redact,
+  systemScheduler,
+  truncate,
+  type GitHubCliProblem,
+  type GitHubCliStatus,
+  type Scheduler,
+} from "@ocd/core";
 
 import { ApiError } from "./errors.ts";
 
@@ -189,7 +196,7 @@ export interface ProbeGhOptions extends ResolveGhOptions {
   cwd?: string;
   /** Per command; the probe makes at most two calls. */
   timeoutMs?: number;
-  now?: () => Date;
+  scheduler?: Scheduler;
 }
 
 /**
@@ -198,7 +205,7 @@ export interface ProbeGhOptions extends ResolveGhOptions {
  * timeout leaves auth "unknown" rather than claiming the login is missing.
  */
 export async function probeGh(options: ProbeGhOptions = {}): Promise<GitHubCliStatus> {
-  const checkedAt = (options.now?.() ?? new Date()).toISOString();
+  const checkedAt = new Date((options.scheduler ?? systemScheduler).now()).toISOString();
   const base = {
     path: null,
     version: null,

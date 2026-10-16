@@ -6,11 +6,12 @@ import {
   windowReset,
   type HarnessName,
   type HarnessUsage,
+  type Scheduler,
+  type Timer,
   type UsageStatus,
   type UsageWindow,
 } from "@ocd/core";
 
-import type { Clock } from "./ids.ts";
 import type { Logger } from "./logger.ts";
 import { notification } from "./notification.ts";
 import type { OutboxInput } from "./store.ts";
@@ -34,7 +35,7 @@ export interface UsageTrackerOptions {
   /** Reads that cost no tokens; polled every pollMinutes. */
   readers: (() => Promise<HarnessUsage | null>)[];
   logger: Logger;
-  clock: Clock;
+  scheduler: Scheduler;
 }
 
 /** The reset time to the hour, so small drifts in what a harness reports do not re-alert. */
@@ -61,7 +62,7 @@ function emptyHint(): string {
 
 export class UsageTracker {
   private readonly latest = new Map<HarnessName, HarnessUsage>();
-  private timer: NodeJS.Timeout | null = null;
+  private timer: Timer | null = null;
   private polling: Promise<HarnessUsage[]> | null = null;
 
   private readonly o: UsageTrackerOptions;
@@ -80,12 +81,12 @@ export class UsageTracker {
     const minutes = this.o.settings().pollMinutes;
     if (minutes <= 0 || this.o.readers.length === 0) return;
     void this.refresh();
-    this.timer = setInterval(() => void this.refresh(), minutes * 60_000);
+    this.timer = this.o.scheduler.setInterval(() => void this.refresh(), minutes * 60_000);
     this.timer.unref();
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) this.o.scheduler.clearInterval(this.timer);
     this.timer = null;
   }
 
@@ -125,7 +126,7 @@ export class UsageTracker {
 
   /** Records a harness's report and sends any notification it crosses. */
   observe(usage: HarnessUsage): void {
-    const now = this.o.clock();
+    const now = this.o.scheduler.now();
     const previous = this.latest.get(usage.harness);
     // A report may name only some windows; keep the others until they reset.
     const windows = new Map<string, UsageWindow>();

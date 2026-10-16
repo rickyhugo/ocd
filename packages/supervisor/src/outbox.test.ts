@@ -1,7 +1,7 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 
-import type { AttentionKind } from "@ocd/core";
+import { systemScheduler, type AttentionKind } from "@ocd/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { SupervisorConfig } from "./config.ts";
@@ -106,13 +106,14 @@ describe("notification digests in the outbox worker", () => {
       notifier,
       managerChannel,
       logger,
+      systemScheduler,
     );
 
   beforeEach(async () => {
     vi.useFakeTimers({ now: Date.parse("2026-01-01T00:00:00Z") });
     root = tempDir();
     db = await prepareDatabase(testPaths(join(root, "home")));
-    store = new Store(db, () => Date.now());
+    store = new Store(db, systemScheduler);
     notifier = new RecordingNotifier();
     managerChannel = new RecordingManagerChannel();
     logger = createLogger({ level: "silent" });

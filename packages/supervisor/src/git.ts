@@ -1,5 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 
+import { systemScheduler } from "@ocd/core";
+
 import { filteredEnv } from "./env.ts";
 
 export interface ExecResult {
@@ -74,7 +76,7 @@ export const systemGit: GitRunner = {
       const chunks: Buffer[] = [];
       let size = 0;
       let overflow = false;
-      const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+      const timer = systemScheduler.setTimeout(() => child.kill("SIGKILL"), timeoutMs);
       child.stdout.on("data", (chunk: Buffer) => {
         if (overflow) return;
         const room = maxBytes - size;
@@ -89,7 +91,7 @@ export const systemGit: GitRunner = {
         size += chunk.length;
       });
       const done = (code: number | null) => {
-        clearTimeout(timer);
+        systemScheduler.clearTimeout(timer);
         resolve({ stdout: Buffer.concat(chunks), overflow, code });
       };
       child.on("error", () => done(null));

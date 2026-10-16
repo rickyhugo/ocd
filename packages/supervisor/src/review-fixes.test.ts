@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Task } from "@ocd/core";
+import { systemScheduler, type Task } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { RecordingPullRequests } from "./pull-requests.ts";
@@ -309,7 +309,7 @@ describe("automatic cleanup", () => {
   it("removes old finished worktrees without forcing, and keeps ones whose work would be lost", async () => {
     let now = Date.parse("2026-10-14T10:00:00Z");
     const harness = await startHarness({
-      clock: () => now,
+      scheduler: { ...systemScheduler, now: () => now },
       config: { autoCleanup: { enabled: true, afterHours: 24 } },
     });
     try {

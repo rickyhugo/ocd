@@ -2,6 +2,8 @@ import { OpenCodeAdapter } from "@ocd/adapters";
 import { FakeOpenCodeService } from "@ocd/adapters/testing";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { systemScheduler } from "@ocd/core";
+
 import { setupRepo, startHarness, waitFor, waitForState, type Harness } from "./testkit.ts";
 
 // Regression tests for defects found in review of milestones 1-3.
@@ -125,7 +127,7 @@ describe("review regressions", () => {
     let now = Date.now();
     const service = new FakeOpenCodeService();
     h = await startHarness({
-      clock: () => now,
+      scheduler: { ...systemScheduler, now: () => now },
       config: { profiles: { oc: { harness: "opencode", model: "anthropic/claude-x" } } },
       adapters: () => [
         new OpenCodeAdapter({

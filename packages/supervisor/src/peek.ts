@@ -7,7 +7,9 @@ import {
   sanitizeEntry,
   truncate,
   type HarnessName,
+  type Scheduler,
   type TaskTranscript,
+  type Timer,
   type TranscriptEntry,
 } from "@ocd/core";
 import { InvalidCursorError, type HarnessAdapter, type TranscriptPage } from "@ocd/adapters";
@@ -46,6 +48,7 @@ export interface PeekOptions {
   adapterFor: (harness: HarnessName) => HarnessAdapter | undefined;
   /** How long a transcript read may take. */
   timeoutMs: () => number;
+  scheduler: Scheduler;
 }
 
 export class PeekService {
@@ -101,7 +104,7 @@ export class PeekService {
     const timeoutMs = this.o.timeoutMs();
     const read = async (limit: number): Promise<TranscriptPage | null> => {
       const abort = new AbortController();
-      let timer: NodeJS.Timeout | undefined;
+      let timer: Timer | undefined;
       try {
         return await Promise.race([
           adapter.transcript!(
@@ -109,14 +112,14 @@ export class PeekService {
             { limit, before, reasoningSummaries: input.reasoningSummaries, signal: abort.signal },
           ),
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => {
+            timer = this.o.scheduler.setTimeout(() => {
               abort.abort();
               reject(new Error(`timed out after ${timeoutMs}ms`));
             }, timeoutMs);
           }),
         ]);
       } finally {
-        clearTimeout(timer);
+        if (timer) this.o.scheduler.clearTimeout(timer);
       }
     };
     // Defense in depth: re-apply redaction and bounds whatever the adapter did.

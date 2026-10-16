@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import type { HarnessUsage } from "@ocd/core";
+import { systemScheduler, type HarnessUsage } from "@ocd/core";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { createLogger } from "./logger.ts";
@@ -51,7 +51,7 @@ function tracker(options: { file?: string; notifyAt?: number[]; now?: () => numb
     },
     readers: [],
     logger: createLogger({ level: "silent" } as never),
-    clock: options.now ?? (() => NOW),
+    scheduler: { ...systemScheduler, now: options.now ?? (() => NOW) },
   });
   const titles = () => sent.map((e) => (e.payload as { title: string }).title);
   return { t, sent, titles, root };

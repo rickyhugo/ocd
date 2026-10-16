@@ -5,12 +5,13 @@ import {
   type LandPlan,
   type LandResult,
   type MergeMethod,
+  type Scheduler,
   type Task,
 } from "@ocd/core";
 
 import type { LiveConfig } from "./config.ts";
 import { ApiError, conflict, forbidden } from "./errors.ts";
-import { iso, type Clock } from "./ids.ts";
+import { iso } from "./ids.ts";
 import type { Logger } from "./logger.ts";
 import { managerWake } from "./notification.ts";
 import type { PullRequestHost } from "./pull-requests.ts";
@@ -68,7 +69,7 @@ export interface LandingOptions {
   pullRequests?: PullRequestHost | undefined;
   live: Pick<LiveConfig, "mergeMethod">;
   logger: Logger;
-  clock: Clock;
+  scheduler: Scheduler;
   autoCleanup: () => { enabled: boolean; afterHours: number };
   attentionExpiryMinutes: () => number;
   stopped: () => boolean;
@@ -105,7 +106,7 @@ export class LandingService {
   async autoCleanup(): Promise<string[]> {
     const settings = this.o.autoCleanup();
     if (!settings.enabled || this.o.stopped()) return [];
-    const cutoff = this.o.clock() - settings.afterHours * 3_600_000;
+    const cutoff = this.o.scheduler.now() - settings.afterHours * 3_600_000;
     const due = this.o.store
       .listTasks({ state: ["completed", "cancelled"], limit: 500 })
       .filter(
@@ -615,7 +616,7 @@ export class LandingService {
           reason: `Push ${commits} of "${truncate(plan.title, 80)}" to ${plan.remote}/${plan.base} (${plan.method})`,
           operation: plan,
           resolvableBy: "human",
-          expiresAt: iso(this.o.clock() + this.o.attentionExpiryMinutes() * 60_000),
+          expiresAt: iso(this.o.scheduler.now() + this.o.attentionExpiryMinutes() * 60_000),
         },
         {
           notify: true,

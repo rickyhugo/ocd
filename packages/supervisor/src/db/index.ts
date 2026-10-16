@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
+import { systemScheduler } from "@ocd/core";
 import Database from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
@@ -120,7 +121,7 @@ export function restoreDb(dbPath: string, backupPath: string): { previous: strin
     const current = new Database(dbPath);
     current.pragma("wal_checkpoint(TRUNCATE)");
     current.close();
-    previous = `${dbPath}.pre-restore-${new Date().toISOString().replaceAll(/[:.]/g, "-")}`;
+    previous = `${dbPath}.pre-restore-${new Date(systemScheduler.now()).toISOString().replaceAll(/[:.]/g, "-")}`;
     renameSync(dbPath, previous);
     for (const suffix of ["-wal", "-shm"]) {
       if (existsSync(dbPath + suffix)) renameSync(dbPath + suffix, previous + suffix);

@@ -2,6 +2,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { systemScheduler } from "@ocd/core";
+
 import { setupRepo, startHarness, waitFor, waitForState, type Harness } from "./testkit.ts";
 
 let h: Harness;
@@ -165,7 +167,10 @@ describe("notifications and the outbox (AT9)", () => {
 describe("request expiry", () => {
   it("expires unanswered permission requests, denies them in the harness, and refuses late approvals", async () => {
     let now = Date.now();
-    h = await startHarness({ clock: () => now, config: { attentionExpiryMinutes: 10 } });
+    h = await startHarness({
+      scheduler: { ...systemScheduler, now: () => now },
+      config: { attentionExpiryMinutes: 10 },
+    });
     await setupRepo(h, "app");
     const { task } = await h.human.dispatch({
       repo: "app",

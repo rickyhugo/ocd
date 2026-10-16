@@ -15,7 +15,14 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
 import { configurableHarnesses } from "@ocd/adapters";
-import { redact, truncate, type UpdateStatus } from "@ocd/core";
+import {
+  redact,
+  systemScheduler,
+  truncate,
+  type Scheduler,
+  type Timer,
+  type UpdateStatus,
+} from "@ocd/core";
 
 import { normalizeDirectory } from "./config.ts";
 import { conflict, forbidden } from "./errors.ts";
@@ -81,7 +88,7 @@ export interface SelfUpdaterOptions {
   logger: Logger;
   /** Defaults to the real git; tests substitute a fake. */
   git?: GitRunner;
-  clock?: () => number;
+  scheduler?: Scheduler;
   /** Boots a build in a throwaway sandbox and throws if it does not come up. */
   smokeTest?: (buildDir: string) => Promise<void>;
   /** After a switch, in the new supervisor (e.g. reloading the manager host's plugins). */
@@ -96,10 +103,11 @@ const dirName = (sha: string) => sha.slice(0, 12);
 export class SelfUpdater {
   private readonly o: SelfUpdaterOptions;
   private readonly git: GitRunner;
+  private readonly scheduler: Scheduler;
   private state: InstallState;
   private building: string | null = null;
   private checking: Promise<UpdateStatus> | null = null;
-  private timers: NodeJS.Timeout[] = [];
+  private timers: Timer[] = [];
   private stopped = false;
 
   /** The build directory the running supervisor was started from; never pruned. */
@@ -108,6 +116,7 @@ export class SelfUpdater {
   constructor(options: SelfUpdaterOptions) {
     this.o = options;
     this.git = options.git ?? systemGit;
+    this.scheduler = options.scheduler ?? systemScheduler;
     this.state = this.load();
     const builds = join(options.installDir, "builds") + sep;
     this.runningBuild = options.runningFrom.startsWith(builds)
@@ -116,7 +125,7 @@ export class SelfUpdater {
   }
 
   private get now(): number {
-    return (this.o.clock ?? Date.now)();
+    return this.scheduler.now();
   }
 
   private get statePath(): string {
@@ -201,10 +210,13 @@ export class SelfUpdater {
       this.o.logger.warn({ err: error }, "pruning old OCD builds failed"),
     );
     const every = this.o.settings().intervalMinutes * 60_000;
-    const first = setTimeout(() => void this.check().catch(() => undefined), 30_000);
-    const poll = setInterval(() => void this.check().catch(() => undefined), every);
+    const first = this.scheduler.setTimeout(() => void this.check().catch(() => undefined), 30_000);
+    const poll = this.scheduler.setInterval(() => void this.check().catch(() => undefined), every);
     // A pending version is switched to as soon as the workers it waits for are done.
-    const apply = setInterval(() => void this.tryApply(false).catch(() => undefined), 20_000);
+    const apply = this.scheduler.setInterval(
+      () => void this.tryApply(false).catch(() => undefined),
+      20_000,
+    );
     for (const t of [first, poll, apply]) t.unref();
     this.timers.push(first, poll, apply);
   }
@@ -220,7 +232,7 @@ export class SelfUpdater {
       this.o.logger.warn({ err: error }, "after-update step failed; retrying");
     }
     await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, this.o.afterAppliedRetryMs ?? 30_000);
+      const t = this.scheduler.setTimeout(resolve, this.o.afterAppliedRetryMs ?? 30_000);
       t.unref();
       this.timers.push(t);
     });
@@ -239,7 +251,7 @@ export class SelfUpdater {
 
   stop(): void {
     this.stopped = true;
-    for (const t of this.timers.splice(0)) clearTimeout(t);
+    for (const t of this.timers.splice(0)) this.scheduler.clearTimeout(t);
   }
 
   /** OCD's own checkout: `selfUpdate.path`, else the declared `selfUpdate.repo`. */
@@ -257,7 +269,7 @@ export class SelfUpdater {
       ? landedIn !== null && normalizeDirectory(landedIn) === this.sourcePath()
       : repo === settings.repo;
     if (!ours) return;
-    const t = setTimeout(() => void this.check().catch(() => undefined), 5_000);
+    const t = this.scheduler.setTimeout(() => void this.check().catch(() => undefined), 5_000);
     t.unref();
     this.timers.push(t);
   }
@@ -514,7 +526,7 @@ function shell(
     };
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
-    const timer = setTimeout(() => {
+    const timer = systemScheduler.setTimeout(() => {
       try {
         if (child.pid) process.kill(-child.pid, "SIGKILL");
       } catch {
@@ -522,11 +534,11 @@ function shell(
       }
     }, timeoutMs);
     child.on("error", (error) => {
-      clearTimeout(timer);
+      systemScheduler.clearTimeout(timer);
       resolve({ code: 127, output: `${output}\n${error.message}` });
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      systemScheduler.clearTimeout(timer);
       resolve({ code, output });
     });
   });
@@ -567,20 +579,20 @@ export async function bootSmokeTest(buildDir: string): Promise<void> {
       ),
     );
   try {
-    const deadline = Date.now() + 60_000;
+    const deadline = systemScheduler.now() + 60_000;
     for (;;) {
       if (await status()) return;
-      if (daemon.exitCode !== null || Date.now() > deadline)
+      if (daemon.exitCode !== null || systemScheduler.now() > deadline)
         throw new Error(
           `the new version's supervisor did not start: ${tail(stderr) || "no output"}`,
         );
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise<void>((r) => systemScheduler.setTimeout(r, 500));
     }
   } finally {
     daemon.kill("SIGTERM");
     const stopped = await Promise.race([
       exited,
-      new Promise((r) => setTimeout(() => r("t"), 10_000)),
+      new Promise((r) => systemScheduler.setTimeout(() => r("t"), 10_000)),
     ]);
     if (stopped === "t") daemon.kill("SIGKILL");
     rmSync(home, { recursive: true, force: true });

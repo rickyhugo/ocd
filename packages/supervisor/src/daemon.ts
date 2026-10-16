@@ -2,7 +2,14 @@ import { chmodSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { managerHostEnabled, type HarnessAdapter } from "@ocd/adapters";
-import { resolveOcdPaths, type OcdPaths, type ShutdownReport } from "@ocd/core";
+import {
+  resolveOcdPaths,
+  systemScheduler,
+  type OcdPaths,
+  type Scheduler,
+  type ShutdownReport,
+  type Timer,
+} from "@ocd/core";
 import type { FastifyInstance } from "fastify";
 
 import { buildApi } from "./api.ts";
@@ -30,7 +37,7 @@ import {
 } from "./db/index.ts";
 import type { SimulatedCrash } from "./errors.ts";
 import { ensureApiToken, ensurePrivateDir, removeStaleSocket } from "./fsutil.ts";
-import { newId, systemClock, type Clock } from "./ids.ts";
+import { newId } from "./ids.ts";
 import { SupervisorLock } from "./lock.ts";
 import { createLogger, type Logger } from "./logger.ts";
 import { MemoryService } from "./memory.ts";
@@ -78,7 +85,7 @@ export interface DaemonOptions {
       }) => PullRequestHost | undefined);
   logger?: Logger;
   foreground?: boolean;
-  clock?: Clock;
+  scheduler?: Scheduler;
   hooks?: SupervisorHooks;
 }
 
@@ -156,7 +163,7 @@ export async function prepareDatabase(
       if (!status.fresh) {
         const backup = join(
           paths.backups,
-          `pre-migrate-${new Date().toISOString().replaceAll(/[:.]/g, "-")}.db`,
+          `pre-migrate-${new Date(systemScheduler.now()).toISOString().replaceAll(/[:.]/g, "-")}.db`,
         );
         await writeVerifiedBackup(db, backup);
         prunePreMigrateBackups(paths.backups, PRE_MIGRATE_KEEP);
@@ -189,7 +196,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const config = loadConfig(paths.config, options.config);
   const live = new LiveConfig(config);
   const instanceId = newId("sup");
-  const clock = options.clock ?? systemClock;
+  const scheduler = options.scheduler ?? systemScheduler;
 
   // The lock comes first: before touching logs, the database, the socket, or any worker.
   const lock = SupervisorLock.acquire(paths.lock, { pid: process.pid, instanceId });
@@ -205,7 +212,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   let app: FastifyInstance | null = null;
   try {
     db = await prepareDatabase(paths, { logger });
-    const store = new Store(db, clock);
+    const store = new Store(db, scheduler);
     const adapters = await options.adapters({ config, logger });
     const workspaces = new WorkspaceManager(paths.workspaces);
     store.syncRepos(await resolveRepos(config, workspaces));
@@ -221,6 +228,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       options.notifier ?? new NullNotifier(),
       managerChannel,
       logger.child({ component: "outbox" }),
+      scheduler,
     );
 
     // Subscription usage limits the harnesses report (usageLimits).
@@ -230,7 +238,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       enqueue: (entries) => store.enqueue(entries),
       readers: adapters.flatMap((a) => (a.readLimits ? [() => a.readLimits!()] : [])),
       logger: logger.child({ component: "usage" }),
-      clock,
+      scheduler,
     });
     const usageSubscriptions = adapters.map((adapter) =>
       adapter.subscribe((event) => {
@@ -307,8 +315,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       reloadChain = reloadChain.then(reloadOnce, reloadOnce);
       return reloadChain;
     };
-    let backupTimer: NodeJS.Timeout | null = null;
-    const configWatcher = new ConfigWatcher(paths.config, () => void reloadConfig());
+    let backupTimer: Timer | null = null;
+    const configWatcher = new ConfigWatcher(paths.config, () => void reloadConfig(), { scheduler });
     // The config just loaded cleanly, so any earlier "invalid config" item is stale.
     store.settleOpenAttention(CONFIG_INVALID_KEY, "resolved");
 
@@ -316,7 +324,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       configWatcher.stop();
       usage.stop();
       for (const unsubscribe of usageSubscriptions) unsubscribe();
-      if (backupTimer) clearInterval(backupTimer);
+      if (backupTimer) scheduler.clearInterval(backupTimer);
       await app?.close().catch(() => undefined);
       try {
         removeStaleSocket(paths.socket);
@@ -350,7 +358,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       memory,
       outbox,
       logger: logger.child({ component: "supervisor" }),
-      clock,
+      scheduler,
       instanceId,
       live,
       ...(pullRequests ? { pullRequests } : {}),
@@ -378,7 +386,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
           : null,
         runningFrom: su.runningFrom,
         logger: logger.child({ component: "self-update" }),
-        clock,
+        scheduler,
         ...(su.smokeTest ? { smokeTest: su.smokeTest } : {}),
         // Reloading the manager host's plugins only matters when OCD works with the host.
         ...(su.afterApplied && managerHostEnabled(config) ? { afterApplied: su.afterApplied } : {}),
@@ -407,6 +415,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       memory,
       logger,
       live,
+      scheduler,
 
       requestShutdown: async () => {
         report ??= await supervisor.stop();
@@ -428,18 +437,18 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       if (
         intervalMs <= 0 ||
         !db?.$client.open ||
-        !autoBackupDue(paths.backups, intervalMs, clock())
+        !autoBackupDue(paths.backups, intervalMs, scheduler.now())
       )
         return;
       try {
-        const file = await runAutoBackup(db, paths.backups, config.backups.keep, clock());
+        const file = await runAutoBackup(db, paths.backups, config.backups.keep, scheduler.now());
         logger.info({ file }, "automatic backup written");
       } catch (error) {
         logger.error({ err: error }, "automatic backup failed");
       }
     };
     await backupCheck();
-    backupTimer = setInterval(() => void backupCheck(), 3_600_000);
+    backupTimer = scheduler.setInterval(() => void backupCheck(), 3_600_000);
     backupTimer.unref();
     logger.info({ socket: paths.socket, instanceId, pid: process.pid }, "supervisor started");
 

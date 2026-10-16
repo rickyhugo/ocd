@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
+import { systemScheduler } from "@ocd/core";
+
 import { backupDb, openDb, restoreDb } from "./db/index.ts";
 import { SimulatedCrash } from "./errors.ts";
 import type { CrashPoint } from "./supervisor.ts";
@@ -145,7 +147,7 @@ describe("stalls and sleep", () => {
   it("raises one rate-limited stall request for a busy, silent worker and never kills it", async () => {
     let now = Date.now();
     h = await startHarness({
-      clock: () => now,
+      scheduler: { ...systemScheduler, now: () => now },
       fake: { script: () => [{ type: "hang" }] },
       config: { stallAfterMinutes: 30, reconcileIntervalMs: 60_000 },
     });

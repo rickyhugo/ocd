@@ -3,7 +3,16 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { MANAGER_HOST, configurableHarnesses, findHarness, harnessNames } from "@ocd/adapters";
-import { BranchSyncMode, MergeMethod, ProfilesConfig, ReposConfig, type Profile } from "@ocd/core";
+import {
+  BranchSyncMode,
+  MergeMethod,
+  ProfilesConfig,
+  ReposConfig,
+  systemScheduler,
+  type Profile,
+  type Scheduler,
+  type Timer,
+} from "@ocd/core";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { z } from "zod";
 
@@ -461,20 +470,22 @@ export class ConfigWatcher {
   private readonly onChange: () => void;
   private readonly debounceMs: number;
   private watchers: FSWatcher[] = [];
-  private timer: NodeJS.Timeout | null = null;
-  private poll: NodeJS.Timeout | null = null;
+  private timer: Timer | null = null;
+  private poll: Timer | null = null;
   private readonly pollMs: number;
+  private readonly scheduler: Scheduler;
   private fingerprint: string;
 
   constructor(
     path: string,
     onChange: () => void,
-    options: { debounceMs?: number; pollMs?: number } = {},
+    options: { debounceMs?: number; pollMs?: number; scheduler?: Scheduler } = {},
   ) {
     this.path = path;
     this.onChange = onChange;
     this.debounceMs = options.debounceMs ?? 150;
     this.pollMs = options.pollMs ?? 2000;
+    this.scheduler = options.scheduler ?? systemScheduler;
     this.fingerprint = this.stat();
   }
 
@@ -504,7 +515,7 @@ export class ConfigWatcher {
       watcher.on("error", () => undefined);
       this.watchers.push(watcher);
     }
-    this.poll = setInterval(() => {
+    this.poll = this.scheduler.setInterval(() => {
       if (this.stat() !== this.fingerprint) this.schedule();
     }, this.pollMs);
     this.poll.unref();
@@ -512,16 +523,16 @@ export class ConfigWatcher {
 
   private schedule(): void {
     this.fingerprint = this.stat();
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
+    if (this.timer) this.scheduler.clearTimeout(this.timer);
+    this.timer = this.scheduler.setTimeout(() => {
       this.timer = null;
       this.onChange();
     }, this.debounceMs);
   }
 
   stop(): void {
-    if (this.timer) clearTimeout(this.timer);
-    if (this.poll) clearInterval(this.poll);
+    if (this.timer) this.scheduler.clearTimeout(this.timer);
+    if (this.poll) this.scheduler.clearInterval(this.poll);
     for (const watcher of this.watchers.splice(0)) watcher.close();
   }
 }
