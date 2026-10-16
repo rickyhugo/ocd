@@ -305,109 +305,103 @@ export class LandingService {
     options: { method?: MergeMethod | undefined },
     actor: Actor,
   ): Promise<{ task: Task; merged: boolean; keptReason: string | null }> {
-    {
-      const task = this.o.store.requireTask(taskId);
-      const url = task.pullRequestUrl;
-      if (!url) throw conflict("no_pull_request", "The task has no pull request; open one first");
-      if (task.state !== "completed")
-        throw conflict("not_accepted", `Accept the task before merging (task is ${task.state})`);
-      const host = this.o.pullRequests;
-      if (!host)
-        throw new ApiError(
-          422,
-          "pr_unavailable",
-          'Pull requests are off; set "github": { "enabled": true } in ocd.jsonc and restart the supervisor',
-        );
-      const repo = this.o.store.requireRepo(task.repo, { includeRetired: true });
-      const method = options.method ?? this.o.live.mergeMethod(task.repo);
-      const gh = <T>(stage: string, fn: () => Promise<T>) =>
-        this.recordPullRequestFailure(taskId, { stage, url, actor }, fn);
-      let status = await gh("status", () => host.status(url, repo.path));
-      if (status.state === "closed")
-        throw conflict("pr_closed", `${url} is closed without merging`);
-      if (status.state === "open") {
-        if (status.draft)
-          throw conflict("pr_draft", `${url} is a draft; mark it ready for review first`);
-        if (status.mergeable === "conflicting")
-          throw conflict("pr_conflicts", `${url} has merge conflicts with its base`);
-        if (status.failingChecks.length) {
-          throw conflict(
-            "pr_checks_failed",
-            `Checks failing on ${url}: ${status.failingChecks.join(", ")}`,
-            { checks: status.failingChecks },
-          );
-        }
-        if (status.pendingChecks.length) {
-          throw conflict(
-            "pr_checks_pending",
-            `Checks still running on ${url}: ${status.pendingChecks.join(", ")}`,
-            { checks: status.pendingChecks },
-          );
-        }
-        if (status.mergeable === "unknown")
-          throw conflict(
-            "pr_not_ready",
-            "GitHub is still computing mergeability; try again shortly",
-          );
-        if (status.mergeState === "BLOCKED") {
-          throw conflict(
-            "pr_blocked",
-            `${url} is blocked by branch protection or required reviews; OCD never overrides that`,
-          );
-        }
-        // Bound to the head that was checked: a push since then is not merged.
-        const checkedHead = status.headSha;
-        await gh("merge", () => host.merge(url, repo.path, method, checkedHead));
-        status = await gh("status", () => host.status(url, repo.path));
-        if (status.state !== "merged") {
-          // e.g. a merge queue: GitHub accepted the request but has not merged yet.
-          this.o.store.appendEvent(taskId, "pull_request.merge_requested", { url, method, actor });
-          return { task: this.o.store.requireTask(taskId), merged: false, keptReason: null };
-        }
-      }
-      this.o.onLanded?.(task.repo);
-      // Merged on GitHub. Local copies go only if nothing exists beyond what GitHub merged:
-      // commits added after the push and uncommitted edits stay.
-      const branch = task.branch ?? this.o.workspaces.branchFor(taskId);
-      const keptReason = await this.localWorkBeyondMerge(task, repo.path, branch, status.headSha);
-      if (keptReason) {
-        this.o.store.appendEvent(taskId, "pull_request.merged", {
-          url,
-          method,
-          actor,
-          worktreeKept: true,
-          reason: keptReason,
-          remoteBranchDeleted: false,
-        });
-        return { task: this.o.store.requireTask(taskId), merged: true, keptReason };
-      }
-      try {
-        await this.o.workspaces.remove(repo.path, task.workspacePath, branch, true);
-      } catch (error) {
-        // The merge itself succeeded; keep the copies and say why.
-        const reason = `Could not remove the worktree: ${truncate(redact(error instanceof Error ? error.message : String(error)), 300)}`;
-        this.o.store.appendEvent(taskId, "pull_request.merged", {
-          url,
-          method,
-          actor,
-          worktreeKept: true,
-          reason,
-          remoteBranchDeleted: false,
-        });
-        return { task: this.o.store.requireTask(taskId), merged: true, keptReason: reason };
-      }
-      const remoteDeleted = await this.o.workspaces.deleteRemoteBranch(repo.path, "origin", branch);
-      this.settleLandAttention(taskId);
-      this.o.store.patchTask(
-        taskId,
-        { workspacePath: null },
-        {
-          type: "pull_request.merged",
-          data: { url, method, actor, remoteBranchDeleted: remoteDeleted },
-        },
+    const task = this.o.store.requireTask(taskId);
+    const url = task.pullRequestUrl;
+    if (!url) throw conflict("no_pull_request", "The task has no pull request; open one first");
+    if (task.state !== "completed")
+      throw conflict("not_accepted", `Accept the task before merging (task is ${task.state})`);
+    const host = this.o.pullRequests;
+    if (!host)
+      throw new ApiError(
+        422,
+        "pr_unavailable",
+        'Pull requests are off; set "github": { "enabled": true } in ocd.jsonc and restart the supervisor',
       );
-      return { task: this.o.store.requireTask(taskId), merged: true, keptReason: null };
+    const repo = this.o.store.requireRepo(task.repo, { includeRetired: true });
+    const method = options.method ?? this.o.live.mergeMethod(task.repo);
+    const gh = <T>(stage: string, fn: () => Promise<T>) =>
+      this.recordPullRequestFailure(taskId, { stage, url, actor }, fn);
+    let status = await gh("status", () => host.status(url, repo.path));
+    if (status.state === "closed") throw conflict("pr_closed", `${url} is closed without merging`);
+    if (status.state === "open") {
+      if (status.draft)
+        throw conflict("pr_draft", `${url} is a draft; mark it ready for review first`);
+      if (status.mergeable === "conflicting")
+        throw conflict("pr_conflicts", `${url} has merge conflicts with its base`);
+      if (status.failingChecks.length) {
+        throw conflict(
+          "pr_checks_failed",
+          `Checks failing on ${url}: ${status.failingChecks.join(", ")}`,
+          { checks: status.failingChecks },
+        );
+      }
+      if (status.pendingChecks.length) {
+        throw conflict(
+          "pr_checks_pending",
+          `Checks still running on ${url}: ${status.pendingChecks.join(", ")}`,
+          { checks: status.pendingChecks },
+        );
+      }
+      if (status.mergeable === "unknown")
+        throw conflict("pr_not_ready", "GitHub is still computing mergeability; try again shortly");
+      if (status.mergeState === "BLOCKED") {
+        throw conflict(
+          "pr_blocked",
+          `${url} is blocked by branch protection or required reviews; OCD never overrides that`,
+        );
+      }
+      // Bound to the head that was checked: a push since then is not merged.
+      const checkedHead = status.headSha;
+      await gh("merge", () => host.merge(url, repo.path, method, checkedHead));
+      status = await gh("status", () => host.status(url, repo.path));
+      if (status.state !== "merged") {
+        // e.g. a merge queue: GitHub accepted the request but has not merged yet.
+        this.o.store.appendEvent(taskId, "pull_request.merge_requested", { url, method, actor });
+        return { task: this.o.store.requireTask(taskId), merged: false, keptReason: null };
+      }
     }
+    this.o.onLanded?.(task.repo);
+    // Merged on GitHub. Local copies go only if nothing exists beyond what GitHub merged:
+    // commits added after the push and uncommitted edits stay.
+    const branch = task.branch ?? this.o.workspaces.branchFor(taskId);
+    const keptReason = await this.localWorkBeyondMerge(task, repo.path, branch, status.headSha);
+    if (keptReason) {
+      this.o.store.appendEvent(taskId, "pull_request.merged", {
+        url,
+        method,
+        actor,
+        worktreeKept: true,
+        reason: keptReason,
+        remoteBranchDeleted: false,
+      });
+      return { task: this.o.store.requireTask(taskId), merged: true, keptReason };
+    }
+    try {
+      await this.o.workspaces.remove(repo.path, task.workspacePath, branch, true);
+    } catch (error) {
+      // The merge itself succeeded; keep the copies and say why.
+      const reason = `Could not remove the worktree: ${truncate(redact(error instanceof Error ? error.message : String(error)), 300)}`;
+      this.o.store.appendEvent(taskId, "pull_request.merged", {
+        url,
+        method,
+        actor,
+        worktreeKept: true,
+        reason,
+        remoteBranchDeleted: false,
+      });
+      return { task: this.o.store.requireTask(taskId), merged: true, keptReason: reason };
+    }
+    const remoteDeleted = await this.o.workspaces.deleteRemoteBranch(repo.path, "origin", branch);
+    this.settleLandAttention(taskId);
+    this.o.store.patchTask(
+      taskId,
+      { workspacePath: null },
+      {
+        type: "pull_request.merged",
+        data: { url, method, actor, remoteBranchDeleted: remoteDeleted },
+      },
+    );
+    return { task: this.o.store.requireTask(taskId), merged: true, keptReason: null };
   }
 
   /**

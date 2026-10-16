@@ -1010,15 +1010,11 @@ export class Supervisor {
 
     if (interaction.kind === "permission" && task.profile.permissionPolicy === "yolo") {
       // The harness was told to skip permission checks; anything it still asks
-
       // (e.g. protected config files) is approved without an inbox record.
-
       await adapter.reply({ sessionId: task.sessionId! }, interaction.id, { type: "approve" });
-
       this.store.appendEvent(taskId, "permission.yolo_approved", {
         summary: truncate(redact(interaction.summary), 300),
       });
-
       return;
     }
 
@@ -1560,42 +1556,39 @@ export class Supervisor {
 
   /** sendToWorker() inside the task lock. */
   private async sendToWorkerLocked(taskId: string, instructions: string): Promise<Task> {
-    {
-      const task = this.store.requireTask(taskId);
-      if (!task.sessionId) throw conflict("no_session", "Task has no worker session yet");
-      if (!["running", "blocked", "ready_for_review"].includes(task.state)) {
-        throw conflict("not_steerable", `Cannot send instructions to a ${task.state} task`);
-      }
-      const adapter = this.adapterFor(task.harness);
-      // A follow-up re-opens the review (the worker re-reports and OCD re-verifies),
-      // so it is the boundary where a stale reviewed branch may be refreshed.
-      const syncNote =
-        task.state === "ready_for_review" ? await this.syncAtBoundary(taskId, "follow_up") : null;
-      const text = [syncNote, instructions, REPORT_INSTRUCTIONS].filter(Boolean).join("\n\n");
-      try {
-        await adapter.prompt({ sessionId: task.sessionId }, text);
-      } catch (error) {
-        if (syncNote) await this.followUpNotSent(taskId, error);
-        throw error;
-      }
-      if (this.store.requireTask(taskId).state === "ready_for_review") {
-        const run = this.store.latestRun(taskId);
-        if (run)
-          this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
-        for (const a of this.store.listAttention({ taskId, status: "open", kinds: ["review"] })) {
-          this.store.settleAttention(a.id, {
-            status: "resolved",
-            response: { type: "acknowledge", note: "Follow-up sent" },
-          });
-        }
-        return this.store.transition(taskId, "running", {
-          patch: { finishedAt: null, lastActivityAt: this.store.now() },
-          event: { type: "worker.steered", data: { chars: instructions.length } },
+    const task = this.store.requireTask(taskId);
+    if (!task.sessionId) throw conflict("no_session", "Task has no worker session yet");
+    if (!["running", "blocked", "ready_for_review"].includes(task.state)) {
+      throw conflict("not_steerable", `Cannot send instructions to a ${task.state} task`);
+    }
+    const adapter = this.adapterFor(task.harness);
+    // A follow-up re-opens the review (the worker re-reports and OCD re-verifies),
+    // so it is the boundary where a stale reviewed branch may be refreshed.
+    const syncNote =
+      task.state === "ready_for_review" ? await this.syncAtBoundary(taskId, "follow_up") : null;
+    const text = [syncNote, instructions, REPORT_INSTRUCTIONS].filter(Boolean).join("\n\n");
+    try {
+      await adapter.prompt({ sessionId: task.sessionId }, text);
+    } catch (error) {
+      if (syncNote) await this.followUpNotSent(taskId, error);
+      throw error;
+    }
+    if (this.store.requireTask(taskId).state === "ready_for_review") {
+      const run = this.store.latestRun(taskId);
+      if (run) this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
+      for (const a of this.store.listAttention({ taskId, status: "open", kinds: ["review"] })) {
+        this.store.settleAttention(a.id, {
+          status: "resolved",
+          response: { type: "acknowledge", note: "Follow-up sent" },
         });
       }
-      this.store.appendEvent(taskId, "worker.steered", { chars: instructions.length });
-      return this.store.requireTask(taskId);
+      return this.store.transition(taskId, "running", {
+        patch: { finishedAt: null, lastActivityAt: this.store.now() },
+        event: { type: "worker.steered", data: { chars: instructions.length } },
+      });
     }
+    this.store.appendEvent(taskId, "worker.steered", { chars: instructions.length });
+    return this.store.requireTask(taskId);
   }
 
   /**
@@ -1866,7 +1859,8 @@ export class Supervisor {
             event: { type: "task.resumed", data: { mode } },
           });
         });
-        return this.queueAndTick(taskId);
+        void this.tick();
+        return this.store.requireTask(taskId);
       }
       if (!task.sessionId)
         throw conflict("no_session", "No recorded session to reattach; use relaunch");
@@ -2017,11 +2011,6 @@ export class Supervisor {
     adapter.release({ sessionId: task.sessionId }).catch((error: unknown) => {
       this.log.warn({ err: error, taskId: task.id }, "failed to release worker");
     });
-  }
-
-  private queueAndTick(taskId: string): Task {
-    void this.tick();
-    return this.store.requireTask(taskId);
   }
 
   // ---------------------------------------------------------------------------
