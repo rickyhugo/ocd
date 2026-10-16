@@ -17,7 +17,10 @@ import {
   OcdApiError,
   OcdClient,
   SupervisorUnavailableError,
+  WORKSPACE_MODES,
+  WorkspaceModeSchema,
   buildSpill,
+  capabilitiesOf,
   collectSpill,
   describeLandResult,
   describePendingUpdate,
@@ -117,7 +120,10 @@ Tasks
   ocd spill                         Read-only summary of all open work: running, blocked, manual, stuck,
                                     queued and ready for review (/spill in the manager's TUI)
   ocd dispatch <repo> <title> --instructions TEXT [--profile P] [--criteria TEXT]... [--key KEY]
-                                    (quote a multi-word title; extra words are rejected)
+                                    [--workspace isolated|none]
+                                    (quote a multi-word title; extra words are rejected). --workspace none:
+                                    no checkout, only a scratch directory (research, filing an issue); the
+                                    result is reviewed and accepted, never landed. Default: isolated worktree
   ocd task list [--all] [--repo R]
   ocd task show <id>
   ocd task peek <id> [--limit N] [--before CURSOR] [--reasoning-summaries] [--follow [--interval SECONDS]]
@@ -332,6 +338,7 @@ function parseCli(argv: string[]) {
       instructions: { type: "string" },
       criteria: { type: "string", multiple: true },
       key: { type: "string" },
+      workspace: { type: "string" },
       all: { type: "boolean" },
       repo: { type: "string" },
       task: { type: "string" },
@@ -869,12 +876,15 @@ async function run(
         fail(
           `unexpected extra words after the title: ${rest.slice(1).join(" ")}\nQuote a multi-word title: ocd dispatch ${repo} "${rest.join(" ")}" --instructions …`,
         );
+      const workspaceMode = WorkspaceModeSchema.safeParse(flags.workspace ?? "isolated");
+      if (!workspaceMode.success) fail(`--workspace must be one of: ${WORKSPACE_MODES.join(", ")}`);
       const r = await client.dispatch({
         repo,
         title,
         instructions: flags.instructions,
         acceptanceCriteria: flags.criteria ?? [],
         idempotencyKey: flags.key ?? `cli-${Date.now()}-${process.pid}`,
+        workspaceMode: workspaceMode.data,
         ...(flags.profile ? { profile: flags.profile } : {}),
       });
       print(r, json, () => `${r.created ? "queued" : "already exists"}: ${taskLine(r.task)}`);
@@ -896,7 +906,9 @@ async function run(
         print(d, json, () =>
           [
             taskLine(d.task),
-            `workspace: ${d.task.workspacePath ?? "-"} (branch ${d.task.branch ?? "-"}, base ${d.task.baseRef ?? "-"})`,
+            capabilitiesOf(d.task).worktree
+              ? `workspace: ${d.task.workspacePath ?? "-"} (branch ${d.task.branch ?? "-"}, base ${d.task.baseRef ?? "-"})`
+              : "workspace: none (no checkout)",
             `session: ${d.task.sessionId ?? "-"}  attempts: ${d.task.attempts}`,
             d.task.pullRequestUrl ? `pull request: ${d.task.pullRequestUrl}` : "",
             d.task.branchSync
@@ -1040,8 +1052,11 @@ async function run(
         if (!r.landed) process.exitCode = 2;
       } else if (sub === "discard") {
         const t = (await client.inspectTask(id)).task;
+        const finished = t.state === "completed" || t.state === "cancelled";
         console.error(
-          `Discard "${shown(t.title)}" (${t.id}, ${t.state})? ${t.state === "completed" || t.state === "cancelled" ? "Its" : "It is cancelled, then its"} worktree and branch are deleted, including uncommitted changes and commits that exist nowhere else.${t.workspacePath ? `\n  ${shown(t.workspacePath)}` : ""}`,
+          capabilitiesOf(t).worktree
+            ? `Discard "${shown(t.title)}" (${t.id}, ${t.state})? ${finished ? "Its" : "It is cancelled, then its"} worktree and branch are deleted, including uncommitted changes and commits that exist nowhere else.${t.workspacePath ? `\n  ${shown(t.workspacePath)}` : ""}`
+            : `Discard "${shown(t.title)}" (${t.id}, ${t.state})? ${finished ? "It" : "It is cancelled; it"} has no worktree or branch to delete.`,
         );
         if (!(await confirmInteractive("Discard it?")))
           fail("not discarded (confirming needs an interactive terminal)");
@@ -1051,14 +1066,20 @@ async function run(
         if (flags.force) {
           // --force skips the supervisor's lost-work check: as destructive as discard.
           const d = (await client.inspectTask(id)).task;
-          console.error(
-            `Force-clean "${shown(d.title)}" (${d.id}, ${d.state})? Its worktree and branch are deleted even if that loses work: uncommitted changes and commits that exist nowhere else.${d.workspacePath ? `\n  ${shown(d.workspacePath)}` : ""}`,
-          );
-          if (!(await confirmInteractive("Force the cleanup?")))
-            fail("not cleaned up (confirming needs an interactive terminal)");
+          if (capabilitiesOf(d).worktree) {
+            console.error(
+              `Force-clean "${shown(d.title)}" (${d.id}, ${d.state})? Its worktree and branch are deleted even if that loses work: uncommitted changes and commits that exist nowhere else.${d.workspacePath ? `\n  ${shown(d.workspacePath)}` : ""}`,
+            );
+            if (!(await confirmInteractive("Force the cleanup?")))
+              fail("not cleaned up (confirming needs an interactive terminal)");
+          }
         }
         const t = await client.cleanupTask(id, flags.force ?? false);
-        print(t, json, () => `removed the worktree and branch of ${id}`);
+        print(t, json, () =>
+          capabilitiesOf(t).worktree
+            ? `removed the worktree and branch of ${id}`
+            : `${id} has no worktree or branch; nothing to clean up`,
+        );
       } else if (sub === "pr") {
         const t = await client.openPullRequest(id, {
           draft: flags.draft ?? false,
