@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
+
 import {
   capabilitiesOf,
   redact,
@@ -80,6 +83,8 @@ export interface LandingOptions {
   logger: Logger;
   clock: Clock;
   autoCleanup: () => { enabled: boolean; afterHours: number };
+  /** Where a task without a worktree works; cleanup removes it. */
+  scratchDirectory: (taskId: string) => string;
   attentionExpiryMinutes: () => number;
   stopped: () => boolean;
   /** A task's work reached its repository's base branch (direct push or merged PR). */
@@ -108,9 +113,10 @@ export class LandingService {
   }
 
   /**
-   * autoCleanup: removes the worktrees of tasks finished more than afterHours
-   * ago the way `ocd task cleanup` does, never forced; one whose work would be
-   * lost is kept (and not retried until the next start).
+   * autoCleanup: removes the worktrees (or scratch directories) of tasks
+   * finished more than afterHours ago the way `ocd task cleanup` does, never
+   * forced; one whose work would be lost is kept (and not retried until the
+   * next start).
    */
   async autoCleanup(): Promise<string[]> {
     const settings = this.o.autoCleanup();
@@ -120,7 +126,9 @@ export class LandingService {
       .listTasks({ state: ["completed", "cancelled"], limit: 500 })
       .filter(
         (t) =>
-          t.workspacePath &&
+          (capabilitiesOf(t).worktree
+            ? t.workspacePath
+            : existsSync(this.o.scratchDirectory(t.id))) &&
           !this.keptByAutoCleanup.has(t.id) &&
           Date.parse(t.finishedAt ?? t.updatedAt) <= cutoff,
       );
@@ -146,7 +154,8 @@ export class LandingService {
   /**
    * Removes a finished task's worktree and branch. Refuses when that would
    * lose work (uncommitted files, or commits that exist on no other branch or
-   * remote) unless forced; only a human may force.
+   * remote) unless forced; only a human may force. A task without a worktree
+   * has only its scratch directory, which is removed.
    */
   async cleanup(
     taskId: string,
@@ -164,7 +173,25 @@ export class LandingService {
           `Only completed or cancelled tasks can be cleaned up (task is ${task.state})`,
         );
       }
-      if (!capabilitiesOf(task).worktree) return task;
+      if (!capabilitiesOf(task).worktree) {
+        const scratch = this.o.scratchDirectory(taskId);
+        if (!existsSync(scratch)) return task;
+        try {
+          await rm(scratch, { recursive: true, force: true });
+        } catch (error) {
+          throw conflict(
+            "cleanup_failed",
+            `Could not remove ${scratch}: ${truncate(redact(error instanceof Error ? error.message : String(error)), 500)}`,
+          );
+        }
+        this.o.store.appendEvent(taskId, "workspace.cleaned", {
+          scratch,
+          forced: force,
+          actor,
+          ...(options.auto ? { auto: true } : {}),
+        });
+        return task;
+      }
       const repo = this.o.store.requireRepo(task.repo, { includeRetired: true });
       const branch = task.branch ?? this.o.workspaces.branchFor(taskId);
       const safety = await this.o.workspaces.branchSafety(repo.path, task.workspacePath, branch);
@@ -319,6 +346,7 @@ export class LandingService {
   ): Promise<{ task: Task; merged: boolean; keptReason: string | null }> {
     {
       const task = this.o.store.requireTask(taskId);
+      assertLandable(task);
       const url = task.pullRequestUrl;
       if (!url) throw conflict("no_pull_request", "The task has no pull request; open one first");
       if (task.state !== "completed")
@@ -780,7 +808,8 @@ export class LandingService {
 
   /**
    * Cancels the task if it is still open, then removes its worktree and
-   * branch even if that loses uncommitted changes or unpushed commits.
+   * branch (or scratch directory) even if that loses uncommitted changes or
+   * unpushed commits.
    */
   async discard(taskId: string, reason: string | undefined, actor: Actor): Promise<Task> {
     if (actor !== "human") throw forbidden("human_only", "Only a human can discard a task's work");

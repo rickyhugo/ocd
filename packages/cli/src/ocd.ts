@@ -1056,12 +1056,16 @@ async function run(
         console.error(
           capabilitiesOf(t).worktree
             ? `Discard "${shown(t.title)}" (${t.id}, ${t.state})? ${finished ? "Its" : "It is cancelled, then its"} worktree and branch are deleted, including uncommitted changes and commits that exist nowhere else.${t.workspacePath ? `\n  ${shown(t.workspacePath)}` : ""}`
-            : `Discard "${shown(t.title)}" (${t.id}, ${t.state})? ${finished ? "It" : "It is cancelled; it"} has no worktree or branch to delete.`,
+            : `Discard "${shown(t.title)}" (${t.id}, ${t.state})? ${finished ? "It has" : "It will be cancelled; it has"} no worktree or branch. Its scratch directory is deleted, with any notes or output in it.`,
         );
         if (!(await confirmInteractive("Discard it?")))
           fail("not discarded (confirming needs an interactive terminal)");
         const d = await client.discardTask(id, flags.reason);
-        print(d, json, () => `discarded ${id}`);
+        print(d, json, () =>
+          capabilitiesOf(d).worktree
+            ? `discarded ${id}`
+            : `${id} is ${d.state}, and its scratch directory is gone`,
+        );
       } else if (sub === "cleanup") {
         if (flags.force) {
           // --force skips the supervisor's lost-work check: as destructive as discard.
@@ -1078,7 +1082,7 @@ async function run(
         print(t, json, () =>
           capabilitiesOf(t).worktree
             ? `removed the worktree and branch of ${id}`
-            : `${id} has no worktree or branch; nothing to clean up`,
+            : `${id} has no worktree or branch, and its scratch directory is gone`,
         );
       } else if (sub === "pr") {
         const t = await client.openPullRequest(id, {

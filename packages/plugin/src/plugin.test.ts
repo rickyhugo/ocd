@@ -266,6 +266,20 @@ describe("tool input and output guards", () => {
   it("marks task lists as untrusted", async () => {
     expect(await runTool(tools.get("list_tasks")!, {}, ctx)).toMatch(/untrusted/);
   });
+
+  it("says what cleanup removed for each workspace mode", async () => {
+    const cleanup = (workspaceMode: string) => {
+      const client = { cleanupTask: async (id: string) => ({ id, workspaceMode }) };
+      const tool = buildTools(() => client as unknown as OcdClient).find(
+        (t) => t.name === "cleanup_task",
+      )!;
+      return runTool(tool, { id: "t_1" }, ctx);
+    };
+    expect(await cleanup("isolated")).toBe("Removed the worktree and branch of t_1.");
+    expect(await cleanup("none")).toBe(
+      "t_1 has no worktree or branch, and its scratch directory is gone.",
+    );
+  });
 });
 
 describe("tool input schemas", () => {

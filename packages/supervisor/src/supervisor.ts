@@ -85,7 +85,7 @@ export interface SupervisorHooks {
 export interface SupervisorOptions {
   /** Per-task OCD homes for workers (see workerOcdEnv); never the live home. */
   sandboxRoot: string;
-  /** Working directories of tasks dispatched without a workspace (one per task, kept). */
+  /** Working directories of tasks dispatched without a workspace (one per task, removed by cleanup). */
   scratchRoot: string;
   store: Store;
   config: SupervisorConfig;
@@ -214,6 +214,7 @@ export class Supervisor {
       logger: o.logger,
       clock: o.clock,
       autoCleanup: () => o.config.autoCleanup,
+      scratchDirectory: (taskId) => this.scratchDirectory(taskId),
       attentionExpiryMinutes: () => o.config.attentionExpiryMinutes,
       stopped: () => this.stopped,
       onLanded: o.onLanded,

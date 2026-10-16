@@ -290,10 +290,12 @@ idle task branches at lifecycle boundaries only; see `docs/branch-sync.md`.)
 Dispatch chooses a workspace mode, fixed for the task's life. `isolated`, the
 default, is the task branch and worktree above. `none` is for work that needs no
 repository checkout, such as research or filing an issue: the worker runs in its
-own scratch directory, `~/.ocd/scratch/<task>`, kept after the task finishes.
-There is no branch, worktree, git verification, diff, branch sync, landing,
-takeover or worktree cleanup; tracking, instructions, permissions, the report,
-review and acceptance are unchanged. Workspace access is independent of the
+own scratch directory, `~/.ocd/scratch/<task>`. Cleanup (explicit or automatic)
+and discard remove that directory where they would remove an isolated task's
+worktree. There is no branch, worktree, git verification, diff, branch sync,
+landing or takeover; tracking, instructions, permissions, the report, review and
+acceptance are unchanged. The prompt names the repository by its GitHub
+`owner/name`, read from the origin remote, or says it has no GitHub remote. Workspace access is independent of the
 permission policy, so a `none` task may still take the external actions its
 profile allows. What a task allows (worktree, landing, takeover) comes from one
 capability table in core (`WORKSPACE_CAPABILITIES`). A `read-only` mode (inspect the repository,

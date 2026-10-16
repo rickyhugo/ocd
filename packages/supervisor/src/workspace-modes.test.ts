@@ -70,11 +70,20 @@ describe("dispatch without a workspace", () => {
     expect((await h.human.inspectTask(task.id)).task.state).toBe("ready_for_review");
 
     await expect(h.human.acceptTask(task.id)).resolves.toMatchObject({ state: "completed" });
+    await expect(h.human.mergePullRequest(task.id)).rejects.toMatchObject(refused);
+    expect(existsSync(scratch)).toBe(true);
+    await expect(h.manager("mgr").cleanupTask(task.id)).resolves.toMatchObject({
+      state: "completed",
+    });
+    expect(existsSync(scratch)).toBe(false);
+    const cleaned = (await h.human.inspectTask(task.id)).events.filter(
+      (e) => e.type === "workspace.cleaned",
+    );
+    expect(cleaned.map((e) => e.data)).toEqual([{ scratch, forced: false, actor: "manager" }]);
     await expect(h.human.cleanupTask(task.id, true)).resolves.toMatchObject({
       state: "completed",
     });
     expect(branches(repo)).toEqual(["main"]);
-    expect(existsSync(join(scratch, "ocd-fake.txt"))).toBe(true);
   });
 
   it("tells the worker when the repository has no GitHub remote, without naming its path", async () => {
@@ -91,13 +100,35 @@ describe("dispatch without a workspace", () => {
     expect(prompt).not.toContain(repo);
   });
 
-  it("discarding cancels the task and leaves the repository alone", async () => {
+  it("discarding cancels the task, removes its scratch directory and leaves the repository alone", async () => {
     h = await startHarness();
     const repo = await setupRepo(h, "app");
     const task = await dispatch(h, "discard", "none");
     await waitForState(h, task.id, "ready_for_review");
+    const scratch = join(h.paths.scratch, task.id);
+    expect(existsSync(scratch)).toBe(true);
     await expect(h.human.discardTask(task.id)).resolves.toMatchObject({ state: "cancelled" });
+    expect(existsSync(scratch)).toBe(false);
     expect(branches(repo)).toEqual(["main"]);
+  });
+
+  it("automatic cleanup removes the scratch directory of an old finished task", async () => {
+    let now = Date.parse("2026-10-14T10:00:00Z");
+    h = await startHarness({
+      clock: () => now,
+      config: { autoCleanup: { enabled: true, afterHours: 24 } },
+    });
+    await setupRepo(h, "app");
+    const task = await dispatch(h, "auto-cleanup", "none");
+    await waitForState(h, task.id, "ready_for_review");
+    await h.human.acceptTask(task.id);
+    const scratch = join(h.paths.scratch, task.id);
+    expect(await h.daemon.supervisor.autoCleanup()).toEqual([]);
+    expect(existsSync(scratch)).toBe(true);
+    now += 25 * 3_600_000;
+    expect(await h.daemon.supervisor.autoCleanup()).toEqual([task.id]);
+    expect(existsSync(scratch)).toBe(false);
+    expect(await h.daemon.supervisor.autoCleanup()).toEqual([]);
   });
 
   it("sends review feedback to the worker without asking it to commit", async () => {

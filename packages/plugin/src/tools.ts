@@ -12,6 +12,7 @@ import {
   RequestChangesInput,
   SendToWorkerInput,
   TaskStateSchema,
+  capabilitiesOf,
   describeLandResult,
   formatDiffStat,
   renderTranscript,
@@ -220,7 +221,7 @@ export function buildTools(
     defineTool({
       name: "accept_task",
       description:
-        "Mark a task that is ready for review as completed. Only do this when the human has approved the result in this conversation. Nothing is merged; the work stays on the task's branch.",
+        "Mark a task that is ready for review as completed. Only do this when the human has approved the result in this conversation. Nothing is merged or removed; the work stays on the task's branch, or in its scratch directory for a task without a workspace.",
       input: z.object({ id: taskId() }),
       run: async ({ id }, ctx) =>
         `Accepted. ${taskLine(await clientFor(ctx.sessionID, ctx.directory).acceptTask(id))}`,
@@ -309,11 +310,13 @@ export function buildTools(
     defineTool({
       name: "cleanup_task",
       description:
-        "Remove a completed or cancelled task's worktree and branch. Refuses if that would lose work (uncommitted changes, or commits not on any other branch or remote); only the human can force it.",
+        "Remove a completed or cancelled task's worktree and branch, or the scratch directory of a task without a workspace. Refuses if that would lose work (uncommitted changes, or commits not on any other branch or remote); only the human can force it.",
       input: z.object({ id: taskId() }),
       run: async ({ id }, ctx) => {
-        await clientFor(ctx.sessionID, ctx.directory).cleanupTask(id);
-        return `Removed the worktree and branch of ${id}.`;
+        const task = await clientFor(ctx.sessionID, ctx.directory).cleanupTask(id);
+        return capabilitiesOf(task).worktree
+          ? `Removed the worktree and branch of ${id}.`
+          : `${id} has no worktree or branch, and its scratch directory is gone.`;
       },
     }),
     defineTool({

@@ -595,8 +595,9 @@ says why (`available: false` with notes) instead of guessing.
    A task that needs no checkout (research, filing an issue) can be dispatched
    with workspace mode `none` (`ocd dispatch ... --workspace none`, or
    `workspace_mode` on the tool). Its worker runs in `~/.ocd/scratch/<task>`
-   with no branch or worktree, so there is nothing to diff, land, take over or
-   clean up; it is reviewed and accepted like any other task.
+   with no branch or worktree, so there is nothing to diff, land or take over;
+   it is reviewed and accepted like any other task. Cleanup and discard remove
+   its scratch directory.
 3. Permission requests block the task and notify you; only a human can approve
    them, from an interactive terminal: `ocd attention resolve <id> --approve`.
    Other `permissionPolicy` values: `deny` (the default) rejects requests and
@@ -656,7 +657,7 @@ says why (`available: false` with notes) instead of guessing.
    landed, so no `--force` is needed. `--force` (or `discard`) is for throwing
    work away; both ask you to type `approve` first.
 10. **Automatic cleanup** (`"autoCleanup": { "enabled": true, "afterHours": 72 }`,
-    off by default) removes the worktrees of tasks that finished (accepted or
+    off by default) removes the worktrees (or scratch directories) of tasks that finished (accepted or
     cancelled) more than `afterHours` ago, hourly, the way `ocd task cleanup`
     does: never forced, so a worktree whose work would be lost is kept.
 11. **Diffs** are capped: a patch over 1.5 MB is cut at a file boundary, and at
