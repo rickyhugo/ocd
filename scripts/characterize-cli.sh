@@ -12,7 +12,9 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ocd-characterize.XXXXXX")"
+# Not under $TMPDIR: a long one pushes the supervisor socket past the
+# Unix socket path limit and every case fails the same way.
+WORK="$(mktemp -d /tmp/ocd-char.XXXX)"
 WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/home/.ocd/workspaces/repo/task"
