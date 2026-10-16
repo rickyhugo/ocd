@@ -73,7 +73,10 @@ recorded per request; there is no sandbox.
   ask for a report yet. A yielded turn that does carry a valid report still
   ends the run. A background subagent's permission requests stay answerable
   after the worker's own turn has ended. Without session state events (a
-  build that ignores the variable) only wakeups yield. (The turn shapes come
+  build that ignores the variable) only wakeups yield. A worker waiting on a
+  wakeup is expected to be silent until it is due: the stall alert counts
+  `stallAfterMinutes` from the later of its last activity and the wakeup's
+  `scheduledFor`. (The turn shapes come
   from live 2.1.300 sessions; the stream fields were read from the 2.1.296
   to 2.1.301 builds, not yet recorded on the wire.)
 - OCD chooses the session id up front; reattach uses `--resume <id>`.
@@ -103,7 +106,9 @@ recorded per request; there is no sandbox.
 - A subagent the worker spawns (`spawn_agent`) runs on its own thread over the
   same connection. Notifications for another `threadId` count as the worker's
   activity only: the subagent's `turn/completed` and messages are not the
-  worker's, and its approval requests are answered like the worker's own.
+  worker's. Its approval requests show up as the worker's while the worker's
+  own turn runs. The worker's own `turn/completed` drops any that are still
+  pending, and OCD never answers those.
 - `ocd doctor` checks `codex --version`; login is checked when a session
   starts.
 
