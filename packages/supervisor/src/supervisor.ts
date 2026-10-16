@@ -2192,6 +2192,7 @@ export class Supervisor {
     if (attention.kind === "land" && attention.taskId) {
       const task = this.store.requireTask(attention.taskId);
       if (response.type === "approve") {
+        if (!attention.operation) throw conflict("stale_request", "The request has no plan");
         // Pushes exactly what was asked for, or refuses (the request stays open).
         await this.landing.pushLanding(task.id, attention.operation.head, actor, id);
       } else if (response.type === "deny") {

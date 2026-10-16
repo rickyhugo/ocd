@@ -1133,6 +1133,7 @@ async function run(
               fail(`${id} is a land request without a task; refusing to approve it`);
             const plan = await client.landPlan(item.taskId);
             const asked = item.operation;
+            if (!asked) fail("the request has no plan; deny it and ask again");
             if (plan.blocker) fail(`${plan.blocker.message} (${plan.blocker.code})`);
             if (plan.head !== asked.head)
               fail("the task branch moved since the manager asked; deny this and ask again");
