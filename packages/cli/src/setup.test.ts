@@ -327,6 +327,17 @@ describe("ocd setup", () => {
     expect(bare.calls).toEqual([]);
   });
 
+  it("reports a declined OpenCode service start as a problem", async () => {
+    const m = machine({
+      answers: { "Start it (opencode service start)?": false },
+      run: (_cmd, args) =>
+        args.join(" ") === "service status" ? { code: 1, stdout: "", stderr: "down" } : undefined,
+    });
+    const result = await runSetup(m.deps);
+    expect(m.calls).not.toContainEqual(["/bin/opencode", "service", "start"]);
+    expect(result.problems).toEqual([expect.stringMatching(/opencode service start/)]);
+  });
+
   it("warns when ~/.local/bin is not on the login PATH, and leaves a non-link ocd alone", async () => {
     const m = machine();
     m.deps.loginPath = async () => "/usr/bin:/bin";
@@ -347,6 +358,14 @@ describe("ocd setup", () => {
     expect(lstatSync(join(nbin, "ocd")).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(nbin, "ocd"), "utf8")).toBe("#!/bin/sh\n");
     expect(n.asked.some((q) => q.includes("on your PATH"))).toBe(false);
+  });
+
+  it("does not warn about the login PATH when the link is declined", async () => {
+    const m = machine({ answers: { "Put `ocd` on your PATH": false } });
+    m.deps.loginPath = async () => "/usr/bin:/bin";
+    const result = await runSetup(m.deps);
+    expect(existsSync(join(m.home, ".local", "bin", "ocd"))).toBe(false);
+    expect(result.problems).toEqual([]);
   });
 
   it("stops on a config link that points nowhere", async () => {
