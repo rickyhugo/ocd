@@ -357,6 +357,50 @@ function readConfigFile(path: string): unknown {
   return value ?? {};
 }
 
+type JsonObject = Record<string, unknown>;
+
+const isJsonObject = (value: unknown): value is JsonObject =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * mergeMethod moved under git. For one release the old top-level and per-repo
+ * keys still load, moved to git.mergeMethod and listed by `ocd doctor`, so a
+ * self-update cannot stop a supervisor whose ocd.jsonc predates the move.
+ * Delete this after that release; validation then rejects the old keys.
+ */
+function moveLegacyMergeMethod(file: JsonObject): { file: JsonObject; moved: string[] } {
+  const moved: string[] = [];
+  const move = (section: JsonObject, at: string): JsonObject => {
+    const { mergeMethod, ...rest } = section;
+    const git = rest["git"] ?? {};
+    // With git.mergeMethod also set, validation rejects the old key.
+    if (!("mergeMethod" in section) || !isJsonObject(git) || "mergeMethod" in git) return section;
+    moved.push(`${at}mergeMethod moved to ${at}git.mergeMethod`);
+    return { ...rest, git: { ...git, mergeMethod } };
+  };
+  const root = move(file, "");
+  const repos = file["repos"];
+  if (!isJsonObject(repos)) return { file: root, moved };
+  return {
+    file: {
+      ...root,
+      repos: Object.fromEntries(
+        Object.entries(repos).map(([name, repo]) => [
+          name,
+          isJsonObject(repo) ? move(repo, `repos.${name}.`) : repo,
+        ]),
+      ),
+    },
+    moved,
+  };
+}
+
+/** Old keys that ocd.jsonc still uses, each with where it moved. */
+export function configDeprecations(path: string): string[] {
+  const file = readConfigFile(path);
+  return isJsonObject(file) ? moveLegacyMergeMethod(file).moved : [];
+}
+
 function describeIssue(issue: z.core.$ZodIssue): string {
   const at = issue.path.join(".");
   const section = issue.path.length === 0 || (issue.path.length === 2 && issue.path[0] === "repos");
@@ -372,10 +416,9 @@ export function loadConfig(
   path: string,
   overrides: Partial<SupervisorConfigInput> = {},
 ): SupervisorConfig {
-  const fromFile = readConfigFile(path);
-  if (typeof fromFile !== "object" || fromFile === null || Array.isArray(fromFile)) {
-    throw new ConfigError(`${path} must contain a JSON object`);
-  }
+  const raw = readConfigFile(path);
+  if (!isJsonObject(raw)) throw new ConfigError(`${path} must contain a JSON object`);
+  const fromFile = moveLegacyMergeMethod(raw).file;
   const fileProfiles = (fromFile as { profiles?: Record<string, unknown> }).profiles;
   const parsed = SupervisorConfig.safeParse({
     ...fromFile,

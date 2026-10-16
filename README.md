@@ -268,7 +268,9 @@ and names any profile that uses a harness that is off. It also checks each
 profile's model (without the `#variant`) against the harness's own list
 (`opencode models`, `codex debug models`; Claude Code has no list, so only its
 aliases are known) and warns about one that is not listed; a warning does not
-change the exit status. It exits with status 1
+change the exit status. Neither does a `DEPRECATED` line, which names a key in
+`ocd.jsonc` that moved (such as the old top-level `mergeMethod`) and where it
+lives now. It exits with status 1
 when something it checks is broken: an invalid config, no git, or a tool or
 harness that is turned on but unavailable. Dispatching to such a
 profile fails with `harness_disabled`, naming the setting.
@@ -643,7 +645,9 @@ says why (`available: false` with notes) instead of guessing.
 8. **Merge method**: `"git": { "mergeMethod": "squash" }` in `ocd.jsonc`
    (`squash` by default; `merge` or `rebase`), per repo under
    `repos.<name>.git.mergeMethod`. Both routes use it, which is why it sits
-   under `git` and not `github`.
+   under `git` and not `github`. The old top-level and per-repo `mergeMethod`
+   keys still load for one release; `ocd doctor` lists each one with its new
+   location.
 9. **Cleanup** refuses while it would lose work: uncommitted changes, or
    commits that exist on no other branch or remote and whose changes are not
    in the base branch. A branch that was squash-merged on GitHub counts as

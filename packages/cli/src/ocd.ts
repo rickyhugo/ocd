@@ -42,6 +42,7 @@ import {
   probeGh,
   LockHeldError,
   SupervisorConfig,
+  configDeprecations,
   loadConfig,
   normalizeDirectory,
   startDaemon,
@@ -703,9 +704,11 @@ async function run(
       process.env["PATH"] = tools.path;
       // Optional tools are checked only when ocd.jsonc turns them on.
       let configError: string | null = null;
+      let deprecated: string[] = [];
       let config: SupervisorConfig;
       try {
         config = loadConfig(paths.config);
+        deprecated = configDeprecations(paths.config);
       } catch (error) {
         configError = error instanceof Error ? error.message : String(error);
         config = SupervisorConfig.parse({});
@@ -732,7 +735,7 @@ async function run(
         }
       }
       const report = {
-        config: { path: paths.config, error: configError },
+        config: { path: paths.config, error: configError, deprecated },
         harnesses,
         models,
         github: gh,
@@ -761,6 +764,10 @@ async function run(
           });
         return [
           ...(configError ? [`${"config".padEnd(9)} INVALID ${configError}`] : []),
+          ...deprecated.map(
+            (d) =>
+              `${"config".padEnd(9)} DEPRECATED ${d}; the old key is read for one release only`,
+          ),
           ...harnesses.map(
             (r) =>
               `${r.harness.padEnd(9)} ${r.available ? "ok" : "--"} ${r.version ?? ""} ${r.problems.join("; ")}`,

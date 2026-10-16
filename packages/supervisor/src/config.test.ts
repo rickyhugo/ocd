@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { harnessSettings, requireHarness } from "@ocd/adapters";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { ConfigError, LiveConfig, loadConfig, toProfiles } from "./config.ts";
+import { ConfigError, LiveConfig, configDeprecations, loadConfig, toProfiles } from "./config.ts";
 import { configJsonSchema } from "./config-schema.ts";
 import { rmrf, setupRepo, startHarness, tempDir, waitFor, type Harness } from "./testkit.ts";
 
@@ -117,6 +117,20 @@ describe("ocd.jsonc", () => {
     );
     expect([live.mergeMethod("app"), live.mergeMethod("lib")]).toEqual(["merge", "rebase"]);
     expect(new LiveConfig(loadConfig("/nonexistent/ocd.jsonc")).mergeMethod("app")).toBe("squash");
+  });
+
+  it("still loads the old mergeMethod keys for one release, and reports where they moved", () => {
+    const path = writeConfig(`{
+      "mergeMethod": "rebase",
+      "repos": { "app": { "path": "/app", "mergeMethod": "merge" }, "lib": { "path": "/lib" } },
+    }`);
+    const live = new LiveConfig(loadConfig(path));
+    expect([live.mergeMethod("app"), live.mergeMethod("lib")]).toEqual(["merge", "rebase"]);
+    expect(configDeprecations(path)).toEqual([
+      "mergeMethod moved to git.mergeMethod",
+      "repos.app.mergeMethod moved to repos.app.git.mergeMethod",
+    ]);
+    expect(configDeprecations(writeConfig(`{ "git": { "mergeMethod": "merge" } }`))).toEqual([]);
   });
 
   it("rejects an old mergeMethod key next to its new location, naming the new location", () => {
