@@ -114,7 +114,7 @@ commands as harness definitions.
 
 Proposed manager tools (names are OCD's API design, not existing OpenCode tools):
 
-- `dispatch_task(repo, profile, instructions, acceptance_criteria)`
+- `dispatch_task(repo, profile, instructions, acceptance_criteria, workspace_mode)`
 - `list_tasks(filters)` and `inspect_task(id)`
 - `peek_task(id)`: read-only recent worker messages and tool activity
   (implemented; see README "Peek at a worker")
@@ -286,6 +286,19 @@ dirty worktrees and unpushed commits; explicit cleanup is separate from executio
 (Implemented: an opt-in, deterministic branch-sync watchdog reports drift from a
 repo's `baseRef` and, in `refresh` mode, fast-forwards or merges it into clean,
 idle task branches at lifecycle boundaries only; see `docs/branch-sync.md`.)
+
+Dispatch chooses a workspace mode, fixed for the task's life. `isolated`, the
+default, is the task branch and worktree above. `none` is for work that needs no
+repository checkout, such as research or filing an issue: the worker runs in its
+own scratch directory, `~/.ocd/scratch/<task>`, kept after the task finishes.
+There is no branch, worktree, git verification, diff, branch sync, landing,
+takeover or worktree cleanup; tracking, instructions, permissions, the report,
+review and acceptance are unchanged. Workspace access is independent of the
+permission policy, so a `none` task may still take the external actions its
+profile allows. What a task allows (worktree, landing, takeover) comes from one
+capability table in core (`WORKSPACE_CAPABILITIES`). A `read-only` mode (inspect the repository,
+writes denied) is deferred until OCD can enforce write denial; until then it
+would be a promise the harnesses do not keep.
 
 Worktrees isolate edits, not secrets, network access, or arbitrary shell commands.
 Use harness sandbox/permission controls and repository branch protection. Require

@@ -442,7 +442,9 @@ plugin directory) adds:
   - Ready for review: **View the diff**, **Land through a pull request** (only
     with `github.enabled`), **Land directly on the base branch…** (shows the
     commits and asks first), **Request changes…**, **Accept (keep the
-    worktree)**, Summarize the result, **Discard the work…**.
+    worktree)**, Summarize the result, **Discard the work…**. A task without
+    a workspace offers only **Request changes…**, **Accept** and Summarize the
+    result.
   - Accepted with a kept worktree: the two Land actions, **Clean up the
     worktree**, **Discard the work…**.
   - A push the manager asked for: **Review and confirm the push…**, **Decline
@@ -590,6 +592,11 @@ says why (`available: false` with notes) instead of guessing.
    conflict, and in `refresh` mode fast-forwards or merges the base into clean,
    idle task branches at safe points (never pushing, rebasing, stashing or
    resolving conflicts). See [docs/branch-sync.md](docs/branch-sync.md).
+   A task that needs no checkout (research, filing an issue) can be dispatched
+   with workspace mode `none` (`ocd dispatch ... --workspace none`, or
+   `workspace_mode` on the tool). Its worker runs in `~/.ocd/scratch/<task>`
+   with no branch or worktree, so there is nothing to diff, land, take over or
+   clean up; it is reviewed and accepted like any other task.
 3. Permission requests block the task and notify you; only a human can approve
    them, from an interactive terminal: `ocd attention resolve <id> --approve`.
    Other `permissionPolicy` values: `deny` (the default) rejects requests and
