@@ -125,8 +125,8 @@ type ResumeVerdict = ApiError | { mode: "relaunch" } | { mode: "reattach"; sessi
 /**
  * Whether `actor` may resume `task` in `mode`, given the task's open attention.
  * The manager may only reattach: a relaunch starts an uncertain run over in a
- * new session, so it stays the human's call. A resume settles the task's open
- * items, so the manager is also refused while one of them is the human's.
+ * new session, so it stays the human's call. It is also refused while an open
+ * item on the task is the human's (humanItemRefusal).
  */
 function resumeVerdict(
   task: Task,
@@ -150,12 +150,8 @@ function resumeVerdict(
       );
     return { mode };
   }
-  const humanItem = actor === "human" ? undefined : open.find((a) => a.resolvableBy === "human");
-  if (humanItem)
-    return forbidden(
-      "human_only",
-      `The open ${humanItem.kind} "${truncate(humanItem.reason, 300)}" is the human's to settle, and resuming would settle it. Ask the human to resume the task (\`ocd task resume ${task.id} --mode reattach\`).`,
-    );
+  const held = humanItemRefusal(actor, open);
+  if (held) return held;
   if (!task.sessionId)
     return conflict(
       "no_session",
@@ -164,6 +160,20 @@ function resumeVerdict(
         : `No recorded session to reattach; only the human can relaunch it (\`${relaunch}\`)`,
     );
   return { mode, sessionId: task.sessionId };
+}
+
+/**
+ * The manager may not continue a stopped or blocked worker while an open item
+ * on its task is the human's: the task would move on with the human's call
+ * unmade, or a resume would settle it for them.
+ */
+function humanItemRefusal(actor: Actor, open: readonly Attention[]): ApiError | undefined {
+  const item = actor === "human" ? undefined : open.find((a) => a.resolvableBy === "human");
+  if (item)
+    return forbidden(
+      "human_only",
+      `The open ${item.kind} "${truncate(item.reason, 300)}" is the human's to settle. Ask the human.`,
+    );
 }
 
 function aTask(state: TaskState): string {
@@ -1645,6 +1655,12 @@ export class Supervisor {
           "not_steerable",
           `Cannot send instructions to ${aTask(task.state)}. ${guidance}`,
         );
+      }
+      // A review item is the human's too, but a follow-up on a reviewed task is
+      // how the manager passes on the human's feedback.
+      if (task.state === "blocked") {
+        const held = humanItemRefusal(actor, this.store.listAttention({ taskId, status: "open" }));
+        if (held) throw held;
       }
       if (!task.sessionId) throw conflict("no_session", "Task has no worker session yet");
       const adapter = this.adapterFor(task.harness);

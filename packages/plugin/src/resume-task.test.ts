@@ -110,7 +110,7 @@ describe("the manager's resume_task", () => {
       expect(detail.attention.find((a) => a.id === item.id)?.status).toBe("open");
 
       await h.human.resumeTask(task.id, "reattach");
-      detail = await h.human.inspectTask(task.id);
+      detail = await waitForState(h, task.id, "ready_for_review");
       expect(detail.attention.find((a) => a.id === item.id)).toMatchObject({
         status: "resolved",
         resolvedBy: "human",
@@ -147,9 +147,8 @@ describe("the manager's resume_task", () => {
     expect(detail.task.state).toBe("blocked");
     expect(detail.attention.find((a) => a.id === decision.id)?.status).toBe("open");
 
-    await expect(h.human.sendToWorker(task.id, "carry on")).resolves.toMatchObject({
-      id: task.id,
-    });
+    await h.human.sendToWorker(task.id, "carry on");
+    await waitForState(h, task.id, "ready_for_review");
   });
 
   it("lets the manager send to a blocked task whose open items are its own", async () => {
