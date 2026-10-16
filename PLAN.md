@@ -399,8 +399,9 @@ Possible later work, not committed to:
 
 Design debt, deferred until a feature needs it. The seams are in place:
 harnesses (`docs/adding-a-harness.md`), platform (`packages/cli/src/platform`,
-guarded by a test), git (`GitRunner`), the API contract (one route table in
-core), event and status names, and landing and peek as their own services.
+guarded by a test), git (`GitRunner`), time (`Scheduler` in core, guarded by a
+test), the API contract (one route table in core), event and status names, and
+landing and peek as their own services.
 
 - `store.ts` holds every aggregate; split it into repositories (tasks,
   attention, outbox, memory) over a shared transaction.
@@ -411,8 +412,6 @@ core), event and status names, and landing and peek as their own services.
   move those into testable actions shared with the CLI.
 - `ocd.ts` is one command switch and `setup.ts` one long function; a command
   registry and setup steps with `check()` / `apply()`.
-- Timers are only partly injectable (raw `setInterval`s, `Date.now()` in a few
-  places); one scheduler interface would make timing tests deterministic.
 - Domain errors extend the HTTP `ApiError`; give them codes from a shared union
   and map them to HTTP status only in `api.ts`.
 
