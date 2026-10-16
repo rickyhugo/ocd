@@ -29,6 +29,27 @@ async function waitUntil(ok: () => boolean, ms = 10_000): Promise<void> {
 /** A build whose CLI accepts any config. */
 const BUILD = "mkdir -p packages/cli/dist && echo 'process.exit(0)' > packages/cli/dist/ocd.mjs";
 
+/**
+ * A new version whose `ocd config check --json` rejects any config mentioning
+ * `oldKey`. Each run appends to checks.log beside it.
+ */
+const STRICT_CLI = `import { appendFileSync, readFileSync } from "node:fs";
+appendFileSync(new URL("checks.log", import.meta.url), "check\\n");
+if (process.argv.slice(2).join(" ") !== "config check --json") process.exit(2);
+const path = process.env.OCD_CONFIG;
+const valid = !readFileSync(path, "utf8").includes("oldKey");
+console.log(JSON.stringify(valid ? { path, valid } : { path, valid, errors: ['(root): Unrecognized key: "oldKey"'] }));
+process.exit(valid ? 0 : 1);
+`;
+
+/** A version from before `ocd config check`: the CLI rejects the command with its help text. */
+const OLD_CLI = `console.error("ocd: unknown command config\\n\\nOCD  orchestrates coding agents\\n\\nUsage\\n  ocd status   Show tasks");
+process.exit(1);
+`;
+
+/** The build step that installs `cli.mjs` from the commit as the version's CLI. */
+const COPY_CLI = "mkdir -p packages/cli/dist && cp cli.mjs packages/cli/dist/ocd.mjs";
+
 const RELOAD_FAILED = {
   headline: "OpenCode did not reload OCD's plugin",
   detail: "Run `opencode reload`.",
@@ -69,7 +90,7 @@ function updater(
   w: ReturnType<typeof world>,
   overrides: Partial<SelfUpdaterOptions> & { build?: string[] } = {},
 ) {
-  const calls = { restart: 0, notify: [] as string[], smoke: 0, after: 0 };
+  const calls = { restart: 0, notify: [] as string[], bodies: [] as string[], smoke: 0, after: 0 };
   const blockers: { taskId: string; title: string; harness: string }[] = [];
   const { build, ...rest } = overrides;
   const u = new SelfUpdater({
@@ -83,7 +104,10 @@ function updater(
     configPath: join(w.root, "ocd.jsonc"),
     repoPath: (name) => (name === "ocd" ? w.repo : null),
     blockers: () => blockers,
-    notify: (key) => void calls.notify.push(key),
+    notify: (key, _title, body) => {
+      calls.notify.push(key);
+      calls.bodies.push(body);
+    },
     restart: () => void calls.restart++,
     // Running from the install: the first switch makes this real.
     runningFrom: join(w.installDir, "builds", "seed", "packages/cli/dist/ocd.mjs"),
@@ -298,24 +322,14 @@ describe("self-update", () => {
   it("keeps the current version while the new one rejects the live config, and applies it once the file loads", async () => {
     const w = world();
     seedInstall(w);
-    // The new version's `ocd config check` no longer accepts `oldKey`.
-    writeFileSync(
-      join(w.repo, "cli.mjs"),
-      `import { readFileSync } from "node:fs";
-if (process.argv.slice(2).join(" ") !== "config check") process.exit(2);
-const path = process.env.OCD_CONFIG;
-if (readFileSync(path, "utf8").includes("oldKey")) {
-  console.error("ocd: Invalid config in " + path + ":\\n  (root): Unrecognized key: \\"oldKey\\"");
-  process.exit(1);
-}
-`,
-    );
+    writeFileSync(join(w.repo, "cli.mjs"), STRICT_CLI);
     const sha = w.land("feat: drop oldKey");
-    const config = join(w.root, "ocd.jsonc");
+    // A long path must not push the offending key out of the notification.
+    const dir = join(w.root, "a-very-long-directory-name".repeat(8));
+    mkdirSync(dir);
+    const config = join(dir, "ocd.jsonc");
     writeFileSync(config, '{ "oldKey": true }\n');
-    const { u, calls } = updater(w, {
-      build: ["mkdir -p packages/cli/dist && cp cli.mjs packages/cli/dist/ocd.mjs"],
-    });
+    const { u, calls } = updater(w, { build: [COPY_CLI], configPath: config });
 
     const s = await u.check();
     expect(calls.restart).toBe(0);
@@ -323,6 +337,7 @@ if (readFileSync(path, "utf8").includes("oldKey")) {
     expect(s.cannotApply).toContain(config);
     expect(s.cannotApply).toContain('Unrecognized key: "oldKey"');
     expect(calls.notify).toEqual([`update-config-rejected:${sha}`]);
+    expect(calls.bodies[0]).toContain('Unrecognized key: "oldKey"');
     expect(existsSync(join(w.installDir, "current"))).toBe(false);
     expect(readFileSync(config, "utf8")).toBe('{ "oldKey": true }\n');
 
@@ -333,6 +348,47 @@ if (readFileSync(path, "utf8").includes("oldKey")) {
     const applied = await u.tryApply(false);
     expect(calls.restart).toBe(1);
     expect(applied).toMatchObject({ current: sha, pending: null, cannotApply: null });
+  });
+
+  it("does not blame the config when the new version cannot check it, and checks again on the next try", async () => {
+    const w = world();
+    seedInstall(w);
+    writeFileSync(join(w.repo, "cli.mjs"), OLD_CLI);
+    const sha = w.land("feat: before config check");
+    writeFileSync(join(w.root, "ocd.jsonc"), "{}\n");
+    const { u, calls } = updater(w, { build: [COPY_CLI] });
+
+    const s = await u.check();
+    expect(calls.restart).toBe(0);
+    expect(s).toMatchObject({ current: null, pending: { sha } });
+    expect(s.cannotApply).toBe("the new version could not check ocd.jsonc: unknown command config");
+    expect(calls.notify).toEqual([`update-config-unchecked:${sha}`]);
+
+    // The check works now (say it timed out before); the same config file applies.
+    writeFileSync(
+      join(w.installDir, "builds", sha.slice(0, 12), "packages/cli/dist/ocd.mjs"),
+      STRICT_CLI,
+    );
+    const applied = await u.tryApply(false);
+    expect(calls.restart).toBe(1);
+    expect(applied).toMatchObject({ current: sha, pending: null, cannotApply: null });
+  });
+
+  it("runs one config check when the tick and `ocd update apply` try at once", async () => {
+    const w = world();
+    seedInstall(w);
+    writeFileSync(join(w.repo, "cli.mjs"), STRICT_CLI);
+    const sha = w.land("feat: something new");
+    writeFileSync(join(w.root, "ocd.jsonc"), "{}\n");
+    const { u, calls, blockers } = updater(w, { build: [COPY_CLI] });
+    blockers.push({ taskId: "t1", title: "busy", harness: "claude" });
+    await u.check();
+    blockers.length = 0;
+
+    await Promise.all([u.tryApply(false), u.tryApply(false)]);
+    expect(calls.restart).toBe(1);
+    const log = join(w.installDir, "builds", sha.slice(0, 12), "packages/cli/dist/checks.log");
+    expect(readFileSync(log, "utf8")).toBe("check\n");
   });
 
   it("only installs, without restarting, when the service does not run from the install", async () => {
