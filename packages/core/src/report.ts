@@ -3,7 +3,7 @@ import type { WorkspaceMode } from "./states.ts";
 
 const FENCE = "ocd-report";
 
-/** What changedFiles means where the worker works: OCD verifies only worktree changes. */
+/** What a worker lists as changedFiles: OCD verifies them only in a worktree. */
 const CHANGED_FILES: Record<WorkspaceMode, { example: string; note: string }> = {
   isolated: { example: "path/relative/to/repo", note: "" },
   none: {

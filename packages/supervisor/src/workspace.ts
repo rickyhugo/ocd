@@ -574,13 +574,13 @@ export class WorkspaceManager {
     return null;
   }
 
-  /** The remote's default branch (e.g. main), falling back to "main". */
   /** The GitHub owner/name of the origin remote, or null when origin is missing or not on GitHub. */
   async githubRepo(repoPath: string): Promise<string | null> {
     const result = await this.git.run(["remote", "get-url", "origin"], { cwd: repoPath });
     return result.code === 0 ? githubSlug(result.stdout.trim()) : null;
   }
 
+  /** The remote's default branch (e.g. main), falling back to "main". */
   async defaultBranch(repoPath: string, remote: string): Promise<string> {
     const result = await this.git.run(["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`], {
       cwd: repoPath,

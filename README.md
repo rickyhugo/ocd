@@ -657,9 +657,10 @@ says why (`available: false` with notes) instead of guessing.
    landed, so no `--force` is needed. `--force` (or `discard`) is for throwing
    work away; both ask you to type `approve` first.
 10. **Automatic cleanup** (`"autoCleanup": { "enabled": true, "afterHours": 72 }`,
-    off by default) removes the worktrees (or scratch directories) of tasks that finished (accepted or
-    cancelled) more than `afterHours` ago, hourly, the way `ocd task cleanup`
-    does: never forced, so a worktree whose work would be lost is kept.
+    off by default) removes the worktrees (or scratch directories) of tasks
+    that finished (accepted or cancelled) more than `afterHours` ago, hourly,
+    the way `ocd task cleanup` does: never forced, so a worktree whose work
+    would be lost is kept.
 11. **Diffs** are capped: a patch over 1.5 MB is cut at a file boundary, and at
     most 50 new untracked files are included (the rest are counted as
     truncated).

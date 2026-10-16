@@ -295,9 +295,9 @@ and discard remove that directory where they would remove an isolated task's
 worktree. There is no branch, worktree, git verification, diff, branch sync,
 landing or takeover; tracking, instructions, permissions, the report, review and
 acceptance are unchanged. The prompt names the repository by its GitHub
-`owner/name`, read from the origin remote, or says it has no GitHub remote. Workspace access is independent of the
-permission policy, so a `none` task may still take the external actions its
-profile allows. What a task allows (worktree, landing, takeover) comes from one
+`owner/name`, read from the origin remote, or says it has no GitHub remote.
+Workspace access is independent of the permission policy, so a `none` task may
+still take the external actions its profile allows. What a task allows (worktree, landing, takeover) comes from one
 capability table in core (`WORKSPACE_CAPABILITIES`). A `read-only` mode (inspect the repository,
 writes denied) is deferred until OCD can enforce write denial; until then it
 would be a promise the harnesses do not keep.
