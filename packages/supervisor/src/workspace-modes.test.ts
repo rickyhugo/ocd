@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { SimulatedCrash } from "./errors.ts";
 import type { CrashPoint } from "./supervisor.ts";
 import { setupRepo, startHarness, waitForState, type Harness } from "./testkit.ts";
+import { githubSlug } from "./workspace.ts";
 
 let h: Harness | null = null;
 afterEach(async () => {
@@ -36,6 +37,7 @@ describe("dispatch without a workspace", () => {
   it("runs the worker in its own scratch directory, with no branch or worktree, through review to acceptance", async () => {
     h = await startHarness();
     const repo = await setupRepo(h, "app");
+    execFileSync("git", ["remote", "add", "origin", "git@github.com:acme/app.git"], { cwd: repo });
     const queued = await dispatch(h, "full", "none");
     expect(queued.workspaceMode).toBe("none");
 
@@ -49,8 +51,12 @@ describe("dispatch without a workspace", () => {
       mode: "none",
       directory: scratch,
     });
-    expect(h.fakeState.prompts[0]).toContain(scratch);
-    expect(h.fakeState.prompts[0]).not.toContain("commit");
+    const prompt = h.fakeState.prompts[0]!;
+    expect(prompt).toContain(scratch);
+    expect(prompt).toContain("acme/app");
+    expect(prompt).not.toContain(repo);
+    expect(prompt).not.toContain("commit");
+    expect(prompt).not.toContain("relative/to/repo");
     expect(readdirSync(h.paths.workspaces, { recursive: true })).toEqual([]);
     expect(branches(repo)).toEqual(["main"]);
 
@@ -69,6 +75,20 @@ describe("dispatch without a workspace", () => {
     });
     expect(branches(repo)).toEqual(["main"]);
     expect(existsSync(join(scratch, "ocd-fake.txt"))).toBe(true);
+  });
+
+  it("tells the worker when the repository has no GitHub remote, without naming its path", async () => {
+    h = await startHarness();
+    const repo = await setupRepo(h, "app");
+    const upstream = join(h.root, "upstream.git");
+    execFileSync("git", ["init", "-q", "--bare", upstream]);
+    execFileSync("git", ["remote", "add", "origin", upstream], { cwd: repo });
+    const task = await dispatch(h, "no-github", "none");
+    await waitForState(h, task.id, "ready_for_review");
+    const prompt = h.fakeState.prompts[0]!;
+    expect(prompt).toContain("no GitHub remote");
+    expect(prompt).not.toContain(upstream);
+    expect(prompt).not.toContain(repo);
   });
 
   it("discarding cancels the task and leaves the repository alone", async () => {
@@ -90,6 +110,7 @@ describe("dispatch without a workspace", () => {
     const feedback = h.fakeState.prompts.at(-1)!;
     expect(feedback).toContain("Add reproduction steps");
     expect(feedback).not.toContain("commit");
+    expect(feedback).not.toContain("relative/to/repo");
   });
 
   it("adopts the session a crash left behind instead of launching a second worker", async () => {
@@ -130,5 +151,20 @@ describe("dispatch workspace mode", () => {
       code: "idempotency_mismatch",
     });
     await expect(dispatch(h, "same-key", "none")).resolves.toMatchObject({ workspaceMode: "none" });
+  });
+});
+
+describe("githubSlug", () => {
+  it.each([
+    ["git@github.com:acme/app.git", "acme/app"],
+    ["https://github.com/acme/app.git", "acme/app"],
+    ["https://github.com/acme/app", "acme/app"],
+    ["https://x-access-token:secret@github.com/acme/my.app.git", "acme/my.app"],
+    ["ssh://git@github.com/acme/app.git", "acme/app"],
+    ["git@gitlab.com:acme/app.git", null],
+    ["/Users/me/src/app", null],
+    ["file:///Users/me/src/github.com/acme/app", null],
+  ])("%s -> %s", (url, slug) => {
+    expect(githubSlug(url)).toBe(slug);
   });
 });

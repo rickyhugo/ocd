@@ -5,9 +5,9 @@ import {
   DispatchTaskInput,
   LIVE_STATES,
   PeekTaskInput,
-  REPORT_INSTRUCTIONS,
   TAKEOVER_STATES,
   capabilitiesOf,
+  reportInstructions,
   workerOcdEnv,
   parseWorkerReport,
   redact,
@@ -127,7 +127,7 @@ function sanitizeReport(report: WorkerReport): WorkerReport {
 const WORKER_WORKSPACE: Record<
   WorkspaceMode,
   {
-    where: (task: Task, directory: string | null) => string;
+    where: (task: Task, place: { directory: string | null; github: string | null }) => string;
     relaunch: string;
     finish: string;
     /** Closes review feedback sent to the worker. */
@@ -135,7 +135,7 @@ const WORKER_WORKSPACE: Record<
   }
 > = {
   isolated: {
-    where: (task, directory) =>
+    where: (task, { directory }) =>
       `You are an OCD worker for repository "${task.repo}". Work only inside ${directory} (branch ${task.branch}).`,
     relaunch:
       "This workspace may contain changes from an earlier attempt. Inspect `git status` and `git log` first and continue from there; do not discard existing changes.",
@@ -144,12 +144,12 @@ const WORKER_WORKSPACE: Record<
     changes: "Address it in this worktree and commit your changes.",
   },
   none: {
-    where: (task, directory) =>
-      `You are an OCD worker on a task about repository "${task.repo}". This task has no repository checkout: your working directory, ${directory}, is a scratch directory for notes and output. Do not clone or edit the repository.`,
+    where: (task, { directory, github }) =>
+      `You are an OCD worker on a task about repository "${task.repo}", ${github ? `which is ${github} on GitHub (pass \`--repo ${github}\` to \`gh\`)` : "which has no GitHub remote"}. This task has no repository checkout: your working directory, ${directory}, is a scratch directory for notes and output. Do not clone or edit the repository.`,
     relaunch:
       "The scratch directory may hold notes or output from an earlier attempt. Look at them first and continue from there; do not repeat external actions that already happened.",
     finish:
-      "External actions the task asks for (for example creating a GitHub issue with `gh --repo ...`) are fine where your permissions allow them. Do not try to dispatch other tasks.",
+      "External actions the task asks for, such as creating a GitHub issue, are fine where your permissions allow them. Do not try to dispatch other tasks.",
     changes: "Address it and report again.",
   },
 };
@@ -656,12 +656,20 @@ export class Supervisor {
     return join(this.o.scratchRoot, taskId);
   }
 
-  private buildPrompt(task: Task, relaunch: boolean, syncNote: string | null = null): string {
+  private async buildPrompt(
+    task: Task,
+    relaunch: boolean,
+    syncNote: string | null = null,
+  ): Promise<string> {
     const repo = this.store.requireRepo(task.repo, { includeRetired: true });
     const notes = this.o.memory.workerMemory(repo.id);
     const wording = WORKER_WORKSPACE[task.workspaceMode];
+    // A worker without a checkout cannot read the remote itself; never give it the local path.
+    const github = capabilitiesOf(task).worktree
+      ? null
+      : await this.o.workspaces.githubRepo(repo.path);
     const parts = [
-      wording.where(task, this.workerDirectory(task)),
+      wording.where(task, { directory: this.workerDirectory(task), github }),
       task.profile.instructions ? `Profile instructions:\n${task.profile.instructions}` : "",
       `Task: ${task.title}\n\nInstructions:\n${task.instructions}`,
       task.acceptanceCriteria.length
@@ -673,7 +681,7 @@ export class Supervisor {
       relaunch ? wording.relaunch : "",
       syncNote ?? "",
       wording.finish,
-      REPORT_INSTRUCTIONS,
+      reportInstructions(task.workspaceMode),
     ];
     return parts.filter(Boolean).join("\n\n");
   }
@@ -776,7 +784,7 @@ export class Supervisor {
   ): Promise<void> {
     const task = this.store.requireTask(taskId);
     this.store.appendEvent(taskId, "prompt.intent", { runId, sessionId });
-    await adapter.prompt({ sessionId }, this.buildPrompt(task, relaunch, syncNote));
+    await adapter.prompt({ sessionId }, await this.buildPrompt(task, relaunch, syncNote));
     this.crashPoint("after_prompt", taskId);
     const now = this.store.now();
     this.store.tx(() => {
@@ -1634,7 +1642,9 @@ export class Supervisor {
       // so it is the boundary where a stale reviewed branch may be refreshed.
       const syncNote =
         task.state === "ready_for_review" ? await this.syncAtBoundary(taskId, "follow_up") : null;
-      const text = [syncNote, instructions, REPORT_INSTRUCTIONS].filter(Boolean).join("\n\n");
+      const text = [syncNote, instructions, reportInstructions(task.workspaceMode)]
+        .filter(Boolean)
+        .join("\n\n");
       try {
         await adapter.prompt({ sessionId: task.sessionId }, text);
       } catch (error) {
@@ -1874,7 +1884,7 @@ export class Supervisor {
         const syncNote = await this.syncAtBoundary(taskId, "hand_back");
         await adapter.prompt(
           ref,
-          `The human drove this session directly for a while and has handed the task back to you.${noteText}\n\n${syncNote ? `${syncNote}\n\n` : ""}Check the current state of the worktree, continue the task, and finish with the report.\n\n${REPORT_INSTRUCTIONS}`,
+          `The human drove this session directly for a while and has handed the task back to you.${noteText}\n\n${syncNote ? `${syncNote}\n\n` : ""}Check the current state of the worktree, continue the task, and finish with the report.\n\n${reportInstructions(task.workspaceMode)}`,
         );
       }
       const run = this.store.latestRun(taskId);
@@ -1962,7 +1972,7 @@ export class Supervisor {
       if (needsPrompt) {
         await adapter.prompt(
           { sessionId: task.sessionId },
-          `Continue the task from where you stopped.\n\n${REPORT_INSTRUCTIONS}`,
+          `Continue the task from where you stopped.\n\n${reportInstructions(task.workspaceMode)}`,
         );
       }
       const run = this.store.latestRun(taskId);
