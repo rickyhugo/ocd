@@ -1,7 +1,8 @@
+import { ATTENTION_KINDS } from "./attention.ts";
 import type { OcdClient } from "./client.ts";
 import { redact, truncate } from "./redact.ts";
 import type { TaskEventType } from "./events.ts";
-import type { Attention, AttentionKind, Task, TaskEvent } from "./schemas.ts";
+import type { Attention, Task, TaskEvent } from "./schemas.ts";
 import { OPEN_STATES, type TaskState } from "./states.ts";
 
 // `/spill` and `ocd spill`: a read-only snapshot of all open work, built only
@@ -59,26 +60,6 @@ const QUIET_MS = 10 * 60_000;
 const TITLE_MAX = 80;
 const FACT_MAX = 90;
 const REASON_MAX = 70;
-
-/** Attention kinds that stop work until someone answers. */
-const BLOCKING: ReadonlySet<AttentionKind> = new Set([
-  "permission",
-  "question",
-  "decision",
-  "ambiguous_launch",
-  "land",
-]);
-
-const ATTENTION_LABEL: Record<AttentionKind, string> = {
-  permission: "permission",
-  question: "question",
-  decision: "decision",
-  failure: "failure",
-  stall: "stalled",
-  review: "review",
-  ambiguous_launch: "unclear launch",
-  land: "confirm landing",
-};
 
 /**
  * Supervisor events worth calling a milestone, by type. Only the type and time
@@ -168,13 +149,13 @@ function activity(t: Task, now: number): string {
 function waitingOn(a: Attention, now: number): string {
   const who = a.resolvableBy === "human" ? "you" : "the manager";
   const reason = sanitizeLine(a.reason, REASON_MAX);
-  return `waits on ${who}: ${ATTENTION_LABEL[a.kind]}, ${since(a.createdAt, now)}${reason ? ` “${reason}”` : ""}`;
+  return `waits on ${who}: ${ATTENTION_KINDS[a.kind].label}, ${since(a.createdAt, now)}${reason ? ` “${reason}”` : ""}`;
 }
 
 function facts(t: Task, section: SpillSectionKey, attention: Attention[], input: SpillInput) {
   const { now } = input;
   const out: string[] = [];
-  const blocking = attention.filter((a) => BLOCKING.has(a.kind));
+  const blocking = attention.filter((a) => ATTENTION_KINDS[a.kind].blocking);
   switch (section) {
     case "running":
       out.push(`running ${ago(t.startedAt ?? t.createdAt, now)}`, activity(t, now));
@@ -265,7 +246,7 @@ export function buildSpill(input: SpillInput): SpillSnapshot {
 
   const grouped = new Map<SpillSectionKey, Task[]>(SECTIONS.map((s) => [s.key, []]));
   for (const t of tasks) {
-    const blocked = (attentionOf.get(t.id) ?? []).some((a) => BLOCKING.has(a.kind));
+    const blocked = (attentionOf.get(t.id) ?? []).some((a) => ATTENTION_KINDS[a.kind].blocking);
     grouped.get(sectionOf(t, blocked))!.push(t);
   }
   // Oldest first, so a long-running task does not move around between calls.
@@ -290,11 +271,11 @@ export function buildSpill(input: SpillInput): SpillSnapshot {
     .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
     .map((a) => ({
       ref: a.id,
-      title: sanitizeLine(a.reason, TITLE_MAX) || ATTENTION_LABEL[a.kind],
+      title: sanitizeLine(a.reason, TITLE_MAX) || ATTENTION_KINDS[a.kind].label,
       repo: a.repo ? sanitizeLine(a.repo, 40) : null,
       state: null,
       facts: [
-        `${ATTENTION_LABEL[a.kind]} for ${a.resolvableBy === "human" ? "you" : "the manager"}, ${since(a.createdAt, input.now)}${a.taskId ? ` · task ${a.taskId}` : ""}`,
+        `${ATTENTION_KINDS[a.kind].label} for ${a.resolvableBy === "human" ? "you" : "the manager"}, ${since(a.createdAt, input.now)}${a.taskId ? ` · task ${a.taskId}` : ""}`,
       ],
     }));
   sections.push({ key: "other", label: "Other attention", glyph: "!", entries: other });

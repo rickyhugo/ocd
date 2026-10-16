@@ -2,6 +2,8 @@ import { join } from "node:path";
 
 import {
   API_VERSION,
+  ATTENTION_KIND_NAMES,
+  ATTENTION_KINDS,
   DispatchTaskInput,
   LIVE_STATES,
   PeekTaskInput,
@@ -15,6 +17,7 @@ import {
   type Actor,
   type AdapterStatus,
   type Attention,
+  type AttentionKind,
   type AttentionResponse,
   type GitHubCliStatus,
   type HarnessName,
@@ -41,6 +44,7 @@ import {
   requireCapability,
   type AdapterEvent,
   type HarnessAdapter,
+  type InteractionReply,
   type SessionSnapshot,
   type SessionSpec,
 } from "@ocd/adapters";
@@ -103,7 +107,8 @@ export interface SupervisorOptions {
   onLanded?: (repo: string) => void;
 }
 
-const INTERACTION_KINDS = ["permission", "question"] as const;
+const INTERACTION_KINDS = ATTENTION_KIND_NAMES.filter((k) => ATTENTION_KINDS[k].interaction);
+const SETTLED_BY_RESUME = ATTENTION_KIND_NAMES.filter((k) => ATTENTION_KINDS[k].settledByResume);
 
 /** Worker-written text is stored and published (PR bodies): redact and bound it. */
 function sanitizeReport(report: WorkerReport): WorkerReport {
@@ -919,7 +924,7 @@ export class Supervisor {
 
   private attentionFor(
     task: Pick<Task, "id" | "harness" | "sessionId">,
-    kind: Attention["kind"],
+    kind: Exclude<AttentionKind, "land">,
     key: string,
     reason: string,
     resolvableBy: Actor,
@@ -1159,7 +1164,7 @@ export class Supervisor {
     for (const a of this.store.listAttention({
       taskId,
       status: "open",
-      kinds: [...INTERACTION_KINDS],
+      kinds: INTERACTION_KINDS,
     })) {
       if (a.requestRef === interactionId) {
         this.store.settleAttention(a.id, {
@@ -1177,7 +1182,7 @@ export class Supervisor {
     const open = this.store.listAttention({
       taskId,
       status: "open",
-      kinds: [...INTERACTION_KINDS],
+      kinds: INTERACTION_KINDS,
     });
     if (open.length === 0) this.store.transition(taskId, "running", { from: ["blocked"] });
   }
@@ -1266,7 +1271,7 @@ export class Supervisor {
     for (const a of this.store.listAttention({
       taskId: task.id,
       status: "open",
-      kinds: [...INTERACTION_KINDS],
+      kinds: INTERACTION_KINDS,
     })) {
       if (a.sessionId !== snap.sessionId || !a.requestRef || !live.has(a.requestRef)) {
         this.store.settleAttention(a.id, { status: "expired" });
@@ -1292,7 +1297,7 @@ export class Supervisor {
   private async finishRun(task: Task, snap: SessionSnapshot): Promise<void> {
     if (
       task.state === "blocked" &&
-      this.store.listAttention({ taskId: task.id, status: "open", kinds: [...INTERACTION_KINDS] })
+      this.store.listAttention({ taskId: task.id, status: "open", kinds: INTERACTION_KINDS })
         .length > 0
     ) {
       return;
@@ -1946,7 +1951,7 @@ export class Supervisor {
         for (const a of this.store.listAttention({
           taskId,
           status: "open",
-          kinds: ["failure", "ambiguous_launch", "stall", "decision"],
+          kinds: SETTLED_BY_RESUME,
         })) {
           this.store.settleAttention(a.id, {
             status: "resolved",
@@ -2150,19 +2155,16 @@ export class Supervisor {
       );
     }
     if (attention.expiresAt && attention.expiresAt <= this.store.now()) {
-      if (attention.kind === "permission" || attention.kind === "question")
-        await this.expireInteraction(id);
+      if (ATTENTION_KINDS[attention.kind].interaction) await this.expireInteraction(id);
       else this.store.settleAttention(id, { status: "expired" });
       throw new ApiError(410, "expired", "The request expired; it will not be replayed");
     }
 
-    if (attention.kind === "permission" || attention.kind === "question") {
-      if (response.type === "acknowledge")
-        throw badRequest("bad_response", "Approve, deny, or answer this request");
-      if (attention.kind === "permission" && response.type === "answer")
-        throw badRequest("bad_response", "Permissions take approve or deny");
-      if (attention.kind === "question" && response.type === "approve")
-        throw badRequest("bad_response", "Questions take an answer or deny");
+    const { interaction, responses } = ATTENTION_KINDS[attention.kind];
+    if (!responses.includes(response.type))
+      throw badRequest("bad_response", `Respond with ${responses.join(" or ")}`);
+
+    if (interaction) {
       const task = attention.taskId ? this.store.requireTask(attention.taskId) : null;
       const latestRun = task ? this.store.latestRun(task.id) : null;
       const adapter = task ? this.adapters.get(task.harness) : undefined;
@@ -2185,7 +2187,9 @@ export class Supervisor {
           "The originating request is no longer live; it was not replayed",
         );
       }
-      await adapter!.reply({ sessionId: attention.sessionId! }, attention.requestRef!, response);
+      // Interaction kinds never take "acknowledge" (checked above).
+      const reply = response as InteractionReply;
+      await adapter!.reply({ sessionId: attention.sessionId! }, attention.requestRef!, reply);
       const settled = this.store.settleAttention(id, {
         status: "resolved",
         response,
@@ -2201,15 +2205,11 @@ export class Supervisor {
     }
 
     if (attention.kind === "land" && attention.taskId) {
-      if (response.type !== "approve" && response.type !== "deny")
-        throw badRequest("bad_response", "Approve or deny this push");
       const task = this.store.requireTask(attention.taskId);
       if (response.type === "approve") {
         // Pushes exactly what was asked for, or refuses (the request stays open).
-        const head = (attention.operation as { head?: unknown } | null)?.head;
-        if (typeof head !== "string") throw conflict("stale_request", "The request has no plan");
-        await this.landing.pushLanding(task.id, head, actor, id);
-      } else {
+        await this.landing.pushLanding(task.id, attention.operation.head, actor, id);
+      } else if (response.type === "deny") {
         this.landing.declineLanding(task, id, response.message);
       }
     }
