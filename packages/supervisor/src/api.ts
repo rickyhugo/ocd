@@ -65,7 +65,6 @@ export interface ApiDeps {
   usage?: UsageTracker;
 }
 
-/** The HTTP status for each error code; the only place codes meet HTTP. */
 const HTTP_STATUS: Record<ErrorCode, number> = {
   actor_required: 400,
   api_version_required: 400,

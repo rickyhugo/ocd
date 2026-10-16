@@ -1,5 +1,5 @@
-// Every code an API error carries. Clients branch on these strings, so renaming
-// one breaks them. The supervisor maps each code to its HTTP status in api.ts.
+// Every code the supervisor's API returns. Clients branch on these strings, so
+// renaming one breaks them.
 export const ERROR_CODES = [
   "actor_required",
   "api_version_required",
