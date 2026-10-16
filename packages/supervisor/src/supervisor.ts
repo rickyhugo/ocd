@@ -1691,7 +1691,10 @@ export class Supervisor {
           event: { type: "worker.steered", data: { chars: instructions.length } },
         });
       }
-      this.store.appendEvent(taskId, "worker.steered", { chars: instructions.length });
+      this.store.tx(() => {
+        if (task.state === "blocked") this.settleContinued(taskId, actor, "send");
+        this.store.appendEvent(taskId, "worker.steered", { chars: instructions.length });
+      });
       return this.store.requireTask(taskId);
     }
   }
@@ -1929,6 +1932,24 @@ export class Supervisor {
     });
   }
 
+  /**
+   * Settles the open items a worker that is told to continue moves past. A
+   * permission request or a question stays open: it waits on its own reply.
+   */
+  private settleContinued(taskId: string, actor: Actor, note: string): void {
+    for (const a of this.store.listAttention({
+      taskId,
+      status: "open",
+      kinds: ["failure", "ambiguous_launch", "stall", "decision"],
+    })) {
+      this.store.settleAttention(a.id, {
+        status: "resolved",
+        response: { type: "acknowledge", note },
+        resolvedBy: actor,
+      });
+    }
+  }
+
   /** Explicit recovery of a task that stopped; see resumeVerdict() for who may resume what. */
   async resume(taskId: string, mode: "reattach" | "relaunch", actor: Actor): Promise<Task> {
     return this.withTaskLock(taskId, async () => {
@@ -1942,22 +1963,9 @@ export class Supervisor {
       if (verdict instanceof ApiError) throw verdict;
       const adapter = this.adapterFor(task.harness);
       // Open requests are settled only once the resume is known to go ahead.
-      const settleOpen = () => {
-        for (const a of this.store.listAttention({
-          taskId,
-          status: "open",
-          kinds: ["failure", "ambiguous_launch", "stall", "decision"],
-        })) {
-          this.store.settleAttention(a.id, {
-            status: "resolved",
-            response: { type: "acknowledge", note: `resume:${mode}` },
-            resolvedBy: actor,
-          });
-        }
-      };
       if (verdict.mode === "relaunch") {
         this.store.tx(() => {
-          settleOpen();
+          this.settleContinued(taskId, actor, `resume:${mode}`);
           this.store.transition(taskId, "queued", {
             event: { type: "task.resumed", data: { mode, actor } },
           });
@@ -1993,7 +2001,7 @@ export class Supervisor {
       }
       const run = this.store.latestRun(taskId);
       this.store.tx(() => {
-        settleOpen();
+        this.settleContinued(taskId, actor, `resume:${mode}`);
         if (run)
           this.store.updateRun(run.id, { state: "prompted", endedAt: null, exitReason: null });
         if (task.state !== "running") {
